@@ -366,7 +366,7 @@ fn a_committed_stroke_repaints_a_gradient_overlay_over_the_whole_layer() {
     let c = app.committed_stroke.as_ref().expect("the commit took the live stroke's pixels");
     assert_eq!(c.revision, st.revision);
     // A cache that showed the live stroke's last step.
-    let missed = crate::canvas::damage_since(app, idx, (st.revision - 1, c.last_key()), (st.revision, 0), 0, st.last_damage).unwrap();
+    let missed = crate::canvas::damage_since(app, idx, (st.revision - 1, c.last_key()), (st.revision, 0), 0, (st.damage_from(), st.last_damage)).unwrap();
     assert!(missed.contains(25, 25), "the gradient around the first stroke is repainted: {missed:?}");
 }
 
@@ -390,7 +390,7 @@ fn the_stroke_trace_times_each_frame_of_a_stroke_and_ends_on_release() {
             app.perf.stage.start(t0, moves);
             app.perf.stage.ui_start(t0, Some(0.004));
             egui::CentralPanel::default().show(ui, |ui| crate::canvas::document_area(app, ui));
-            app.finish_frame(crate::gpu_canvas::now_ms() - t0);
+            app.finish_frame(&ctx, crate::gpu_canvas::now_ms() - t0);
         },
         app,
     );
@@ -417,16 +417,18 @@ fn the_stroke_trace_times_each_frame_of_a_stroke_and_ends_on_release() {
 #[test]
 fn releasing_a_clone_stamp_stroke_commits_what_a_replay_paints() {
     let setup = |run: &mut dyn FnMut(&str, Value)| {
-        run("tools.setBrush", json!({"brush": {"size": 16, "hardness": 0.4}}));
+        // The whole tip that differs from the default brush, as a replay starts from that.
+        run("tools.setBrush", json!({"brush": {"size": 16, "hardness": 0.4, "spacing": 0.25, "smoothing": {"amount": 0.0}}}));
         run("paint.stroke", json!({"points": [[10, 20], [190, 80]], "size": 30, "hardness": 0.5, "color": "#2060c0"}));
         run("cloneSource.set", json!({"source": [40, 30]}));
     };
     let mut h = harness();
+    // Picked first, so the brush set above is the Clone Stamp's own.
+    h.state_mut().ui.tool = Tool::CloneStamp;
+    h.run_steps(1);
     setup(&mut |id, p| {
         h.state_mut().run(id, p).unwrap();
     });
-    h.state_mut().ui.tool = Tool::CloneStamp;
-    h.run_steps(1);
     move_to(&mut h, 60.0, 50.0);
     button(&mut h, 60.0, 50.0, true);
     for (x, y) in [(80.0, 40.0), (110.0, 60.0), (140.0, 45.0), (170.0, 65.0)] {
@@ -472,6 +474,9 @@ fn releasing_a_sequential_dab_stroke_commits_what_a_replay_paints() {
         });
         h.state_mut().ui.tool = tool;
         h.run_steps(1);
+        // A tool with its own starting tip (Dodge, #12684) paints with that, not the setup's
+        // brush: give it the setup's tip, as the replay below has.
+        h.state_mut().run("tools.setBrush", json!({"brush": {"size": 24, "hardness": 0.2, "spacing": 0.1}})).unwrap();
         move_to(&mut h, 40.0, 30.0);
         button(&mut h, 40.0, 30.0, true);
         for (x, y) in [(70.0, 40.0), (100.0, 55.0), (130.0, 50.0), (160.0, 70.0)] {
@@ -499,14 +504,51 @@ fn releasing_a_sequential_dab_stroke_commits_what_a_replay_paints() {
     }
 }
 
+/// A ⇧-click Dodge line isn't smoothed (#11887): its live preview and its commit both send
+/// `smoothing: 0`, so the release still takes the pixels the preview drew.
+#[test]
+fn a_shift_click_dodge_line_commits_its_live_pixels_unsmoothed() {
+    let mut h = harness();
+    h.state_mut().run("paint.stroke", json!({"points": [[10, 20], [190, 80]], "size": 30, "color": "#2060c0"})).unwrap();
+    h.state_mut().ui.tool = Tool::Dodge;
+    h.run_steps(1);
+    h.state_mut().run("tools.setBrush", json!({"brush": {"size": 12, "smoothing": {"amount": 0.6, "catchUpOnEnd": false}}})).unwrap();
+    move_to(&mut h, 40.0, 30.0);
+    button(&mut h, 40.0, 30.0, true);
+    move_to(&mut h, 100.0, 50.0);
+    button(&mut h, 100.0, 50.0, false);
+    h.run_steps(2);
+    let shift = |h: &mut Harness<'static, PhotocraftApp>, pressed: bool| {
+        let pos = screen(h, 160.0, 70.0);
+        h.event(egui::Event::PointerButton { pos, button: PointerButton::Primary, pressed, modifiers: Modifiers::SHIFT });
+        h.run_steps(1);
+    };
+    h.event(egui::Event::ModifiersChanged(Modifiers::SHIFT));
+    move_to(&mut h, 160.0, 70.0);
+    shift(&mut h, true);
+    assert!(h.state().live_stroke.is_some(), "a live line");
+    h.state_mut().retouch_from_live = false;
+    shift(&mut h, false);
+    h.run_steps(2);
+    let app = h.state();
+    let (_, p) = app.session.journal.iter().rev().find(|(id, _)| id == "paint.dodge").cloned().expect("a committed line");
+    let ends: Vec<[f64; 2]> = p["points"].as_array().unwrap().iter().map(|q| [q[0].as_f64().unwrap(), q[1].as_f64().unwrap()]).collect();
+    assert_eq!(ends, vec![[100.0, 50.0], [160.0, 70.0]]);
+    assert_eq!(p["smoothing"], json!(0.0));
+    assert!(app.retouch_from_live, "the release took the live pixels instead of rendering the line again");
+    assert_eq!(app.session.tools.brush.smoothing.amount, 0.6);
+}
+
 /// Pressure changes Smudge's painted footprint, but not the square of colour it carries.
 /// Exercise the actual pen → live preview → release handoff → journal replay, then undo/redo.
 #[test]
 fn pressure_sized_smudge_release_matches_replay_and_undo_redo() {
     use crate::stylus::PenSample;
 
+    // The spacing is set too: the Smudge tool starts with its own tip (#12964), the replay's
+    // fresh session with the default brush.
     let setup = |run: &mut dyn FnMut(&str, Value)| {
-        run("tools.setBrush", json!({"brush": {"size":40,"hardness":0.7,"pressureSize":true,"smoothing":{"amount":0.4}}}));
+        run("tools.setBrush", json!({"brush": {"size":40,"hardness":0.7,"spacing":0.1,"pressureSize":true,"smoothing":{"amount":0.4}}}));
         run("paint.stroke", json!({"points":[[10,20],[190,80]],"size":30,"color":"#2060c0"}));
     };
     let mut h = harness();

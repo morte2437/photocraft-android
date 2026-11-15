@@ -15,28 +15,16 @@ use crate::pinned::{PinnedCorpus, USER_AGENT};
 use crate::{cargo, root, run};
 
 /// Crates with corpus tests (behind their `corpus` feature).
-pub const CORPUS_CRATES: &[&str] = &["photocraft-psd", "photocraft-codecs", "photocraft-io", "photocraft-engine"];
+pub const CORPUS_CRATES: &[&str] = &["photocraft-io", "photocraft-engine"];
 /// Opt-in corpus crates: fetched and tested only with `test-corpus --pixls`.
 pub const PIXLS_CRATES: &[&str] = &["photocraft-raw"];
 
 /// Corpus crates with a `heif` feature: test-corpus enables it so the HEIF corpus tests run.
-const HEIF_CRATES: &[&str] = &["photocraft-codecs", "photocraft-io"];
+const HEIF_CRATES: &[&str] = &["photocraft-io"];
 
 /// Paths whose changes make `test-corpus --changed` run (the file-format and rendering crates,
 /// and the engine's `.atn` import and export).
-const CRITICAL: &[&str] = &[
-    "crates/psd/",
-    "crates/io/",
-    "crates/codecs/",
-    "crates/heif/",
-    "crates/compose/",
-    "crates/gpu/",
-    "crates/text/",
-    "crates/format/",
-    "crates/affinity/",
-    "crates/raw/",
-    "crates/engine/src/atn_cmds",
-];
+const CRITICAL: &[&str] = &["crates/io/", "crates/compose/", "crates/gpu/", "crates/text/", "crates/format/", "crates/raw/", "crates/engine/src/atn_cmds"];
 /// `cargo xtask corpus [--all | --pngsuite | --download | --psd | --psd-tools | --heif | --exr | --pixls | --affinity | --atn | --photoshop [--local] | --gimp [--local]] [--update-manifest]`
 pub fn cmd(args: &[&str]) -> Result<(), String> {
     let update = args.contains(&"--update-manifest");
@@ -386,7 +374,20 @@ fn fetch_pngsuite() -> Result<(), String> {
         PNGSUITE_MANIFEST,
         |archive| {
             let mut curl = Command::new("curl");
-            curl.args(["-fsSL", "--retry", "3", "--max-filesize", &PNGSUITE_MAX_ARCHIVE_BYTES.to_string(), "-A", USER_AGENT, "-o", "-", PNGSUITE_URL]);
+            curl.args([
+                "-fsSL",
+                "--proto-redir",
+                "=https",
+                "--retry",
+                "3",
+                "--max-filesize",
+                &PNGSUITE_MAX_ARCHIVE_BYTES.to_string(),
+                "-A",
+                USER_AGENT,
+                "-o",
+                "-",
+                PNGSUITE_URL,
+            ]);
             download_pngsuite(curl, archive)
         },
         |archive, files| {

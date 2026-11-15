@@ -312,6 +312,23 @@ fn reapplying_unchanged_live_rectangle_keeps_nonuniformly_scaled_corners() {
     }
 }
 
+/// #13442 review: a component added with `addTo` takes `op` on its first subpath; its joined
+/// subpaths (holes) stay joined instead of turning into components of their own.
+#[test]
+fn shape_add_to_keeps_joined_subpaths() {
+    use photocraft_doc::vector::{Path, PathOp, Subpath};
+    let mut s = session(100, 100, 8);
+    let id = s.execute("shape.create", json!({"kind": "rect", "rect": [0, 0, 40, 40]})).unwrap()["layer"].as_u64().unwrap();
+    let ring = Path::new(vec![
+        Subpath::polygon(&[(50.0, 50.0), (90.0, 50.0), (90.0, 90.0), (50.0, 90.0)]),
+        Subpath::polygon(&[(60.0, 60.0), (60.0, 80.0), (80.0, 80.0), (80.0, 60.0)]).with_op(PathOp::Join),
+    ]);
+    let path = crate::vector_cmds::path_json(&ring);
+    s.execute("shape.create", json!({"kind": "path", "path": path, "addTo": id, "op": "subtract"})).unwrap();
+    let ops: Vec<PathOp> = shape(&s, id).path.subpaths.iter().map(|sp| sp.op).collect();
+    assert_eq!(ops, [PathOp::Combine, PathOp::Subtract, PathOp::Join]);
+}
+
 #[test]
 fn shape_add_to_with_path_ops() {
     let mut s = session(100, 100, 8);
@@ -404,6 +421,114 @@ fn path_to_selection_matches_analytic_shape() {
 }
 
 #[test]
+fn path_to_shape_makes_a_shape_layer_from_the_work_path_in_one_step() {
+    let mut s = session(80, 80, 8);
+    let square = json!({"subpaths": [{"knots": [[10, 10], [50, 10], [50, 50], [10, 50]]}]});
+    s.execute("path.set", json!({"path": square})).unwrap();
+    let history = s.active().unwrap().history.past_len();
+    let info = s.execute("path.toShape", json!({"fill": "#ff0000"})).unwrap();
+    let id = LayerId(info["layer"].as_u64().unwrap());
+    let d = doc(&s);
+    let LayerContent::Shape(sh) = &d.layer(id).unwrap().content else { panic!("not a shape layer") };
+    assert_eq!(sh.path.subpaths[0].knots.len(), 4);
+    assert_eq!(sh.fill, Some(Fill::Solid(Color::rgba(1.0, 0.0, 0.0, 1.0))));
+    // The Work Path became the shape's path.
+    assert!(d.work_path.is_none());
+    assert_eq!(s.active().unwrap().active_layer, Some(id));
+    assert_eq!(s.active().unwrap().history.past_len(), history + 1);
+    s.undo();
+    assert!(doc(&s).layer(id).is_none());
+    assert!(doc(&s).work_path.is_some());
+}
+
+#[test]
+fn path_to_shape_keeps_a_saved_path() {
+    let mut s = session(80, 80, 8);
+    let tri = json!({"subpaths": [{"knots": [[10, 10], [50, 10], [30, 50]]}]});
+    s.execute("path.set", json!({"name": "Tri", "path": tri})).unwrap();
+    let info = s.execute("path.toShape", json!({"name": "Tri", "layerName": "Roof"})).unwrap();
+    assert_eq!(info["name"], "Roof");
+    assert_eq!(doc(&s).paths[0].name, "Tri");
+}
+
+#[test]
+fn path_to_shape_rejects_bad_input_without_changing_history() {
+    let mut s = session(80, 80, 8);
+    assert!(s.execute("path.toShape", json!({})).is_err(), "no path");
+    s.execute("path.set", json!({"path": {"subpaths": [{"knots": [[12, 12], [60, 12], [60, 60]]}]}})).unwrap();
+    let before = doc(&s).clone();
+    let history = s.active().unwrap().history.past_len();
+    for p in [
+        json!({"name": "missing"}),
+        json!({"name": 42}),
+        json!({"name": ["work"]}),
+        json!({"fill": "not a colour"}),
+        json!({"fill": 42}),
+        json!({"stroke": {"width": -1}}),
+        json!({"stroke": {"width": 1e100}}),
+        json!({"stroke": true}),
+    ] {
+        assert!(s.execute("path.toShape", p.clone()).is_err(), "accepted {p}");
+        assert_eq!(*doc(&s), before, "{p} modified the document");
+        assert_eq!(s.active().unwrap().history.past_len(), history, "{p} changed history");
+    }
+}
+
+/// With no Work Path, `path.toShape` doesn't take the active shape layer's path: that would only
+/// duplicate the shape.
+#[test]
+fn path_to_shape_without_a_work_path_does_not_copy_the_active_shape() {
+    let mut s = session(80, 80, 8);
+    s.execute("shape.create", json!({"rect": [10, 10, 30, 30]})).unwrap();
+    let layers = doc(&s).layers.len();
+    for p in [json!({}), json!({"name": "work"})] {
+        assert!(s.execute("path.toShape", p.clone()).is_err(), "{p} made a shape");
+    }
+    assert_eq!(doc(&s).layers.len(), layers);
+}
+
+/// An inline `path` (a Pen path still being drawn) makes the shape and leaves the Work Path alone,
+/// unless it was drawn into the Work Path (`consumeWorkPath`).
+#[test]
+fn path_to_shape_takes_an_inline_path() {
+    let mut s = session(80, 80, 8);
+    s.execute("path.set", json!({"path": {"subpaths": [{"knots": [[12, 12], [60, 12], [60, 60]]}]}})).unwrap();
+    let drawn = json!({"subpaths": [{"knots": [[5, 5], [30, 5], [30, 30]]}]});
+    let history = s.active().unwrap().history.past_len();
+    let info = s.execute("path.toShape", json!({"path": drawn})).unwrap();
+    let id = LayerId(info["layer"].as_u64().unwrap());
+    let LayerContent::Shape(sh) = &doc(&s).layer(id).unwrap().content else { panic!("not a shape layer") };
+    assert_eq!(sh.path.subpaths[0].knots[0].anchor, Point::new(5.0, 5.0));
+    assert!(doc(&s).work_path.is_some(), "the Work Path stays");
+    assert_eq!(s.active().unwrap().history.past_len(), history + 1);
+    s.execute("path.toShape", json!({"path": drawn, "consumeWorkPath": true})).unwrap();
+    assert!(doc(&s).work_path.is_none());
+}
+
+#[test]
+fn path_to_shape_rejects_paths_and_names_it_cannot_use() {
+    let mut s = session(80, 80, 8);
+    s.execute("path.set", json!({"path": {"subpaths": [{"knots": [[12, 12], [60, 12], [60, 60]]}]}})).unwrap();
+    let before = doc(&s).clone();
+    let drawn = json!({"subpaths": [{"knots": [[5, 5], [30, 5], [30, 30]]}]});
+    for p in [
+        json!({"path": {"subpaths": [{"knots": [[5, 5]]}]}}),
+        json!({"path": {"subpaths": []}}),
+        json!({"path": 42}),
+        json!({"path": drawn, "name": "work"}),
+        json!({"path": drawn, "consumeWorkPath": "yes"}),
+        json!({"layerName": 5}),
+        json!({"layerName": ""}),
+        json!({"layerName": "   "}),
+    ] {
+        assert!(s.execute("path.toShape", p.clone()).is_err(), "accepted {p}");
+        assert_eq!(*doc(&s), before, "{p} modified the document");
+    }
+    s.execute("path.set", json!({"path": {"subpaths": [{"knots": [[12, 12]]}]}})).unwrap();
+    assert!(s.execute("path.toShape", json!({})).is_err(), "a one-anchor Work Path");
+}
+
+#[test]
 fn path_make_selection_rejects_invalid_options_without_changing_history() {
     let mut s = session(80, 80, 8);
     s.execute("path.set", json!({"path": {"subpaths": [{"knots": [[12, 12], [60, 12], [60, 60], [12, 60]]}]}})).unwrap();
@@ -458,6 +583,26 @@ fn open_pen_paths_make_the_same_selection_as_closed_paths() {
         assert_eq!(at(60, 40), if matches!(mode, "add" | "subtract") { 1.0 } else { 0.0 }, "{mode}: previous-only");
         assert_eq!(at(40, 40), if mode == "subtract" { 0.0 } else { 1.0 }, "{mode}: overlap");
     }
+}
+
+/// ⇧⌘↩, ⌥⌘↩ and ⇧⌥⌘↩'s commands are Make Selection from Path with their mode (#7726), whatever
+/// `mode` the params ask for.
+#[test]
+fn the_fixed_mode_path_commands_combine_as_their_mode() {
+    let mut s = session(80, 80, 8);
+    let square = |x: f64| path_json(&vector::shapes::rect(x, 20.0, 30.0, 30.0));
+    s.execute("path.set", json!({"name": "Sq", "path": square(30.0)})).unwrap();
+    for (id, mode) in [("path.addToSelection", "add"), ("path.subtractFromSelection", "subtract"), ("path.intersectWithSelection", "intersect")] {
+        s.execute("select.rect", json!({"x": 10, "y": 20, "width": 30, "height": 30, "antiAlias": false})).unwrap();
+        s.execute("path.toSelection", json!({"name": "Sq", "mode": mode, "antiAlias": false})).unwrap();
+        let want = selection_mask(&s);
+        s.execute("select.rect", json!({"x": 10, "y": 20, "width": 30, "height": 30, "antiAlias": false})).unwrap();
+        s.execute(id, json!({"name": "Sq", "mode": "replace", "antiAlias": false})).unwrap();
+        assert_eq!(selection_mask(&s), want, "{id} is mode {mode}");
+    }
+    // Intersecting keeps only the 10 px both squares cover.
+    let mask = selection_mask(&s);
+    assert_eq!(mask.iter().filter(|v| **v > 0.5).count(), 10 * 30);
 }
 
 #[test]
@@ -545,6 +690,9 @@ fn stroke_path_simulate_pressure_tapers_both_ends() {
     let coverage = |simulate: bool, x: i32| -> usize {
         let mut s = session(200, 60, 8);
         s.execute("layer.new.layer", json!({})).unwrap();
+        // Simulate Pressure tapers a brush that follows pen pressure; the default brush stopped
+        // doing that on its own (#11809).
+        s.execute("tools.setBrush", json!({"brush": {"pressureSize": true}})).unwrap();
         s.execute("path.set", json!({"path": {"subpaths": [{"closed": false, "knots": [[20, 30], [180, 30]]}]}})).unwrap();
         let p = json!({"tool": "brush", "size": 20, "hardness": 1.0, "color": "#000000", "opacity": 100, "simulatePressure": simulate});
         s.execute("path.stroke", p).unwrap();
@@ -1316,7 +1464,7 @@ fn arrowhead_dimensions_reject_invalid_values_without_mutation() {
     for (key, invalids) in [
         ("arrowWidth", [json!("52"), json!(null), json!([]), json!(0), json!(4097)]),
         ("arrowLength", [json!("50"), json!(null), json!([]), json!(0), json!(4097)]),
-        ("arrowConcavity", [json!("0"), json!(null), json!([]), json!(-1), json!(101)]),
+        ("arrowConcavity", [json!("0"), json!(null), json!([]), json!(-51), json!(51)]),
     ] {
         for invalid in invalids {
             let mut create = json!({
@@ -1336,6 +1484,35 @@ fn arrowhead_dimensions_reject_invalid_values_without_mutation() {
             assert_eq!(s.active().unwrap().history.past_len(), original_history, "{key} edit changed history");
         }
     }
+}
+
+/// Concavity takes -50..50 % (#13258); a shape saved with the old 0..100 range still edits.
+#[test]
+fn arrow_concavity_takes_minus_fifty_to_fifty() {
+    let mut s = session(160, 120, 8);
+    let concavity = |s: &Session, id: u64| match s.active().unwrap().doc.layer(LayerId(id)).map(|l| &l.content) {
+        Some(LayerContent::Shape(sh)) => match sh.live {
+            Some(LiveShape::ArrowLine { concavity, .. }) => concavity,
+            _ => panic!("expected a live arrow"),
+        },
+        _ => panic!("expected a shape layer"),
+    };
+    let created = s.execute("shape.create", json!({"kind": "line", "from": [10, 20], "to": [120, 20], "arrowEnd": true, "arrowConcavity": -50})).unwrap();
+    let id = created["layer"].as_u64().unwrap();
+    assert_eq!(concavity(&s, id), -50.0);
+    s.execute("shape.edit", json!({"layer": id, "arrowConcavity": 50})).unwrap();
+    assert_eq!(concavity(&s, id), 50.0);
+    // Whole percents only, as the fields take them.
+    s.execute("shape.edit", json!({"layer": id, "arrowConcavity": -20.6})).unwrap();
+    assert_eq!(concavity(&s, id), -21.0);
+
+    if let Some(LayerContent::Shape(sh)) = std::sync::Arc::make_mut(&mut s.active_mut().unwrap().doc).layer_mut(LayerId(id)).map(|l| &mut l.content)
+        && let Some(LiveShape::ArrowLine { concavity, .. }) = &mut sh.live
+    {
+        *concavity = 80.0;
+    }
+    s.execute("shape.edit", json!({"layer": id, "arrowWidth": 12})).unwrap();
+    assert_eq!(concavity(&s, id), 50.0, "an old 0..100 value is clamped, not refused");
 }
 
 #[test]

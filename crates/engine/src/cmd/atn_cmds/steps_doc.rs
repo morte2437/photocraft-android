@@ -27,14 +27,21 @@ pub(super) fn place_to(id: &str, p: &Value) -> Option<Descriptor> {
 
 /// `open`: File › Open of a recorded path.
 pub(super) fn open_from(d: &Descriptor) -> Mapped {
+    if d.items.len() != 1 || !d.class_id.is("null") || !d.name.to_string_lossy().is_empty() {
+        return Mapped::Unsupported { harmless: false };
+    }
     match d.get("null").and_then(path_text) {
         Some(path) => step("file.openAs", json!({"path": path})),
         None => Mapped::Unsupported { harmless: false },
     }
 }
 
+/// Export the represented Open path; refuse settings without a supported wire mapping.
 pub(super) fn open_to(_: &str, p: &Value) -> Option<Descriptor> {
-    Some(desc("null").with("null", path_value(jstr(p, "path")?)))
+    if p.as_object()?.len() != 1 {
+        return None;
+    }
+    Some(desc("null").with("null", path_value(jstr(p, "path").filter(|path| !path.is_empty())?)))
 }
 
 fn path_extension(path: &str) -> Option<String> {

@@ -4,7 +4,7 @@ use super::{Outcome, PhotocraftApp, Value, json};
 /// field's value is validated before the first one is applied, so a typo, an unknown field, a
 /// bad value or a bad nested key can't reply with success while nothing — or only half of it —
 /// changed (#412).
-pub const UI_SET_FIELDS: [&str; 45] = [
+pub const UI_SET_FIELDS: [&str; 49] = [
     "updatesOpen",
     "tool",
     "strokeTrace",
@@ -44,7 +44,11 @@ pub const UI_SET_FIELDS: [&str; 45] = [
     "penMode",
     "penPathOp",
     "shapeStroke",
+    "frameShape",
+    "frameSides",
+    "frameTarget",
     "camTransformOnDrop",
+    "moveShowTransform",
     "tileGrid",
     "layerFilter",
     "histogramPanel",
@@ -56,6 +60,10 @@ pub const UI_SET_FIELDS: [&str; 45] = [
 /// feeds in its own frame before replying, so `count` sizes both the input queue and the wait;
 /// the same ceiling as the steps of one batch request.
 pub const MAX_CLICKS: u64 = 256;
+
+/// Largest `ui.click` / `ui.move` coordinate, in screen points either way (#9137). Far beyond any
+/// display, yet small enough that egui's pointer delta between two such points stays finite.
+pub const MAX_SCREEN_POINT: f64 = 1e6;
 
 pub(super) fn ok(v: Value) -> Outcome {
     Outcome::Done(json!({"ok": true, "result": v}))

@@ -73,7 +73,7 @@ fn tab_includes_optional_sizes_and_shift_tab_selects_their_text() {
     assert_eq!((f["columns"].as_u64(), f["rows"].as_u64()), (Some(4), Some(2)));
     assert_eq!(params(f)["width"], 120.0);
     assert_eq!(params(f)["height"], 90.0);
-    assert_eq!(f["gutter"], 12.0);
+    assert_eq!(params(f)["gutter"], 12.0);
     h.key_press_modifiers(egui::Modifiers::SHIFT, egui::Key::Tab);
     h.run_steps(2);
     h.event(egui::Event::Text("3".into()));
@@ -101,7 +101,7 @@ fn tab_skips_disabled_rows_and_margins() {
     let f = &h.state().ui.dialogs.first().unwrap().fields;
     assert_eq!(f["columns"], 6, "Tab wraps after column spacing, skipping disabled row and margin fields");
     assert_eq!(params(f)["width"], 100.0);
-    assert_eq!(f["gutter"], 4.0);
+    assert_eq!(params(f)["gutter"], 4.0);
 }
 
 /// The disabled Number field must not clamp a zero count to 1 and so switch its axis on (#5625).
@@ -173,7 +173,8 @@ fn alt_reset_restores_factory_layout() {
     app.ui.dialog_mut(id).unwrap().fields = fields;
     let f = &app.ui.dialog_mut(id).unwrap().fields;
     assert_eq!(f["columns"], json!(8));
-    assert_eq!(f["gutter"], json!(20));
+    assert_eq!(params(f)["gutter"], 20.0);
+    assert_eq!(f["gutter"], "20 px");
     assert_eq!(f["__preset"], json!("custom"));
     assert!(app.ui.dialogs.iter().any(|d| d.id == id));
 }
@@ -323,4 +324,205 @@ fn preview_cache_tracks_document_revision() {
     assert!(!preview(&app, &app.session.active().unwrap().doc).unwrap().0.vertical.contains(&23.0));
     app.run(COMMAND, json!({"margin":23})).unwrap();
     assert!(preview(&app, &app.session.active().unwrap().doc).unwrap().0.vertical.contains(&23.0));
+}
+
+#[test]
+fn units_can_be_typed_and_convert_on_reopen() {
+    let mut app = app();
+    let id = open(&mut app);
+    let f = {
+        let dialog = app.ui.dialog_mut(id).unwrap();
+        dialog.fields.insert("gutter".into(), json!("1 in"));
+        dialog.fields.insert("margin".into(), json!(["2 cm", "10 mm", "0.5 in", "72 pt"]));
+        dialog.fields.clone()
+    };
+    let p = params_with(Some(&app), &f);
+    assert_eq!(p["gutter"], 72.0);
+    let m = p["margin"].as_array().unwrap();
+    assert!((m[0].as_f64().unwrap() - 2.0 / 2.54 * 72.0).abs() < 1e-3);
+    assert!((m[1].as_f64().unwrap() - 1.0 / 2.54 * 72.0).abs() < 1e-3);
+    assert_eq!(m[2], 36.0);
+    assert_eq!(m[3], 72.0);
+
+    crate::dialogs::confirm(&mut app, id).unwrap();
+
+    app.session.prefs.edit(|p| p.units_and_rulers.rulers = photocraft_engine::prefs::Unit::Inches);
+
+    let reopened = open(&mut app);
+    let rf = &app.ui.dialog_mut(reopened).unwrap().fields;
+    assert_eq!(rf["gutter"], "1 in");
+    assert_eq!(rf["margin"][2], "0.5 in");
+    assert_eq!(rf["margin"][3], "1 in");
+}
+
+#[test]
+fn normalization_appends_the_field_unit_and_ensures_space() {
+    use photocraft_engine::prefs::Unit;
+    let mut app = app();
+    let px = Unit::Pixels;
+    assert_eq!(normalize_field_text("10", &app, true, false, px), Some("10 px".into()));
+    assert_eq!(normalize_field_text("10px", &app, true, false, px), Some("10 px".into()));
+    assert_eq!(normalize_field_text("10cm", &app, true, false, px), Some("10 cm".into()));
+    assert_eq!(normalize_field_text("2in", &app, true, false, px), Some("2 in".into()));
+    assert_eq!(normalize_field_text("5mm", &app, false, false, px), Some("5 mm".into()));
+
+    app.session.prefs.edit(|p| p.units_and_rulers.rulers = Unit::Centimeters);
+    assert_eq!(normalize_field_text("10", &app, true, false, Unit::Centimeters), Some("10 cm".into()));
+    assert_eq!(normalize_field_text("2.5", &app, true, false, Unit::Centimeters), Some("2.5 cm".into()));
+    assert_eq!(normalize_field_text("20px", &app, true, false, Unit::Centimeters), Some("20 px".into()));
+}
+
+/// The reference application keeps three decimals in every unit: a typed "13.5 px" stays, it is
+/// not rounded to whole pixels, and 20 px at 72 ppi opens as "0.706 cm".
+#[test]
+fn fields_keep_three_decimals_in_every_unit() {
+    use photocraft_engine::prefs::Unit;
+    let mut app = app();
+    assert_eq!(normalize_field_text("13.5 px", &app, true, false, Unit::Pixels), Some("13.5 px".into()));
+    assert_eq!(normalize_field_text("5.123456", &app, true, false, Unit::Millimeters), Some("5.123 mm".into()));
+    app.session.prefs.edit(|p| p.units_and_rulers.rulers = Unit::Centimeters);
+    let dpi = f64::from(app.session.active().unwrap().doc.resolution_dpi);
+    assert_eq!(in_ruler_unit(&app, dpi * 0.70556 / 2.54, true), "0.706 cm");
+}
+
+/// After "2 mm", a bare number typed into the field is in millimetres, not the ruler unit.
+#[test]
+fn a_bare_number_takes_the_unit_the_field_showed() {
+    let mut app = app();
+    let id = open(&mut app);
+    let f = &mut app.ui.dialog_mut(id).unwrap().fields;
+    f.insert("columns".into(), json!(2));
+    f.insert("__rowsEnabled".into(), json!(false));
+    f.insert("__marginEnabled".into(), json!(false));
+    f.insert("gutter".into(), json!("2 mm"));
+    let mut h = harness(app);
+    h.run_steps(3);
+    // Number, Width, then Spacing (gutter).
+    for _ in 0..3 {
+        h.key_press(egui::Key::Tab);
+        h.run_steps(2);
+    }
+    h.event(egui::Event::Text("5".into()));
+    h.run_steps(2);
+    h.key_press(egui::Key::Tab);
+    h.run_steps(2);
+    assert_eq!(h.state().ui.dialogs.first().unwrap().fields["gutter"], "5 mm");
+}
+
+/// Tabbing past fields without typing keeps a named preset: an empty Width stays automatic.
+#[test]
+fn tabbing_through_untouched_fields_keeps_the_preset() {
+    let mut app = app();
+    let id = open(&mut app);
+    let f = &mut app.ui.dialog_mut(id).unwrap().fields;
+    f.insert("__preset".into(), json!("eight"));
+    f.insert("columns".into(), json!(8));
+    f.insert("rows".into(), json!(0));
+    f.insert("__rowsEnabled".into(), json!(false));
+    f.insert("__marginEnabled".into(), json!(false));
+    f.insert("width".into(), Value::Null);
+    f.insert("gutter".into(), json!(20));
+    let mut h = harness(app);
+    h.run_steps(3);
+    // Number, Width, Spacing, then back to Number.
+    for _ in 0..4 {
+        h.key_press(egui::Key::Tab);
+        h.run_steps(2);
+    }
+    let f = &h.state().ui.dialogs.first().unwrap().fields;
+    assert_eq!(f["__preset"], "eight");
+    assert_eq!(f["width"], Value::Null);
+}
+
+fn gutter_dialog(gutter: &str) -> egui_kittest::Harness<'static, PhotocraftApp> {
+    let mut app = app();
+    let id = open(&mut app);
+    let f = &mut app.ui.dialog_mut(id).unwrap().fields;
+    f.insert("columns".into(), json!(2));
+    f.insert("__rowsEnabled".into(), json!(false));
+    f.insert("__marginEnabled".into(), json!(false));
+    f.insert("gutter".into(), json!(gutter));
+    let mut h = harness(app);
+    h.run_steps(3);
+    h
+}
+
+/// Tab from the dialog's start to Spacing (gutter): Number, Width, then Spacing.
+fn tab_to_gutter(h: &mut egui_kittest::Harness<'static, PhotocraftApp>) {
+    for _ in 0..3 {
+        h.key_press(egui::Key::Tab);
+        h.run_steps(2);
+    }
+}
+
+/// Enter straight after typing a bare number applies it in the unit the field showed: "5" typed
+/// over "2 mm" is 5 mm, not 5 px.
+#[test]
+fn enter_after_a_bare_number_applies_the_unit_the_field_showed() {
+    let mut h = gutter_dialog("2 mm");
+    tab_to_gutter(&mut h);
+    h.event(egui::Event::Text("5".into()));
+    h.run_steps(2);
+    h.key_press(egui::Key::Enter);
+    h.run_steps(3);
+    let app = h.state();
+    assert!(app.ui.dialogs.is_empty(), "Enter applies the layout");
+    // Two automatic columns: the gutter is the gap between the second and third guide.
+    let v = &app.session.active().unwrap().doc.guides.vertical;
+    let gutter = v[2] - v[1];
+    assert!((gutter - 5.0 / 25.4 * 72.0).abs() < 1e-2, "gutter {gutter} px in {v:?}");
+}
+
+/// A unitless length set over automation is remembered as the length it applied, so a later
+/// ruler unit change does not reinterpret it.
+#[test]
+fn remembered_lengths_keep_their_size_when_the_ruler_unit_changes() {
+    use photocraft_engine::prefs::Unit;
+    let mut app = app();
+    let id = open(&mut app);
+    let f = &mut app.ui.dialog_mut(id).unwrap().fields;
+    f.insert("gutter".into(), json!("5"));
+    f.insert("margin".into(), json!(["5", "5", "5", "5"]));
+    crate::dialogs::confirm(&mut app, id).unwrap();
+    app.session.prefs.edit(|p| p.units_and_rulers.rulers = Unit::Millimeters);
+    let reopened = open(&mut app);
+    let rf = &app.ui.dialog_mut(reopened).unwrap().fields;
+    assert_eq!(rf["gutter"], "1.764 mm");
+    assert_eq!(rf["margin"][0], "1.764 mm");
+}
+
+/// Tab selects the field it reaches even while a mouse button is held, so typing replaces the
+/// value instead of appending to it.
+#[test]
+fn tab_selects_the_field_while_a_mouse_button_is_held() {
+    let mut h = gutter_dialog("2 mm");
+    let at = egui_kittest::kittest::Queryable::get_all_by_label(&h, "Number").next().unwrap().rect().center();
+    h.event(egui::Event::PointerButton { pos: at, button: egui::PointerButton::Secondary, pressed: true, modifiers: egui::Modifiers::NONE });
+    h.run_steps(2);
+    tab_to_gutter(&mut h);
+    h.event(egui::Event::Text("5".into()));
+    h.run_steps(2);
+    assert_eq!(h.state().ui.dialogs.first().unwrap().fields["gutter"], "5");
+}
+
+/// Percent is of each selected artboard, not of the document: 50% of a 140 x 40 board is a
+/// 70 px column, centred in it; the field reopens still in percent.
+#[test]
+fn percent_is_of_the_selected_artboard_and_stays_percent() {
+    let mut app = app();
+    app.run("layer.new.artboard", json!({"rect": [200, 100, 140, 40]})).unwrap();
+    let id = open(&mut app);
+    let f = &mut app.ui.dialog_mut(id).unwrap().fields;
+    f.insert("target".into(), json!("selectedArtboards"));
+    f.insert("columns".into(), json!(1));
+    f.insert("width".into(), json!("50 %"));
+    f.insert("centerColumns".into(), json!(true));
+    f.insert("clearExisting".into(), json!(true));
+    f.insert("__rowsEnabled".into(), json!(false));
+    f.insert("__marginEnabled".into(), json!(false));
+    crate::dialogs::confirm(&mut app, id).unwrap();
+    let g = &app.session.active().unwrap().doc.guides;
+    assert!(g.vertical.contains(&235.0) && g.vertical.contains(&305.0), "{:?}", g.vertical);
+    let reopened = open(&mut app);
+    assert_eq!(app.ui.dialog_mut(reopened).unwrap().fields["width"], "50 %");
 }

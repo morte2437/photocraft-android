@@ -1,4 +1,4 @@
-//! Large-file fixtures (#216, #5107), generated at test time by `photocraft_psd::fixtures`: a 20 MP
+//! Large-file fixtures (#216, #5107), generated at test time by `craft_psd::fixtures`: a 20 MP
 //! layered PSD, a 150-layer layout, a PSD just under Photoshop's 2 GB cap and a 4.4 GB PSB. Each
 //! is opened through `photocraft_io`, checked (size, layers, masks, effects, merged pixels), saved
 //! again and re-opened.
@@ -9,10 +9,10 @@
 
 use std::path::PathBuf;
 
+use craft_psd::Version;
+use craft_psd::fixtures::{Grid, LAYERED_20MP, LAYOUT_150, PSB_4GB, PSD_2GB, Streamed};
 use photocraft_doc::{Document, LayerContent};
 use photocraft_geom::Rect;
-use photocraft_psd::Version;
-use photocraft_psd::fixtures::{Grid, LAYERED_20MP, LAYOUT_150, PSB_4GB, PSD_2GB, Streamed};
 
 /// Raster layers, groups, masked layers, layers with effects and hidden layers in `doc`.
 fn census(doc: &Document) -> [usize; 5] {
@@ -137,7 +137,7 @@ fn streamed_roundtrip(case: &Streamed) {
     drop(res);
     // Version 2 = PSB: a re-save past 2 GB must switch to PSB; a smaller one stays PSD.
     let psb = out.bytes.get(4..6) == Some(&[0, 2]);
-    assert!(psb || (case.version == Version::Psd && (out.bytes.len() as u64) < photocraft_psd::fixtures::PSD_MAX_FILE_BYTES), "{}", case.name);
+    assert!(psb || (case.version == Version::Psd && (out.bytes.len() as u64) < craft_psd::fixtures::PSD_MAX_FILE_BYTES), "{}", case.name);
     eprintln!(
         "{}: saved {:.2} GB ({}) in {:.1} s, warnings {:?}",
         case.name,

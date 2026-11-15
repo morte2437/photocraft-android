@@ -614,7 +614,7 @@ impl Solver<'_> {
         // `FUSE_BAND` of a seam are solved for.
         const FUSE_BAND: usize = 16;
         let seams: Vec<bool> = (0..w * h).map(|i| div[i * ch..(i + 1) * ch].iter().any(|v| *v != 0.0)).collect();
-        let band = crate::remove::dilate(w, h, &seams, FUSE_BAND);
+        let band = crate::square_dilate::dilate_square(w, h, &seams, FUSE_BAND);
         let halves: [Vec<usize>; 2] = [0, 1].map(|colour| copied.iter().map(|(p, _, _)| *p).filter(|&p| band[p] && (p % w + p / w) % 2 == colour).collect());
         let mut delta = vec![0.0f32; w * h * ch];
         let mut next: Vec<f32> = Vec::new();
@@ -846,15 +846,7 @@ pub fn complete_with(w: usize, h: usize, ch: usize, img: &[f32], hole: &[bool], 
             return Ok(None);
         }
         let ri = r as i32;
-        let mut targets = vec![false; lw * lh];
-        for (i, _) in level.hole.iter().enumerate().filter(|(_, m)| **m) {
-            let (x, y) = ((i % lw) as i32, (i / lw) as i32);
-            for ty in (y - ri).max(0)..=(y + ri).min(lh as i32 - 1) {
-                for tx in (x - ri).max(0)..=(x + ri).min(lw as i32 - 1) {
-                    targets[ty as usize * lw + tx as usize] = true;
-                }
-            }
-        }
+        let targets = crate::square_dilate::dilate_square(lw, lh, &level.hole, r);
         let mut s = Solver { w: lw, h: lh, cha, ch, r: ri, img: level.img.clone(), hole: &level.hole, valid, valid_list, targets, ctl };
         let mut nnf = vec![(0i32, 0i32); lw * lh];
         let mut cost = vec![f32::INFINITY; lw * lh];
@@ -1011,5 +1003,21 @@ mod tests {
         let cancel = || true;
         let progress = |_: f32| {};
         assert_eq!(complete_with(w, h, 1, &img, &hole, &Params::default(), &Interrupt::new(&cancel, &progress)), Err(Cancelled));
+    }
+
+    /// Every cancellation check point stops the completion: moving or dropping one is a change.
+    #[test]
+    fn cancelling_at_each_early_check_is_an_error() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let (w, h) = (64, 64);
+        let img: Vec<f32> = (0..w * h).map(noise).collect();
+        let hole: Vec<bool> = (0..w * h).map(|i| (20..40).contains(&(i % w)) && (20..40).contains(&(i / w))).collect();
+        for k in 1..=6 {
+            let calls = AtomicUsize::new(0);
+            let cancel = || calls.fetch_add(1, Ordering::Relaxed) + 1 >= k;
+            let progress = |_: f32| {};
+            let got = complete_with(w, h, 1, &img, &hole, &Params::default(), &Interrupt::new(&cancel, &progress));
+            assert_eq!(got, Err(Cancelled), "cancelling at check {k}");
+        }
     }
 }

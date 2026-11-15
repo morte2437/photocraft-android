@@ -194,6 +194,22 @@ fn default_hue_ranges() -> [HueRange; 6] {
     HueRange::defaults()
 }
 
+/// A gradient as Photoshop's Gradient Editor holds it (#8351): a few colour stops, a midpoint
+/// on each segment, Smoothness and the interpolation method, which renderers bake into dense
+/// linear stops.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct GradientSource {
+    /// Colour stops (location 0..1, sRGB), in location order.
+    pub stops: Vec<(f32, [f32; 3])>,
+    /// Where each segment's halfway colour sits, as a fraction of it (0.5 = the middle): one per
+    /// segment, `stops.len() - 1`.
+    pub midpoints: Vec<f32>,
+    /// Photoshop's Smoothness, 0..1.
+    pub smoothness: f32,
+    /// `classic`, `perceptual`, `linear` or `smooth`.
+    pub method: String,
+}
+
 /// Photoshop adjustment layers (Layer → New Adjustment Layer).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum Adjustment {
@@ -292,11 +308,17 @@ pub enum Adjustment {
         level: f32,
     },
     GradientMap {
+        /// The gradient as rendered: linear sRGB stops.
         stops: Vec<(f32, [f32; 3])>,
         reverse: bool,
         /// Ordered dither of ±½ an 8-bit step to hide banding.
         #[serde(default)]
         dither: bool,
+        /// The gradient as Photoshop's Gradient Editor holds it, when the map has one (#8351):
+        /// `stops` is it baked for rendering. The editor shows these stops, and a PSD save writes
+        /// them, not the dense baked ones.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        source: Option<GradientSource>,
     },
     /// Per range (reds, yellows, greens, cyans, blues, magentas, whites, neutrals, blacks) the
     /// cyan, magenta, yellow and black change in percent (-100..=100), as in Photoshop.

@@ -3,12 +3,13 @@
 //! [`FrameStages`] is one frame's record. Each stage has one writer: the raw input hook starts
 //! the frame, `App::run` adds commands, the GPU canvas path adds damage tracking and budgeting,
 //! [`crate::gpu_canvas::Perf::record`] adds composites and uploads, and the canvas adds stroke
-//! rendering. `App::ui` closes it ([`SlowFrames::finish`]). A frame over [`SLOW_FRAME_MS`] goes
+//! rendering. `App::ui` closes it on the frame's last egui pass ([`SlowFrames::finish`]). A frame over [`SLOW_FRAME_MS`] goes
 //! into [`SlowFrames`], the last [`SLOW_FRAMES`] of them, which the control channel's `perf`
 //! output lists as `slowFrames`; one `info` log line per second names them. The stroke trace
 //! (`stroke_trace`) reads the same record, so the app times a frame in one place.
 //!
-//! On the web `now_ms()` is 0, so no frame is ever slow and the ring stays empty.
+//! The web build does the same: `now_ms()` is `performance.now()` there, and the log line goes to
+//! the browser console.
 
 use std::collections::VecDeque;
 
@@ -51,12 +52,16 @@ pub struct FrameStages {
     pub refresh_px: u64,
     /// "gpu" or "cpu": who drew the canvas.
     pub path: &'static str,
-    /// Building the UI (`App::ui`), the canvas refresh included.
+    /// Building the UI (`App::ui`, every egui pass of the frame), the canvas refresh included.
     #[serde(skip)]
     pub ui_ms: f64,
     /// Rendering stroke points (the stroke trace's `stroke`).
     #[serde(skip)]
     pub stroke_ms: f64,
+    /// A stroke was live in some egui pass of the frame, even one a later pass cancelled (a tool
+    /// change) and whose dab rendered no stroke points.
+    #[serde(skip)]
+    pub stroking: bool,
     /// Pointer moves the frame delivered.
     #[serde(skip)]
     pub moves: usize,
@@ -66,6 +71,9 @@ pub struct FrameStages {
     /// The raw input hook ran for this frame.
     #[serde(skip)]
     started: bool,
+    /// The UI build started (a later egui pass of the frame doesn't start it again).
+    #[serde(skip)]
+    ui_started: bool,
 }
 
 impl FrameStages {
@@ -77,7 +85,12 @@ impl FrameStages {
     }
 
     /// The UI build starts at `now`; `cpu_prev` is eframe's CPU time for the previous frame, in s.
+    /// A later egui pass of the same frame keeps the first pass's input time.
     pub fn ui_start(&mut self, now: f64, cpu_prev: Option<f32>) {
+        if self.ui_started {
+            return;
+        }
+        self.ui_started = true;
         if !self.started {
             self.start(now, 0);
         }
@@ -294,6 +307,80 @@ mod app_tests {
     use serde_json::json;
 
     use crate::PhotocraftApp;
+
+    /// One frame of `passes` egui passes of `pass_ms` each, through the app's hooks: the raw input
+    /// hook starts the record once, and each pass's UI build ends in `finish_frame`. Every pass but
+    /// the last asks egui for another, as a sizing pass does. `stroke`: each pass renders stroke
+    /// points for 1 ms.
+    fn frame(app: &mut PhotocraftApp, ctx: &egui::Context, passes: usize, pass_ms: u64, stroke: bool) {
+        app.perf.stage.start(crate::gpu_canvas::now_ms(), 1);
+        ctx.run_ui(egui::RawInput::default(), |ui| {
+            let ctx = ui.ctx().clone();
+            let t0 = crate::gpu_canvas::now_ms();
+            app.perf.stage.ui_start(t0, None);
+            std::thread::sleep(std::time::Duration::from_millis(pass_ms));
+            if stroke {
+                app.perf.stage.stroke_ms += 1.0;
+            }
+            if ctx.current_pass_index() + 1 < passes {
+                ctx.request_discard("a sizing pass");
+            }
+            app.finish_frame(&ctx, crate::gpu_canvas::now_ms() - t0);
+        })
+        .drop_without_applying_deltas();
+    }
+
+    #[test]
+    fn two_30_ms_passes_of_one_frame_are_one_60_ms_slow_frame() {
+        let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
+        let ctx = egui::Context::default();
+        frame(&mut app, &ctx, 2, 30, false);
+        let frames: Vec<_> = app.slow_frames.frames().cloned().collect();
+        assert_eq!(frames.len(), 1, "{frames:?}");
+        let f = &frames[0];
+        assert!(f.frame_ms >= 60.0 && f.ui_ms >= 60.0, "both passes: {f:?}");
+        assert!(f.input_ms < 30.0, "the first pass isn't the second's input: {f:?}");
+        assert_eq!(app.perf.stage, super::FrameStages::default(), "the last pass closed the record");
+    }
+
+    #[test]
+    fn the_stroke_trace_gets_one_row_per_frame_not_per_pass() {
+        let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
+        app.stroke_trace.output = crate::stroke_trace::Output::Stderr;
+        let ctx = egui::Context::default();
+        for _ in 0..3 {
+            frame(&mut app, &ctx, 2, 1, true);
+        }
+        frame(&mut app, &ctx, 2, 1, false);
+        let s = app.stroke_trace.last.clone().expect("the stroke ended");
+        assert_eq!(s.frames, 3, "{s:?}");
+        assert_eq!(s.moves, [1.0, 1.0], "each row has its frame's moves: {s:?}");
+        assert_eq!(s.stroke, [2.0, 2.0], "both passes' stroke rendering: {s:?}");
+    }
+
+    #[test]
+    fn a_stroke_live_only_in_a_discarded_pass_still_gets_its_frame_traced() {
+        let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
+        app.stroke_trace.output = crate::stroke_trace::Output::Stderr;
+        let ctx = egui::Context::default();
+        app.perf.stage.start(crate::gpu_canvas::now_ms(), 1);
+        ctx.run_ui(egui::RawInput::default(), |ui| {
+            let ctx = ui.ctx().clone();
+            app.perf.stage.ui_start(crate::gpu_canvas::now_ms(), None);
+            if ctx.current_pass_index() == 0 {
+                // The first pass's live stroke (its `finish_frame` saw `live_stroke`), which the
+                // last pass cancels before rendering any stroke points.
+                app.perf.stage.stroking = true;
+                ctx.request_discard("a sizing pass");
+            }
+            app.finish_frame(&ctx, 1.0);
+        })
+        .drop_without_applying_deltas();
+        assert!(app.live_stroke.is_none() && app.stroke_trace.last.is_none());
+        frame(&mut app, &ctx, 2, 1, false);
+        let s = app.stroke_trace.last.clone().expect("the stroke ended");
+        assert_eq!(s.frames, 1, "the frame whose stroke the last pass cancelled: {s:?}");
+    }
 
     #[test]
     fn an_app_frame_with_a_full_refresh_records_its_stages() {

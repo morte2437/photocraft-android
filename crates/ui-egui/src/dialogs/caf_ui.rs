@@ -56,8 +56,8 @@ const BAR_H: f32 = 36.0;
 const PANEL_W: f32 = 300.0;
 const PREVIEW_W: f32 = 380.0;
 const UNDO_LIMIT: usize = 100;
-/// Outlines with more edges than this are drawn at the proxy's resolution.
-const MAX_OUTLINE_EDGES: usize = 200_000;
+/// Outlines with more runs than this are drawn as the fill area's bounding box.
+const MAX_OUTLINE_SEGMENTS: usize = 200_000;
 /// Photoshop's overlay colour as it shows (a 50 % tint of grey 200 reads 171, 204, 153).
 const OVERLAY_COLOR: [u8; 3] = [142, 208, 106];
 /// The `prefs.dialogs` key under which the settings are remembered.
@@ -237,8 +237,8 @@ pub struct CafWorkspace {
     /// The lasso polygon being drawn and its selection mode.
     lasso: Option<(usize, Vec<[f64; 2]>)>,
     base: Base,
-    /// Fill-area outline edges (document px), or `None` when there are too many.
-    outline: Option<Vec<[[f32; 2]; 2]>>,
+    /// The fill area's outline (document px), or `None` when there are too many runs.
+    outline: Option<Vec<crate::outline::Segment>>,
     /// Document px per proxy px, and the proxy size.
     k: usize,
     pw: usize,

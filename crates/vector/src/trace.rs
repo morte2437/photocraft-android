@@ -10,8 +10,10 @@
 //! Contours are emitted as subpaths: the first combines, the rest *exclude*, which is the
 //! even-odd area for nested, non-crossing contours regardless of their orientation.
 //!
-//! [`fit_trace`] runs steps 2 and 3 on a freehand pointer trace (the Freeform Pen), open or
-//! closed, with a corner window that grows with the tolerance.
+//! [`fit_trace`] fits a freehand pointer trace (the Freeform Pen), open or closed, the way the
+//! reference application places its anchors: corners only at turns sharper than 80°, then each
+//! run segment by segment, every segment as long as one cubic follows the trace, ending on a
+//! turning point in x or y (a wave's peak, a circle's top) where one is in reach.
 
 use std::collections::HashMap;
 
@@ -190,14 +192,14 @@ fn walk(lp: &[P], i: usize, window: f64, fwd: bool, closed: bool) -> P {
     lp[cur]
 }
 
-/// Indices of corner points: where the direction over ±`window` px turns by more than 60°. The
-/// ends of an open polyline are never corners.
-fn corners(lp: &[P], window: f64, closed: bool) -> Vec<usize> {
+/// Indices of corner points: where the direction over ±`window` px turns by more than
+/// `turn_deg`. The ends of an open polyline are never corners.
+fn corners(lp: &[P], window: f64, closed: bool, turn_deg: f64) -> Vec<usize> {
     let n = lp.len();
     if n < 3 || !window.is_finite() || lp.iter().any(|p| !p.0.is_finite() || !p.1.is_finite()) {
         return Vec::new();
     }
-    let cos_thresh = (60f64).to_radians().cos();
+    let cos_thresh = turn_deg.to_radians().cos();
     let turn: Vec<f64> = (0..n)
         .map(|i| {
             if !closed && (i == 0 || i + 1 == n) {
@@ -280,7 +282,7 @@ fn fit_closed(lp: &[P], tol: f64, window: f64) -> Subpath {
     if n < 3 || lp.iter().any(|p| !p.0.is_finite() || !p.1.is_finite()) {
         return Subpath { closed: true, knots: Vec::new(), op: PathOp::Combine };
     }
-    let cs = corners(lp, window, true);
+    let cs = corners(lp, window, true, MASK_CORNER_TURN);
     let mut segs: Vec<[P; 4]> = Vec::new();
     let mut corner_at_start: Vec<bool> = Vec::new();
     if cs.is_empty() {
@@ -329,9 +331,10 @@ pub const MAX_TRACE_POINTS: usize = 4096;
 
 /// Fits a freehand pointer trace (the Freeform Pen's drag) with cubic Béziers that stay within
 /// `tolerance` px of every sample: Photoshop's Curve Fit, clamped to 0.1–100 px (2 px when not
-/// finite). Turns sharper than 60° over ±2 × `tolerance` become corner anchors, the other inner
-/// anchors are smooth. A `closed` trace becomes a closed subpath. Non-finite samples are skipped;
-/// `None` when fewer than two distinct points remain (three when `closed`).
+/// finite). Turns sharper than 80° over ±2 × `tolerance` become corner anchors; the other inner
+/// anchors are smooth and sit on the trace's turning points in x and y where they can. A `closed`
+/// trace becomes a closed subpath whose release point stays an anchor. Non-finite samples are
+/// skipped; `None` when fewer than two distinct points remain (three when `closed`).
 pub fn fit_trace(points: &[[f64; 2]], tolerance: f64, closed: bool) -> Option<Subpath> {
     let tol = if tolerance.is_finite() { tolerance.clamp(0.1, 100.0) } else { 2.0 };
     let window = (2.0 * tol).max(1.5);
@@ -359,16 +362,64 @@ pub fn fit_trace(points: &[[f64; 2]], tolerance: f64, closed: bool) -> Option<Su
         while lp.len() > 3 && lp.last().zip(lp.first()).is_some_and(|(a, b)| len(sub(*a, *b)) < min_step) {
             lp.pop();
         }
-        return (lp.len() >= 3).then(|| fit_closed(&lp, tol, window));
+        return (lp.len() >= 3).then(|| close_trace(&lp, fit_open(&lp, tol, window), window));
     }
     (lp.len() >= 2).then(|| fit_open(&lp, tol, window))
+}
+
+/// Corners of [`trace_mask`]'s contours: turns sharper than this many degrees.
+const MASK_CORNER_TURN: f64 = 60.0;
+
+/// Corners of a freehand trace: turns sharper than this many degrees. The reference application
+/// rounds a 67° vee with two smooth anchors (#12838); a right angle stays a corner.
+const FREEFORM_CORNER_TURN: f64 = 80.0;
+
+/// Most a freehand segment turns, in degrees per px of Curve Fit, up to [`MAX_SEGMENT_TURN`]. A
+/// smooth stroke fits within any Curve Fit with few anchors, yet the reference application adds
+/// anchors as Curve Fit goes down (its 324° arc: 12 segments at 0.5 px, 5 at 1 px, 3 at 2 px,
+/// #12838). 75° per px reaches the cap at the default 2 px.
+const SEGMENT_TURN_PER_PX: f64 = 75.0;
+
+/// Most a freehand segment turns, in degrees: a longer arc gets another anchor. A 180° arc fits
+/// one cubic within 2 px, but the reference application gives a whole circle five anchors and
+/// 324° of it four (#12838).
+const MAX_SEGMENT_TURN: f64 = 150.0;
+
+/// Closes an open fit of a closed trace: the release point stays an anchor, and a segment joins it
+/// to the first one, smooth unless the trace has a corner there.
+fn close_trace(lp: &[P], mut sp: Subpath, window: f64) -> Subpath {
+    sp.closed = true;
+    let n = lp.len();
+    let seam = corners(lp, window, true, FREEFORM_CORNER_TURN);
+    let corner = seam.first() == Some(&0) || seam.last() == Some(&(n - 1));
+    let m = sp.knots.len();
+    let (Some(first), Some(last)) = (sp.knots.first().copied(), sp.knots.last().copied()) else { return sp };
+    if m < 2 {
+        return sp;
+    }
+    let (f, l) = ((first.anchor.x, first.anchor.y), (last.anchor.x, last.anchor.y));
+    let third = len(sub(f, l)) / 3.0;
+    let (t_out, t_in) = if corner {
+        (norm(sub(f, l)), norm(sub(f, l)))
+    } else {
+        // Leave the release point as the trace arrived at it, reach the start as the trace left it.
+        let arrive = norm(sub(l, (last.in_ctrl.x, last.in_ctrl.y)));
+        let leave = norm(sub((first.out_ctrl.x, first.out_ctrl.y), f));
+        (if len(arrive) > 0.0 { arrive } else { norm(sub(l, lp[n - 2])) }, if len(leave) > 0.0 { leave } else { norm(sub(lp[1], f)) })
+    };
+    let pt = |p: P| Point::new(p.0, p.1);
+    sp.knots[m - 1].out_ctrl = pt(add(l, mul(t_out, third)));
+    sp.knots[m - 1].smooth = !corner;
+    sp.knots[0].in_ctrl = pt(sub(f, mul(t_in, third)));
+    sp.knots[0].smooth = !corner;
+    sp
 }
 
 /// Fits an open polyline with cubic Béziers, one run between consecutive corners at a time.
 fn fit_open(lp: &[P], tol: f64, window: f64) -> Subpath {
     let n = lp.len();
     let mut cuts = vec![0];
-    cuts.extend(corners(lp, window, false));
+    cuts.extend(corners(lp, window, false, FREEFORM_CORNER_TURN));
     cuts.push(n - 1);
     cuts.dedup();
     let mut segs: Vec<[P; 4]> = Vec::new();
@@ -387,11 +438,7 @@ fn fit_open(lp: &[P], tol: f64, window: f64) -> Subpath {
             let third = mul(sub(b, a), 1.0 / 3.0);
             segs.push([a, add(a, third), sub(b, third), b]);
         } else {
-            // End tangents over a stretch of the trace, not the first jittery sample.
-            let reach = (2.0 * window).min(len(sub(b, a)) / 3.0).max(window);
-            let t1 = norm(sub(walk(pts, 0, reach, true, false), a));
-            let t2 = norm(sub(walk(pts, m - 1, reach, false, false), b));
-            fit_cubic(pts, t1, t2, tol * tol, &mut segs, 0);
+            fit_run(pts, tol, window, &mut segs);
         }
         corner_at_start.extend((before..segs.len()).map(|k| k == before));
     }
@@ -405,6 +452,234 @@ fn fit_open(lp: &[P], tol: f64, window: f64) -> Subpath {
         knots.push(Knot { anchor: pt(s[3]), in_ctrl: pt(s[2]), out_ctrl: pt(s[3]), smooth: false });
     }
     Subpath { closed: false, knots, op: PathOp::Combine }
+}
+
+/// Fits one freehand run (no corner inside) from its first sample to its last, a segment at a
+/// time: each reaches as far along the trace as one cubic stays within `tol` and turns at most
+/// [`SEGMENT_TURN_PER_PX`] × `tol` (up to [`MAX_SEGMENT_TURN`]), and ends on the first turning
+/// point of the trace in x or y inside that reach (a wave's peak, a circle's top) when there is
+/// one, as the reference application places its anchors (#12838); with the next turning point
+/// just out of reach, halfway to it. Consecutive segments share their tangent, so inner anchors
+/// are smooth.
+fn fit_run(pts: &[P], tol: f64, window: f64, out: &mut Vec<[P; 4]>) {
+    let m = pts.len();
+    if m < 2 {
+        return;
+    }
+    let max_turn = (SEGMENT_TURN_PER_PX * tol).min(MAX_SEGMENT_TURN);
+    let turns = turning_points(pts, tol);
+    let arc: Vec<f64> = pts
+        .iter()
+        .scan((0.0, pts[0]), |(acc, prev), &q| {
+            *acc += len(sub(q, *prev));
+            *prev = q;
+            Some(*acc)
+        })
+        .collect();
+    // The first segment leaves as the trace does; the others continue the one before.
+    let mut t1: Option<P> = None;
+    // An anchor on a turning point leaves a segment of at least this length behind it.
+    let min_gap = 3.0 * window;
+    let mut a = 0;
+    while a + 1 < m {
+        let fit = |b: usize| fit_piece(pts.get(a..=b)?, t1, tol, max_turn);
+        // Farthest end that fits: doubling steps, then halving the gap to the first failure. The
+        // error does not always grow with the length (a few samples can fit worse than more), so
+        // a failed step looks one step further before it stops the doubling.
+        let mut good = a + 1;
+        let mut bad = m;
+        let mut step = 2;
+        while bad == m {
+            let b = (a + step).min(m - 1);
+            if b <= good {
+                break;
+            }
+            let ahead = (a + step.saturating_mul(2)).min(m - 1);
+            if fit(b).is_some() {
+                good = b;
+            } else if ahead > b && fit(ahead).is_some() {
+                good = ahead;
+                step = step.saturating_mul(2);
+            } else {
+                bad = b;
+                continue;
+            }
+            if good == m - 1 {
+                break;
+            }
+            step = step.saturating_mul(2);
+        }
+        while bad < m && bad - good > 1 {
+            let mid = good + (bad - good) / 2;
+            if fit(mid).is_some() {
+                good = mid;
+            } else {
+                bad = mid;
+            }
+        }
+        let end = if good + 1 == m {
+            good
+        } else {
+            let mut ahead = turns.iter().copied().filter(|&t| t > a && arc[t] - arc[a] >= min_gap);
+            let inside = ahead.clone().take_while(|&t| t <= good).take(4).find(|&t| fit(t).is_some());
+            // A turning point within two reaches: halfway there, so no sliver is left before it.
+            let halfway = ahead.find(|&t| t > good).filter(|&t| arc[t] - arc[a] <= 2.0 * (arc[good] - arc[a])).and_then(|t| {
+                let mid = arc.partition_point(|&s| s < (arc[a] + arc[t]) / 2.0).clamp(a + 1, good);
+                fit(mid).map(|_| mid)
+            });
+            inside.or(halfway).unwrap_or(good)
+        };
+        // Two samples always fit; the chord stands in should a degenerate piece not.
+        let seg = fit(end).unwrap_or_else(|| thirds(pts[a], pts[end], t1));
+        let into = sub(seg[3], seg[2]);
+        t1 = Some(if len(into) > 1e-12 { norm(into) } else { norm(sub(seg[3], seg[0])) });
+        out.push(seg);
+        a = end;
+    }
+}
+
+/// Indices where the trace turns back in x or in y by more than `tol` (a wave's peaks, a circle's
+/// top, bottom and sides), in order. Jitter smaller than `tol` makes none.
+fn turning_points(pts: &[P], tol: f64) -> Vec<usize> {
+    let mut out = Vec::new();
+    for axis in 0..2 {
+        let v = |i: usize| if axis == 0 { pts[i].0 } else { pts[i].1 };
+        // Direction of travel along the axis: 0 until the trace has moved by more than `tol`.
+        let mut dir = 0i8;
+        let (mut hi, mut lo) = (0usize, 0usize);
+        for i in 1..pts.len() {
+            if v(i) >= v(hi) {
+                hi = i;
+            }
+            if v(i) <= v(lo) {
+                lo = i;
+            }
+            if dir >= 0 && v(i) < v(hi) - tol {
+                if dir > 0 {
+                    out.push(hi);
+                }
+                dir = -1;
+                lo = i;
+            } else if dir <= 0 && v(i) > v(lo) + tol {
+                if dir < 0 {
+                    out.push(lo);
+                }
+                dir = 1;
+                hi = i;
+            }
+        }
+    }
+    out.sort_unstable();
+    out.dedup();
+    out
+}
+
+/// One cubic from the first sample of `pts` to the last, leaving along `t1` when given, that stays
+/// within `tol` of every sample and turns at most `max_turn` degrees.
+fn fit_piece(pts: &[P], t1: Option<P>, tol: f64, max_turn: f64) -> Option<[P; 4]> {
+    let n = pts.len();
+    if n < 2 {
+        return None;
+    }
+    let (p0, p3) = (pts[0], pts[n - 1]);
+    if n == 2 {
+        return Some(thirds(p0, p3, t1));
+    }
+    let seg = len(sub(p3, p0));
+    // A handle longer than the chord loops (a few samples leave least squares free to); even a
+    // 150° arc's handles are about half its chord.
+    let tame = |b: Option<[P; 4]>| match b {
+        Some(b) if len(sub(b[1], b[0])) <= seg && len(sub(b[2], b[3])) <= seg => b,
+        _ => thirds(p0, p3, t1),
+    };
+    let err2 = tol * tol;
+    let mut u = chord_params(pts);
+    let mut b = tame(generate_free(pts, &u, t1));
+    let mut e = max_error(pts, &b, &u).0;
+    for _ in 0..6 {
+        if e <= err2 {
+            break;
+        }
+        u = reparam(pts, &u, &b);
+        b = tame(generate_free(pts, &u, t1));
+        e = max_error(pts, &b, &u).0;
+    }
+    (e <= err2 && turn_deg(&b) <= max_turn).then_some(b)
+}
+
+/// A cubic from `p0` to `p3` with handles a third of the chord: leaving along `t1` when given,
+/// otherwise along the chord, and arriving along the chord.
+fn thirds(p0: P, p3: P, t1: Option<P>) -> [P; 4] {
+    let chord = sub(p3, p0);
+    let d = len(chord) / 3.0;
+    let c = norm(chord);
+    [p0, add(p0, mul(t1.unwrap_or(c), d)), sub(p3, mul(c, d)), p3]
+}
+
+/// Least-squares control points through `pts` at parameters `u`. The second handle is free, so
+/// how the piece arrives at its end comes from the whole piece, not from a direction estimated
+/// from a few jittery samples there; the first lies along `t1` when given (a smooth join to the
+/// segment before), and is free too otherwise. `None` when the samples cannot pin them down.
+fn generate_free(pts: &[P], u: &[f64], t1: Option<P>) -> Option<[P; 4]> {
+    let (p0, p3) = (*pts.first()?, *pts.last()?);
+    let (mut a11, mut a12, mut a22) = (0.0, 0.0, 0.0);
+    let (mut r1, mut r2) = ((0.0, 0.0), (0.0, 0.0));
+    for (q, &t) in pts.iter().zip(u) {
+        let mt = 1.0 - t;
+        let (b0, b1, b2, b3) = (mt * mt * mt, 3.0 * mt * mt * t, 3.0 * mt * t * t, t * t * t);
+        let res = sub(*q, add(mul(p0, b0), mul(p3, b3)));
+        (a11, a12, a22) = (a11 + b1 * b1, a12 + b1 * b2, a22 + b2 * b2);
+        r1 = add(r1, mul(res, b1));
+        r2 = add(r2, mul(res, b2));
+    }
+    if let ([_, q, _], [_, s, _], None) = (pts, u, t1) {
+        // One inner sample cannot pin down two free handles: the parabola through all three.
+        let ms = 1.0 - s;
+        let k = 2.0 * s * ms;
+        if k <= 1e-9 {
+            return None;
+        }
+        let c = mul(sub(*q, add(mul(p0, ms * ms), mul(p3, s * s))), 1.0 / k);
+        return Some([p0, add(p0, mul(sub(c, p0), 2.0 / 3.0)), add(p3, mul(sub(c, p3), 2.0 / 3.0)), p3]);
+    }
+    // b1·P1 + b2·P2 ≈ res, by least squares.
+    let det = a11 * a22 - a12 * a12;
+    if !det.is_finite() || det <= 1e-12 * a11 * a22 {
+        return None;
+    }
+    let Some(t) = t1 else {
+        let p1 = mul(sub(mul(r1, a22), mul(r2, a12)), 1.0 / det);
+        let p2 = mul(sub(mul(r2, a11), mul(r1, a12)), 1.0 / det);
+        return Some([p0, p1, p2, p3]);
+    };
+    // P1 = P0 + α·t: solve for α and P2.
+    let (r1, r2) = (sub(r1, mul(p0, a11)), sub(r2, mul(p0, a12)));
+    let alpha = (dot(t, r1) * a22 - a12 * dot(t, r2)) / det;
+    if !alpha.is_finite() {
+        return None;
+    }
+    // A handle pointing back would cusp: the shortest that keeps the join smooth instead.
+    let alpha = alpha.max(1e-3 * len(sub(p3, p0)));
+    let p2 = mul(sub(r2, mul(t, a12 * alpha)), 1.0 / a22);
+    Some([p0, add(p0, mul(t, alpha)), p2, p3])
+}
+
+/// How far a cubic's direction turns along it, in degrees (both ways add up).
+fn turn_deg(b: &[P; 4]) -> f64 {
+    const STEPS: usize = 32;
+    let mut total = 0.0;
+    let mut prev: Option<P> = None;
+    for k in 0..=STEPS {
+        let d = bezier_d1(b, k as f64 / STEPS as f64);
+        if len(d) < 1e-9 {
+            continue;
+        }
+        if let Some(p) = prev {
+            total += (p.0 * d.1 - p.1 * d.0).atan2(dot(p, d)).abs();
+        }
+        prev = Some(d);
+    }
+    total.to_degrees()
 }
 
 /// Distance from `q` to the segment `a`–`b`.
@@ -662,7 +937,7 @@ mod tests {
     #[test]
     fn corners_have_bounded_work_for_many_tiny_segments() {
         let points: Vec<P> = (0..20_000).map(|i| (i as f64 * 0.01, if i % 2 == 0 { 0.0 } else { 1e-5 })).collect();
-        let selected = corners(&points, 100.0, false);
+        let selected = corners(&points, 100.0, false, MASK_CORNER_TURN);
         assert!(selected.len() <= points.len());
     }
 
@@ -694,3 +969,7 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "trace_freeform_anchor_tests.rs"]
+mod trace_freeform_anchor_tests;

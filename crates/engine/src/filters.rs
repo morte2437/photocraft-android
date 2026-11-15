@@ -7,7 +7,7 @@
 use photocraft_algo::{
     self as algo, Distribution, FilterParams, PolarMode, Preserve, RadialMethod, RadialQuality, RippleSize, SpherizeMode, UndefinedAreas, WaveType,
 };
-use photocraft_doc::{LayerContent, SmartFilter};
+use photocraft_doc::{Layer, LayerContent, SmartFilter};
 use serde_json::{Value, json};
 
 use crate::commands::CommandSpec;
@@ -84,6 +84,7 @@ pub fn params_for(id: &str, p: &Value) -> Option<FilterParams> {
         return Some(fp);
     }
     Some(match id {
+        "filter.blur.average" => FilterParams::Average,
         "filter.blur.gaussianBlur" => FilterParams::GaussianBlur { radius: f(p, "radius", 1.0).clamp(0.1, 1000.0) },
         "filter.blur.boxBlur" => FilterParams::BoxBlur { radius: f(p, "radius", 1.0).clamp(1.0, 2000.0) },
         "filter.blur.motionBlur" => FilterParams::MotionBlur { angle: f(p, "angle", 0.0), distance: f(p, "distance", 10.0).clamp(1.0, 2000.0) },
@@ -185,6 +186,20 @@ pub fn apply_filter_to_surface(
     selection: Option<&photocraft_raster::Surface>,
     canvas: photocraft_geom::Rect,
 ) -> Result<Option<photocraft_raster::Surface>> {
+    apply_filter_to_surface_in(id, params, surf, bounds, selection, canvas, &crate::jobs::JobCtx::new())
+}
+
+/// Render a stored filter with the caller's cancellation context, including custom kernel preparation.
+pub(crate) fn apply_filter_to_surface_in(
+    id: &str,
+    params: &Value,
+    surf: &photocraft_raster::Surface,
+    bounds: photocraft_geom::Rect,
+    selection: Option<&photocraft_raster::Surface>,
+    canvas: photocraft_geom::Rect,
+    ctx: &crate::jobs::JobCtx,
+) -> Result<Option<photocraft_raster::Surface>> {
+    ctx.check()?;
     // Replays bypass command dispatch; nested paths must still obey the requesting session's
     // authority, including adjustment LUTs and plug-ins, before any resolver can read them.
     crate::jobs::authorize_render_command(id, params)?;
@@ -198,7 +213,7 @@ pub fn apply_filter_to_surface(
     }
     // Image › Adjustments recorded as smart filters (Levels, Curves, Shadows/Highlights… from PSD).
     if let Some(kind) = id.strip_prefix("image.adjustments.") {
-        return Ok(crate::adjust_cmds::adjust_as_filter(kind, params, surf));
+        return crate::adjust_cmds::adjust_as_filter(kind, params, surf, None);
     }
     // WebAssembly plug-in smart filters (plugin_cmds).
     if id == crate::plugin_cmds::RUN {
@@ -207,13 +222,24 @@ pub fn apply_filter_to_surface(
     let Some(mut fp) = params_for(id, params) else { return Ok(None) };
     // A map that can no longer be read (moved or deleted since) leaves the pixels alone, like an
     // unknown filter; the command itself already refused an unreadable map when it was added.
-    if crate::filters_ext::resolve_map_path(&mut fp, params).is_err() {
-        return Ok(None);
+    // The stack owns progress across filters; this operation only inherits cancellation.
+    let cancelled = || ctx.cancelled();
+    let ctl = photocraft_raster::Interrupt::cancel_only(&cancelled);
+    match crate::filters_ext::resolve_map_path(&mut fp, params, &ctl) {
+        Err(EngineError::Cancelled) => return Err(EngineError::Cancelled),
+        Err(e) if matches!(fp, FilterParams::CustomShapeBlur { .. }) => return Err(e),
+        Err(_) => return Ok(None),
+        Ok(()) => {}
     }
     let sel_bounds = selection.map(photocraft_raster::Surface::content_bounds);
     let content = surf.content_bounds();
     let area = algo::output_area(&fp, content, bounds, sel_bounds);
-    Ok(Some(algo::apply_in(surf, &fp, area, bounds, selection, canvas.union(&content))))
+    algo::try_apply_in_with(surf, &fp, area, bounds, selection, canvas.union(&content), &ctl).map(Some).map_err(filter_error)
+}
+
+/// Preserve checked native diagnostics; legacy kernels retain their working-data failure.
+fn filter_error(error: algo::ApplyError) -> EngineError {
+    if error.is_cancelled() { EngineError::Cancelled } else { EngineError::Other(error.to_string()) }
 }
 
 pub(crate) fn has_filterable_layer(s: &Session) -> std::result::Result<(), String> {
@@ -231,6 +257,15 @@ pub(crate) fn has_filterable_layer(s: &Session) -> std::result::Result<(), Strin
     }
 }
 
+/// Channel-selective controls describe native samples; their last entry is alpha only on alpha-capable surfaces.
+fn edits_transparency(filter: &FilterParams, layer: &Layer) -> bool {
+    filter.makes_transparency()
+        && (!matches!(
+            filter,
+            FilterParams::ChannelNoise(_) | FilterParams::Convolution(_) | FilterParams::Percentile(_) | FilterParams::FillHoles { alpha_only: false, .. }
+        ) || layer.surface().is_none_or(|surface| surface.format().alpha))
+}
+
 pub(crate) fn run_filter(s: &mut Session, id: &str, p: &Value) -> Result<Value> {
     validate_params(id, p)?;
     // Session state some filters read (colours) becomes explicit params; external inputs resolve here.
@@ -238,6 +273,7 @@ pub(crate) fn run_filter(s: &mut Session, id: &str, p: &Value) -> Result<Value> 
     if id == "filter.distort.displace" {
         prepared = crate::filters_ext::displace_request(&prepared);
     }
+    crate::filters_ext::resolve_shape_path(s, id, &mut prepared)?;
     let p = &prepared;
     let mut fp = params_for(id, p).ok_or_else(|| EngineError::Other(format!("unknown filter {id}")))?;
     crate::filters_ext::resolve(s, &mut fp, p)?;
@@ -258,10 +294,12 @@ pub(crate) fn run_filter(s: &mut Session, id: &str, p: &Value) -> Result<Value> 
         s,
         &label,
         move |doc, _, ctx| {
+            ctx.check()?;
+            let prepare_kernel = |fp: &mut FilterParams| ctx.stage(0.0, 0.1, "Preparing filter", |ctl| crate::filters_ext::resolve_shape_kernel(fp, &p, ctl));
             let filter = |surf: &photocraft_raster::Surface, fp: &FilterParams, area, bounds, sel: Option<&photocraft_raster::Surface>, extent| {
                 let _working = photocraft_raster::memory::try_reserve_operation(algo::working_bytes(fp, area, bounds, surf.format().channels()))
                     .map_err(EngineError::Other)?;
-                ctx.stage(0.0, 1.0, &msg, |ctl| algo::apply_in_with(surf, fp, area, bounds, sel, extent, ctl)).ok_or(EngineError::Cancelled)
+                ctx.stage(0.1, 1.0, &msg, |ctl| algo::try_apply_in_with(surf, fp, area, bounds, sel, extent, ctl)).map_err(filter_error)
             };
             let selection = doc.selection.clone();
             let sel_bounds = selection.as_ref().map(photocraft_raster::Surface::content_bounds);
@@ -272,6 +310,7 @@ pub(crate) fn run_filter(s: &mut Session, id: &str, p: &Value) -> Result<Value> 
             // Neighbourhood filters repeat edge pixels at the canvas edge (or past it, where the
             // layer has off-canvas pixels) instead of fading in transparency, as Photoshop does.
             if let Some(surf) = crate::channel_cmds::channel_surface_for_filter(doc, Some(layer), &p)? {
+                prepare_kernel(&mut fp)?;
                 let content = doc_bounds.union(&surf.content_bounds());
                 let area = algo::output_area(&fp, content, bounds, sel_bounds);
                 *surf = filter(surf, &fp, area, bounds, selection.as_ref(), algo::separable::edge_extent(doc_bounds, content))?;
@@ -279,7 +318,8 @@ pub(crate) fn run_filter(s: &mut Session, id: &str, p: &Value) -> Result<Value> 
             }
             // Filters that make pixels transparent (Color to Alpha) turn the Background into a
             // normal layer first, as the erasers do: it can't hold transparency.
-            if fp.makes_transparency() {
+            let changes_alpha = doc.layer(layer).is_some_and(|layer| edits_transparency(&fp, layer));
+            if changes_alpha {
                 crate::extra_cmds::background_to_layer_for_mask(doc, layer);
             }
             let locks = doc.effective_locks(layer);
@@ -288,7 +328,7 @@ pub(crate) fn run_filter(s: &mut Session, id: &str, p: &Value) -> Result<Value> 
                 return Err(EngineError::Other(format!("Could not complete your request because the layer \"{}\" is locked", l.name)));
             }
             // Putting the old alpha back (below) would leave unmixed colours fully opaque.
-            if locks.transparency && fp.makes_transparency() && matches!(l.content, LayerContent::Raster(_)) {
+            if locks.transparency && changes_alpha && matches!(l.content, LayerContent::Raster(_)) {
                 return Err(EngineError::Other(format!("Could not complete your request because the transparency of layer \"{}\" is locked", l.name)));
             }
             let mut fp = fp.clone();
@@ -319,12 +359,13 @@ pub(crate) fn run_filter(s: &mut Session, id: &str, p: &Value) -> Result<Value> 
                     };
                     // Non-destructive: record the filter and re-render the smart object from its source.
                     let sf = SmartFilter { command: id.clone(), params, blend: photocraft_color::BlendMode::Normal, opacity: 1.0, visible: true };
-                    return crate::smart_cmds::add_smart_filter(doc, layer, sf, selection.as_ref()).map(|()| fp);
+                    return crate::smart_cmds::add_smart_filter_in(doc, layer, sf, selection.as_ref(), ctx).map(|()| fp);
                 }
                 _ => return Err(EngineError::Other("not a pixel layer".into())),
             };
+            prepare_kernel(&mut fp)?;
             if let Some(colors) = colors {
-                if fp.makes_transparency() {
+                if changes_alpha {
                     return Err(EngineError::Other("this filter requires composite channels".into()));
                 }
                 // A grayscale plane cannot distinguish an opaque black border from its zero
@@ -433,6 +474,7 @@ macro_rules! filter_cmd {
 pub fn specs() -> Vec<CommandSpec> {
     vec![
         filter_cmd!("filter.blur.gaussianBlur", "Gaussian Blur…", ["Filter", "Blur"], r##"{"radius":0.1..1000=1}"##),
+        filter_cmd!("filter.blur.average", "Average", ["Filter", "Blur"], "{}"),
         filter_cmd!("filter.blur.blur", "Blur", ["Filter", "Blur"], "{}"),
         filter_cmd!("filter.blur.blurMore", "Blur More", ["Filter", "Blur"], "{}"),
         filter_cmd!("filter.sharpen.sharpen", "Sharpen", ["Filter", "Sharpen"], "{}"),

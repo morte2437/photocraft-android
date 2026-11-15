@@ -8,6 +8,7 @@
 
 use egui::{Color32, Stroke, pos2};
 use photocraft_doc::LayerId;
+use photocraft_engine::layer_multi_cmds::move_targets;
 use photocraft_engine::snap::{SnapKind, SnapLine, SnapOptions, SnapTargets, layer_rect, union};
 
 use crate::PhotocraftApp;
@@ -39,6 +40,9 @@ pub enum Gesture {
     /// Default crop mode, a drag inside an upright box: the image moves under it, so the frame
     /// moves the other way over the document and its edges and centre snap ([`crop_image`]).
     CropImage,
+    /// The Free Transform reference point: snaps only to the box's corners, edge midpoints and
+    /// centre (as placed when the drag began, however the box is turned).
+    Pivot { anchors: [[f64; 2]; 9] },
 }
 
 /// Snapping state of the drag in progress.
@@ -101,7 +105,24 @@ fn moving_rect(app: &PhotocraftApp, tool: Tool) -> Option<[f64; 4]> {
     if crate::move_ui::moves_selected_pixels_with(app, tool) {
         return selection_rect(app);
     }
-    union(st.selected_layers().into_iter().filter_map(|id| layer_rect(&st.doc, id)))
+    // What moves, not what is selected: a group carries its layers and linked layers go along.
+    union(move_targets(&st.doc, &st.selected_layers()).into_iter().filter_map(|id| tree_rect(&st.doc, id)))
+}
+
+/// The bounds of layer `id` as the Move tool moves and snaps it. `snap::layer_rect` skips groups,
+/// which hold no pixels of their own: a group is the layers in it, whole even with a selection
+/// (it moves them whole, so clipping its pixel layers to the selection would frame less than
+/// moves). An artboard is its board, as the snap targets take it, since the whole board moves.
+pub(crate) fn tree_rect(doc: &photocraft_doc::Document, id: LayerId) -> Option<[f64; 4]> {
+    let l = doc.layer(id)?;
+    let b = if let Some(a) = l.artboard() {
+        a.rect
+    } else if l.is_group() {
+        photocraft_engine::transform_cmds::transform_bounds(doc, l)
+    } else {
+        return layer_rect(doc, id);
+    };
+    (!b.is_empty()).then(|| [b.x0, b.y0, b.x1, b.y1].map(f64::from))
 }
 
 /// The bounds of the pixels a selection moves, where they are shown: its floating piece's outline
@@ -143,6 +164,7 @@ fn is_point_tool(t: Tool) -> bool {
             | Tool::EllipseShape
             | Tool::Triangle
             | Tool::Polygon
+            | Tool::Star
             | Tool::Line
             | Tool::Type
             | Tool::VerticalType
@@ -157,25 +179,10 @@ fn quad_rect(q: &[[f64; 2]; 4]) -> [f64; 4] {
     [xs.clone().fold(f64::MAX, f64::min), ys.clone().fold(f64::MAX, f64::min), xs.fold(f64::MIN, f64::max), ys.fold(f64::MIN, f64::max)]
 }
 
-/// Is `p` inside the quad (even-odd)?
-fn in_quad(q: &[[f64; 2]; 4], p: [f64; 2]) -> bool {
-    let mut inside = false;
-    for i in 0..4 {
-        let (a, b) = (q[i], q[(i + 3) % 4]);
-        if (a[1] > p[1]) != (b[1] > p[1]) && p[0] < (b[0] - a[0]) * (p[1] - a[1]) / (b[1] - a[1]) + a[0] {
-            inside = !inside;
-        }
-    }
-    inside
-}
-
-/// Near a Free Transform corner or edge handle (within its grab radius)?
-fn near_handle(q: &[[f64; 2]; 4], p: [f64; 2], tol: f64) -> bool {
-    (0..4).any(|i| {
-        let (a, b) = (q[i], q[(i + 1) % 4]);
-        let mid = [(a[0] + b[0]) / 2.0, (a[1] + b[1]) / 2.0];
-        [a, mid].iter().any(|h| (h[0] - p[0]).hypot(h[1] - p[1]) <= tol)
-    })
+/// The nine reference point locations of a Free Transform box: corners, edge midpoints, centre.
+fn box_anchors(q: &[[f64; 2]; 4]) -> [[f64; 2]; 9] {
+    let mid = |a: [f64; 2], b: [f64; 2]| [(a[0] + b[0]) / 2.0, (a[1] + b[1]) / 2.0];
+    [q[0], q[1], q[2], q[3], mid(q[0], q[1]), mid(q[1], q[2]), mid(q[2], q[3]), mid(q[3], q[0]), mid(mid(q[0], q[2]), mid(q[1], q[3]))]
 }
 
 /// Photoshop: holding Ctrl (Windows) / Control (macOS) *during* a drag temporarily turns snapping
@@ -214,27 +221,51 @@ fn begin(app: &mut PhotocraftApp, p: [f64; 2], mods: egui::Modifiers) {
     let tool = crate::canvas::event_tool(app, mods);
     let moves_layer = crate::canvas::command_moves_layer(app, tool, p, mods);
     let crop_tol = crate::crop_ui::tolerance(app);
+    let straightens = tool == Tool::Crop && app.crop.drag.is_none() && (app.crop.straighten.armed || mods.command);
     let gesture = if let Some(t) = &app.ui.transform {
-        let corner = match crate::transform_tool::hit(t, p, crate::transform_tool::handle_tolerance(app)) {
-            crate::transform_tool::Hit::Corner(index) => {
-                t.quad.get(index).map(|&point| (Gesture::TransformCorner { index, point }, crate::transform_tool::moving_layers(t)))
-            }
+        use crate::transform_tool::Hit;
+        let h = crate::transform_tool::box_hit(app, t, p, crate::transform_tool::handle_tolerance(app));
+        let corner = match h {
+            Hit::Corner(index) => t.quad.get(index).map(|&point| (Gesture::TransformCorner { index, point }, crate::transform_tool::moving_layers(t))),
             _ => None,
         };
+        let pivot = || Some((Gesture::Pivot { anchors: box_anchors(&t.quad) }, crate::transform_tool::moving_layers(t)));
         if t.mode == crate::state::TransformMode::Distort {
             corner
-        } else if near_handle(&t.quad, p, crate::transform_tool::handle_tolerance(app)) {
-            corner.or_else(|| Some((Gesture::Point, crate::transform_tool::moving_layers(t))))
-        } else if in_quad(&t.quad, p) {
-            Some((Gesture::TransformMove { rect: quad_rect(&t.quad) }, crate::transform_tool::moving_layers(t)))
         } else {
-            None
+            // Classify the press as `transform_tool::pointer` does: a handle or the reference point
+            // (dragged, or Alt-pressed anywhere off the handles) snaps itself; only a press inside
+            // the box moves it and snaps its bounds. Snapping the box's bounds while the reference
+            // point was dragged held the point still and drew lines at edges the box never reached.
+            match h {
+                Hit::Corner(_) => corner,
+                Hit::Edge(_) => Some((Gesture::Point, crate::transform_tool::moving_layers(t))),
+                Hit::Pivot => pivot(),
+                Hit::Inside | Hit::Outside if mods.alt => pivot(),
+                Hit::Inside => Some((Gesture::TransformMove { rect: quad_rect(&t.quad) }, crate::transform_tool::moving_layers(t))),
+                Hit::Outside => None,
+            }
         }
     } else if tool == Tool::Move && crate::rulers::guide_at(app, p[0], p[1]).is_some() {
         Some((Gesture::Guide, Vec::new()))
     } else if tool == Tool::Move || moves_layer {
-        let exclude = app.session.active().map(|s| s.selected_layers()).unwrap_or_default();
+        // The targets and everything inside them stay out of the snap targets: a moving group
+        // must not snap to its own layers' starting edges. Selected pixels float off the active
+        // layer alone, so its linked layers stay put and stay targets.
+        let pixels = crate::move_ui::moves_selected_pixels_with(app, tool);
+        let exclude = app.session.active().map_or_else(Vec::new, |s| {
+            let mut ids = s.selected_layers();
+            if !pixels {
+                ids.extend(crate::move_ui::with_descendants(&s.doc, &move_targets(&s.doc, &ids)));
+            }
+            ids
+        });
         moving_rect(app, tool).map(|rect| (Gesture::Move { rect }, exclude))
+    } else if straightens {
+        // A straighten line (`crop_straighten::pointer` takes the press before the frame's drags)
+        // snaps its ends as points wherever it starts, never by the offset of a frame or image it
+        // doesn't move.
+        Some((Gesture::Point, Vec::new()))
     } else if tool == Tool::Crop
         && (crate::crop_mode::classic(app) || app.crop.default_frame)
         && let Some(rect) =
@@ -279,7 +310,7 @@ fn begin(app: &mut PhotocraftApp, p: [f64; 2], mods: egui::Modifiers) {
         None
     };
     let Some((gesture, exclude)) = gesture else { return };
-    let mut targets = if snap_on(app) { build(app, &exclude, false) } else { SnapTargets::default() };
+    let mut targets = if snap_on(app) && !matches!(gesture, Gesture::Pivot { .. }) { build(app, &exclude, false) } else { SnapTargets::default() };
     if app.ui.transform.as_ref().is_some_and(|t| t.mode == crate::state::TransformMode::Distort) {
         // Explicit Distort fits corners to guides; preserve free placement near layer edges.
         targets = targets.filtered(|k| k == SnapKind::Guide);
@@ -288,8 +319,12 @@ fn begin(app: &mut PhotocraftApp, p: [f64; 2], mods: egui::Modifiers) {
         // A guide never snaps to itself (or other guides).
         targets = targets.filtered(|k| k != SnapKind::Guide);
     }
-    if matches!(gesture, Gesture::SelectionMove { .. }) || (matches!(gesture, Gesture::Move { .. }) && crate::move_ui::moves_selected_pixels_with(app, tool)) {
-        // A moving selection never snaps back to where it started.
+    if matches!(gesture, Gesture::SelectionMove { .. })
+        || (matches!(gesture, Gesture::TransformMove { .. }) && app.ui.transform.as_ref().is_some_and(|t| crate::transform_tool::moves_selection(app, t)))
+        || (matches!(gesture, Gesture::Move { .. }) && crate::move_ui::moves_selected_pixels_with(app, tool))
+    {
+        // A moving selection, or a transform that takes the selection along, never snaps back to
+        // where it started. A path's box leaves the selection put: its edges stay targets.
         targets = targets.filtered(|k| k != SnapKind::Selection);
     }
     let smart = if snap_on(app) && matches!(gesture, Gesture::Move { .. } | Gesture::CropImage) && smart_on(app) {
@@ -297,7 +332,10 @@ fn begin(app: &mut PhotocraftApp, p: [f64; 2], mods: egui::Modifiers) {
     } else {
         SnapTargets::default()
     };
-    app.prefs_rt.snap = Some(ActiveSnap { gesture, start: p, targets, smart, disabled: false });
+    // Windows Ctrl both starts a straighten line and is held while it is drawn: the override then
+    // covers the press too, or the line's start would snap and its end not.
+    let disabled = straightens && override_held(mods);
+    app.prefs_rt.snap = Some(ActiveSnap { gesture, start: p, targets, smart, disabled });
 }
 
 /// Snap a guide drag that ⌘ with a selection tool starts at `p` (`canvas::command_guide_at`,
@@ -308,11 +346,27 @@ pub fn begin_guide(app: &mut PhotocraftApp, p: [f64; 2]) {
     app.prefs_rt.snap = Some(ActiveSnap { gesture: Gesture::Guide, start: p, targets, smart: SnapTargets::default(), disabled: false });
 }
 
+/// Snap `p` as a point press does (`Gesture::Point`), for a press that began as a selection move
+/// and ended as a click: a Single Row / Column Marquee click inside the selection selects the line
+/// at the snapped point, as one outside does (#11392). Not to the selection's own bounds, which the
+/// click replaces (on a 1 px line they would pick the line beside it). Ctrl held (`mods`) turns
+/// snapping off, as during a drag.
+pub(crate) fn snap_click(app: &PhotocraftApp, p: [f64; 2], mods: egui::Modifiers) -> [f64; 2] {
+    if !snap_on(app) || override_held(mods) {
+        return p;
+    }
+    let targets = build(app, &[], false).filtered(|k| k != SnapKind::Selection);
+    targets.snap_point(p, tolerance(app)).0
+}
+
 /// Round to whole pixels when Preferences › Tools asks vector tools and transforms to snap to
 /// the pixel grid.
 fn pixel_round(app: &PhotocraftApp, p: [f64; 2]) -> [f64; 2] {
     if app.session.prefs().tools.snap_vector_tools_and_transforms_to_pixel_grid
-        && matches!(app.ui.tool, Tool::Pen | Tool::CurvaturePen | Tool::Rectangle | Tool::EllipseShape | Tool::Triangle | Tool::Polygon | Tool::Line)
+        && matches!(
+            app.ui.tool,
+            Tool::Pen | Tool::CurvaturePen | Tool::Rectangle | Tool::EllipseShape | Tool::Triangle | Tool::Polygon | Tool::Star | Tool::Line
+        )
     {
         [p[0].round(), p[1].round()]
     } else {
@@ -324,6 +378,16 @@ fn pixel_round(app: &PhotocraftApp, p: [f64; 2]) -> [f64; 2] {
 fn apply(app: &mut PhotocraftApp, p: [f64; 2], mods: egui::Modifiers) -> [f64; 2] {
     let tol = tolerance(app);
     let Some(snap) = app.prefs_rt.snap.as_ref() else { return p };
+    if let Gesture::Pivot { anchors } = &snap.gesture {
+        // The reference point's own pull, as in the reference application: to the box's nine
+        // points only (not to guides, layers or the canvas), with View > Snap off or Ctrl held too.
+        let nearest = anchors.iter().map(|a| ((a[0] - p[0]).hypot(a[1] - p[1]), *a)).min_by(|a, b| a.0.total_cmp(&b.0));
+        app.prefs_rt.snap_lines.clear();
+        return match nearest {
+            Some((d, a)) if d <= tol => a,
+            _ => p,
+        };
+    }
     if !snap_on(app) || snap.disabled {
         app.prefs_rt.snap_lines.clear();
         return p;
@@ -337,6 +401,8 @@ fn apply(app: &mut PhotocraftApp, p: [f64; 2], mods: egui::Modifiers) -> [f64; 2
         }
         Gesture::TransformCorner { .. } => snap.targets.snap_point(p, tol),
         Gesture::Guide => snap.targets.snap_point(p, tol),
+        // Handled above.
+        Gesture::Pivot { .. } => (p, Vec::new()),
         Gesture::Move { rect } | Gesture::TransformMove { rect } | Gesture::SelectionMove { rect } | Gesture::DrawMove { rect } => {
             let d = [p[0] - snap.start[0], p[1] - snap.start[1]];
             let moved = [rect[0] + d[0], rect[1] + d[1], rect[2] + d[0], rect[3] + d[1]];
@@ -512,6 +578,18 @@ fn follow_reposition(app: &mut PhotocraftApp) {
     }
 }
 
+/// A click on a crop frame or one of its handles (released where it was pressed, the frame not
+/// moved) changes nothing, as a Move-tool click doesn't move the layer (`canvas::tool_event`):
+/// snapping the release would pull an edge within reach onto a nearby one.
+fn crop_click(app: &PhotocraftApp, p: [f64; 2]) -> bool {
+    use crate::crop_ui::CropDrag;
+    let Some(snap) = app.prefs_rt.snap.as_ref() else { return false };
+    let Some(CropDrag::Move { rect, .. } | CropDrag::Resize { rect, .. } | CropDrag::MoveImage { rect, .. }) = app.crop.drag else {
+        return false;
+    };
+    app.ui.tool == Tool::Crop && p == snap.start && app.ui.crop_rect == Some(rect)
+}
+
 /// Snap a tool event's coordinates (called by `canvas::tool_event` before the tools see it).
 pub fn filter_event(app: &mut PhotocraftApp, ev: ToolEvent, mods: egui::Modifiers) -> ToolEvent {
     match ev {
@@ -550,6 +628,11 @@ pub fn filter_event(app: &mut PhotocraftApp, ev: ToolEvent, mods: egui::Modifier
         }
         ToolEvent::Up { x, y } => {
             if app.prefs_rt.snap.is_none() {
+                return ev;
+            }
+            if crop_click(app, [x, y]) {
+                app.prefs_rt.snap = None;
+                app.prefs_rt.snap_lines.clear();
                 return ev;
             }
             follow_reposition(app);

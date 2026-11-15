@@ -89,9 +89,25 @@ pub(super) fn preference_values(p: &prefs::Preferences) -> Map<String, Value> {
     SECTIONS.iter().filter_map(|(id, _)| Some((id.to_string(), values.get(id)?.clone()))).collect()
 }
 
-/// Compare the editable sections, excluding settings managed outside Preferences.
+/// Would OK or Apply change the editable sections? Settings managed outside Preferences, and
+/// settings changed elsewhere while the dialog is open, don't count.
 pub fn preferences_changed(app: &PhotocraftApp, fields: &Map<String, Value>) -> bool {
-    is_preferences(fields) && fields.get("values").and_then(Value::as_object).is_some_and(|values| *values != preference_values(app.session.prefs()))
+    is_preferences(fields)
+        && fields.get("values").is_some_and(Value::is_object)
+        && committed_values(app, fields) != Value::Object(preference_values(app.session.prefs()))
+}
+
+/// The values OK or Apply commits: the live preferences with only the settings edited in the
+/// dialog (where the draft differs from the `__base` it opened or last applied with) laid over
+/// them, so a change made elsewhere while it is open, such as a live theme switch, survives an
+/// Apply of an unrelated setting (#11120). A setting edited both here and elsewhere takes the
+/// dialog's value. Without a `__base` the draft is committed as it is.
+fn committed_values(app: &PhotocraftApp, f: &Map<String, Value>) -> Value {
+    let Some(draft) = f.get("values") else { return Value::Null };
+    let Some(base) = f.get("__base") else { return draft.clone() };
+    let mut live = Value::Object(preference_values(app.session.prefs()));
+    super::save::merge_changes(base, draft, &mut live);
+    live
 }
 
 /// Commit the working copy and keep the current section open. Failure leaves the draft intact.
@@ -106,7 +122,9 @@ pub fn apply(app: &mut PhotocraftApp, id: u64) -> Result<Value, String> {
     let result = confirm(app, &fields)?;
     let values = Value::Object(preference_values(app.session.prefs()));
     if let Some(d) = app.ui.dialog_mut(id) {
-        // Use the validated values as the next draft, including any normalisation by prefs.set.
+        // Use the validated values as the next draft and its base, including any normalisation
+        // by prefs.set and settings changed elsewhere since the dialog opened.
+        d.fields.insert("__base".into(), values.clone());
         d.fields.insert("values".into(), values);
     }
     Ok(result)
@@ -138,7 +156,8 @@ pub fn open_preferences(app: &mut PhotocraftApp, section: &str) -> u64 {
     let section = if SECTIONS.iter().any(|(id, _)| *id == section) { section } else { "general" };
     let working = preference_values(app.session.prefs());
     let order = field_order(app.session.prefs(), &working);
-    open_kind(app, "prefs", "Preferences", json!({"section": section, "values": working, "__order": order}))
+    // `__base` is what the draft started from, so OK and Apply commit only what was edited here.
+    open_kind(app, "prefs", "Preferences", json!({"section": section, "values": working, "__base": working, "__order": order}))
 }
 
 /// Each section's keys in declaration order (JSON objects sort their keys; the serialised text
@@ -322,7 +341,7 @@ pub(super) fn mismatch_body(ui: &mut egui::Ui, f: &mut Map<String, Value>) {
 pub fn confirm(app: &mut PhotocraftApp, f: &Map<String, Value>) -> Result<Value, String> {
     match f.get("__prefsui").and_then(Value::as_str).unwrap_or("") {
         "prefs" => {
-            let values = f.get("values").cloned().unwrap_or(Value::Null);
+            let values = committed_values(app, f);
             app.run("prefs.set", json!({"path": "", "value": values}))
         }
         "shortcuts" => {

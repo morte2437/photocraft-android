@@ -1,12 +1,12 @@
 //! Opening a file whose adjustment layer can't be read warns, naming the layer and the reason,
 //! instead of opening it silently without its effect (#1763).
 
+use craft_psd::descriptor::{Descriptor, Id, UnicodeString, Value, VersionedDescriptor};
+use craft_psd::{Compression, LayerFlags, LayerRecord, PsdFile, TaggedBlock, Version, testgen};
 use photocraft_color::{ColorMode, SampleType};
 use photocraft_doc::{Adjustment, Document, Layer, LayerContent};
 use photocraft_geom::Size;
 use photocraft_io::*;
-use photocraft_psd::descriptor::{Descriptor, Id, UnicodeString, Value, VersionedDescriptor};
-use photocraft_psd::{Compression, LayerFlags, LayerRecord, PsdFile, TaggedBlock, Version, testgen};
 use photocraft_raster::Surface;
 
 fn reopen(adj: Adjustment, path: &str, opts: &ExportOptions) -> (Document, Vec<String>) {
@@ -73,7 +73,7 @@ fn identity_cube(domain: &str) -> Vec<u8> {
 
 fn synthetic_lookup_psd(version: Version, depth: u16, cube: &[u8]) -> Vec<u8> {
     const LAYER_NAME: &str = "Custom-domain LUT";
-    let mut file = testgen::layered(version, photocraft_psd::ColorMode::Rgb, depth, Compression::Rle);
+    let mut file = testgen::layered(version, craft_psd::ColorMode::Rgb, depth, Compression::Rle);
     let mut flags = LayerFlags::default();
     flags.set_pixel_data_irrelevant(true);
     // Photoshop stores layer-block alignment inside the block length. Make the source payload

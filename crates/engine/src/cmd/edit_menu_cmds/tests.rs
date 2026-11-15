@@ -1,6 +1,8 @@
 use super::*;
 use photocraft_doc::vector::Subpath;
 
+static PURGE_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 fn session(depth: u32) -> Session {
     let mut s = Session::new();
     s.execute("file.new", json!({"width": 64, "height": 48, "depth": depth, "background": "white"})).unwrap();
@@ -12,9 +14,40 @@ fn px(s: &Session, x: i32, y: i32) -> Vec<f32> {
     st.doc.layer(st.active_layer.unwrap()).unwrap().surface().unwrap().pixel(x, y)
 }
 
+fn px_rgba(s: &Session, x: i32, y: i32) -> [f32; 4] {
+    active(s).surface().unwrap().rgba(x, y)
+}
+
 fn active(s: &Session) -> &Layer {
     let st = s.active().unwrap();
     st.doc.layer(st.active_layer.unwrap()).unwrap()
+}
+
+/// #8230: the Fade dialog's preview is the document Fade would leave, at every depth and in a
+/// blend mode, with no history step and nothing changed until OK; with nothing to fade or a bad
+/// mode it is an error, not a panic.
+#[test]
+fn fade_preview_matches_fade_without_a_step() {
+    for depth in [8, 16, 32] {
+        assert!(fade_preview(&session(depth), &json!({"opacity": 50})).is_err(), "nothing to fade yet");
+        for p in [json!({"opacity": 25}), json!({"opacity": 60, "mode": "difference"}), json!({})] {
+            let mut s = session(depth);
+            s.execute("edit.fill", json!({"color": "#000000"})).unwrap();
+            let (steps, revision) = (s.active().unwrap().history.past_len(), s.active().unwrap().revision);
+            let preview = fade_preview(&s, &p).and_then(FadePreview::render).unwrap();
+            assert_eq!((s.active().unwrap().history.past_len(), s.active().unwrap().revision), (steps, revision), "depth {depth} {p}: no step");
+            assert_eq!(px(&s, 5, 5)[0], 0.0, "depth {depth} {p}: the layer is untouched");
+            let id = s.active().unwrap().active_layer.unwrap();
+            let shown = preview.layer(id).unwrap().surface().unwrap().pixel(5, 5);
+            s.execute("edit.fade", p.clone()).unwrap();
+            assert_eq!(shown, px(&s, 5, 5), "depth {depth} {p}: the preview is what OK applies");
+        }
+        let mut s = session(depth);
+        s.execute("edit.fill", json!({"color": "#000000"})).unwrap();
+        assert!(fade_preview(&s, &json!({"mode": "nonsense"})).is_err());
+        s.execute("layer.new.layer", json!({})).unwrap();
+        assert!(fade_preview(&s, &json!({})).is_err(), "not right after the step");
+    }
 }
 
 #[test]
@@ -113,7 +146,11 @@ fn fade_an_alpha_channel_or_the_quick_mask_at_all_depths() {
                 assert!((channel(&s, 5, 5) - (1.0 - was)).abs() < 0.01, "depth {depth}, quick mask {quick_mask}: inverted");
                 let expected = was + (1.0 - 2.0 * was) * k;
                 let steps = s.active().unwrap().history.past_len();
+                // The Fade dialog's preview (#8230) shows the channel as OK leaves it.
+                let preview = fade_preview(&s, &json!({"opacity": opacity})).and_then(FadePreview::render).unwrap();
+                let shown = if quick_mask { preview.quick_mask.as_ref() } else { preview.channels.first() }.unwrap().surface.pixel(5, 5)[0];
                 s.execute("edit.fade", json!({"opacity": opacity})).unwrap();
+                assert_eq!(shown, channel(&s, 5, 5), "depth {depth}, quick mask {quick_mask}, {opacity} %: the preview is what OK applies");
                 for (x, y) in [(0, 0), (5, 5), (63, 47)] {
                     let v = channel(&s, x, y);
                     assert!((v - expected).abs() < 0.02, "depth {depth}, quick mask {quick_mask}, {opacity} %, ({x}, {y}): {v}");
@@ -184,6 +221,7 @@ fn fade_ignores_a_target_the_command_doesnt_take() {
 
 #[test]
 fn purge_commands() {
+    let _purge_test_guard = PURGE_TEST_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     let mut s = session(8);
     assert!(!s.is_enabled("edit.purge.undo"));
     assert!(s.is_enabled("edit.purge.videoCache"));
@@ -208,6 +246,30 @@ fn purge_commands() {
     assert!(!s.is_enabled("edit.purge.histories"));
     assert_eq!(s.execute("edit.purge.videoCache", json!({})).unwrap()["bytes"], 0);
     let _ = s.execute("edit.purge.all", json!({}));
+}
+
+#[test]
+fn purge_all_releases_prepared_brush_tips_even_without_a_document() {
+    let _purge_test_guard = PURGE_TEST_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    use photocraft_paint::{BrushContext, BrushSettings, Dab, GrayTile, TipShape};
+    let mut s = Session::new();
+    let brush = BrushSettings { tip: TipShape::Sampled(GrayTile::from_fn(31, 17, |x, y| ((x + y) % 5) as f32 / 4.0)), ..Default::default() };
+    let ctx = BrushContext::new(&brush);
+    let dab = Dab::round(photocraft_geom::Point::new(12.5, 14.5), 10.0, 1.0);
+    let rect = ctx.dab_rect(&dab, false);
+    let mut before = Vec::new();
+    ctx.rasterize(&dab, false, rect, &mut before);
+    assert!(s.is_enabled("edit.purge.all"), "prepared tips alone enable All");
+    let result = s.execute("edit.purge.all", json!({})).unwrap();
+    assert!(result["purged"].as_array().unwrap().contains(&json!("brush mip cache")));
+    assert!(result["bytes"].as_u64().unwrap() > 0);
+    // An already prepared brush remains valid after the cache releases its Arc.
+    let mut after = Vec::new();
+    ctx.rasterize(&dab, false, rect, &mut after);
+    assert_eq!(before, after);
+    let next = BrushContext::new(&brush);
+    next.rasterize(&dab, false, rect, &mut after);
+    assert_eq!(before, after);
 }
 
 /// White canvas with vertical black stripes, a red blob to remove, and a selection around it.
@@ -515,6 +577,38 @@ fn content_aware_scale_keeps_subject() {
         assert_eq!(striped.count(), 6, "depth {depth}: the striped subject survives");
         s.undo();
         assert_eq!(active(&s).surface().unwrap().content_bounds().width(), 64);
+    }
+}
+
+/// On the Background, which can't hold transparency, the area a selection's Content-Aware Scale
+/// vacates takes the background colour, as Delete leaves it (Photoshop); the layer stays the
+/// Background. On a normal layer it is left transparent.
+#[test]
+fn content_aware_scale_on_the_background_vacates_to_the_background_colour() {
+    for depth in [8, 16] {
+        let mut s = session(depth);
+        s.tools.background = [0.0, 0.0, 1.0, 1.0];
+        let id = s.active().unwrap().active_layer.unwrap();
+        s.execute("select.rect", json!({"x": 10, "y": 10, "width": 20, "height": 10})).unwrap();
+        let r = s.execute("edit.contentAwareScale", json!({"width": 10})).unwrap();
+        assert_eq!(r["bounds"], json!([10, 10, 10, 10]), "{depth}-bit");
+        let st = s.active().unwrap();
+        assert!(st.doc.is_background(id), "{depth}-bit: still the Background");
+        let px = |x, y| st.doc.layer(id).unwrap().surface().unwrap().rgba(x, y);
+        for (x, y) in [(20, 10), (25, 15), (29, 19)] {
+            assert_eq!(px(x, y), [0.0, 0.0, 1.0, 1.0], "{depth}-bit: ({x}, {y}) is vacated");
+        }
+        assert_eq!(px(12, 15), [1.0, 1.0, 1.0, 1.0], "{depth}-bit: the scaled pixels");
+        assert_eq!(px(5, 5), [1.0, 1.0, 1.0, 1.0], "{depth}-bit: outside the selection");
+        // A normal layer's vacated area is transparent.
+        let mut s = session(depth);
+        s.tools.background = [0.0, 0.0, 1.0, 1.0];
+        s.execute("layer.new.layer", json!({})).unwrap();
+        s.execute("select.rect", json!({"x": 10, "y": 10, "width": 20, "height": 10})).unwrap();
+        s.execute("edit.fill", json!({"color": "#ff0000"})).unwrap();
+        s.execute("edit.contentAwareScale", json!({"width": 10})).unwrap();
+        assert_eq!(px_rgba(&s, 25, 15)[3], 0.0, "{depth}-bit: a layer's hole is transparent");
+        assert_eq!(px_rgba(&s, 12, 15), [1.0, 0.0, 0.0, 1.0], "{depth}-bit");
     }
 }
 

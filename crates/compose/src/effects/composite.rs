@@ -2,8 +2,8 @@ use super::bevel::{BevelPaint, TextureCtx, bevel_geom, bevel_maps, satin_map};
 use super::distance::{INSIDE_EPS, Metric, dist_inside_by, dist_outside_by, local_coverage, stroke_outside_exact};
 use super::paint::{dissolves_in, glow_map, paint_color, paint_fx, paint_glow, paint_pattern, rgb, shadow_map};
 use super::{
-    BlendMode, Buffer, Effect, FxMaps, FxPaint, GlobalLight, Layer, MAX_REACH, Map, PREPARED_PATTERN_BYTES, Pattern, Placement, PreparedPatterns, Rect,
-    StrokePosition, psblend,
+    Bevel, BevelStyle, BlendMode, Buffer, Effect, FxMaps, FxPaint, GlobalLight, Layer, MAX_REACH, Map, PREPARED_PATTERN_BYTES, Pattern, Placement,
+    PreparedPatterns, Rect, StrokePosition, psblend,
 };
 
 /// Build every effect map for `layer` from its alpha `shape` over `rect`.
@@ -56,6 +56,37 @@ pub(crate) fn build_maps_prepared(
             Effect::OuterGlow(g) => vec![glow_map(&shape, g, false, (rect.x0, rect.y0))],
             Effect::InnerGlow(g) => vec![glow_map(&shape, g, true, (rect.x0, rect.y0))],
             Effect::Satin(s) => vec![satin_map(&shape, s)],
+            // Stroke Emboss (#8639): an Inner Bevel of the layer's outline with its Stroke effects
+            // (the stroked shape's outer edge, inside the stroke too), shading only the strokes,
+            // over the finished layer, as Photoshop's corpus files show it. Several strokes emboss
+            // as their union (a 4 px stroke over a 10 px one shades the whole 10 px band). Without
+            // a stroke it has nothing to emboss.
+            Effect::BevelEmboss(b) if b.style == BevelStyle::StrokeEmboss => {
+                let strokes: Vec<&photocraft_doc::StrokeFx> = items.iter().filter_map(|e| if let Effect::Stroke(st) = e { Some(st) } else { None }).collect();
+                let band = strokes.iter().map(|st| stroke_band(&shape, st)).reduce(|mut acc, m| {
+                    for (a, s) in acc.v.iter_mut().zip(&m.v) {
+                        *a = a.max(*s);
+                    }
+                    acc
+                });
+                // Strokes inside the layer shade with the layer, as an Inner Bevel does; one
+                // reaching outside shades over the finished layer and its backdrop.
+                bevel_paint[i] = if strokes_inside(&strokes) { BevelPaint::Inner } else { BevelPaint::Both };
+                match band {
+                    Some(band) => {
+                        // The shape keeps its own (anti-aliased) edge; the stroke adds what lies outside it.
+                        let outline = Map { w, h, v: shape.v.iter().zip(&band.v).map(|(a, s)| if *a > INSIDE_EPS { *a } else { a.max(*s) }).collect() };
+                        let mut maps = bevel_maps(&outline, &Bevel { style: BevelStyle::InnerBevel, ..(*b).clone() }, light, tex, patterns).0;
+                        for m in &mut maps {
+                            for (v, s) in m.v.iter_mut().zip(&band.v) {
+                                *v *= s;
+                            }
+                        }
+                        maps
+                    }
+                    None => vec![Map::new(w, h, 0.0), Map::new(w, h, 0.0)],
+                }
+            }
             Effect::BevelEmboss(b) => {
                 let (maps, paint) = bevel_maps(&shape, b, light, tex, patterns);
                 bevel_paint[i] = paint;
@@ -148,16 +179,48 @@ pub fn premerges_layer(layer: &Layer) -> bool {
         }
 }
 
+/// Coverage of `st`'s band around `shape` (row-major over the same region): its inside part as
+/// far in as the inside width, its outside part as far out as the outside width, as the
+/// compositor paints them. The shape Stroke Emboss bevels (#8639).
+fn stroke_band(shape: &Map, st: &photocraft_doc::StrokeFx) -> Map {
+    let (in_w, out_w) = stroke_widths(st);
+    let din = (in_w > 0.0).then(|| dist_inside_by(shape, Metric::Chamfer));
+    let metric = if stroke_outside_exact(out_w) { Metric::Euclidean } else { Metric::Chamfer };
+    let dout = (out_w > 0.0).then(|| dist_outside_by(shape, metric));
+    let mut band = Map::new(shape.w, shape.h, 0.0);
+    for (i, (b, a)) in band.v.iter_mut().zip(&shape.v).enumerate() {
+        *b = if *a > INSIDE_EPS {
+            din.as_ref().and_then(|d| d.get(i)).map_or(0.0, |d| (in_w + 0.5 - d).clamp(0.0, 1.0))
+        } else {
+            dout.as_ref().and_then(|d| d.get(i)).map_or(0.0, |d| (out_w + 0.5 - d).clamp(0.0, 1.0))
+        };
+    }
+    band
+}
+
+/// `true` if there are strokes and none reaches outside the layer: Stroke Emboss then shades with
+/// the layer, as an Inner Bevel does.
+fn strokes_inside(strokes: &[&photocraft_doc::StrokeFx]) -> bool {
+    !strokes.is_empty() && strokes.iter().all(|st| stroke_widths(st).1 <= 0.0)
+}
+
 /// `true` if an enabled effect painted inside the layer (with its content) blends in a mode
 /// other than Normal.
-fn blends_inside(layer: &Layer) -> bool {
+pub(super) fn blends_inside(layer: &Layer) -> bool {
     let blends = |m: BlendMode| m != BlendMode::Normal;
+    // Stroke Emboss with its strokes wholly inside shades with the layer (`BevelPaint::Inner` in
+    // `build_maps_prepared`), as an Inner Bevel does; one reaching outside shades over the
+    // finished layer.
+    let strokes: Vec<&photocraft_doc::StrokeFx> =
+        layer.effects.items.iter().filter(|e| e.enabled()).filter_map(|e| if let Effect::Stroke(st) = e { Some(st) } else { None }).collect();
+    let stroke_inside = strokes_inside(&strokes);
     layer.effects.items.iter().filter(|e| e.enabled()).any(|e| match e {
         Effect::ColorOverlay { common, .. } | Effect::GradientOverlay { common, .. } | Effect::PatternOverlay { common, .. } => blends(common.blend),
         Effect::Satin(s) => blends(s.common.blend),
         Effect::InnerGlow(g) => blends(g.common.blend),
         Effect::InnerShadow(s) => blends(s.common.blend),
         Effect::Stroke(s) => stroke_widths(s).0 > 0.0 && blends(s.common.blend),
+        Effect::BevelEmboss(b) if b.style == BevelStyle::StrokeEmboss => stroke_inside && (blends(b.highlight.blend) || blends(b.shadow.blend)),
         Effect::BevelEmboss(b) => bevel_geom(b).paint == BevelPaint::Inner && (blends(b.highlight.blend) || blends(b.shadow.blend)),
         Effect::DropShadow(_) | Effect::OuterGlow(_) => false,
     })
@@ -482,7 +545,25 @@ impl<'a> EffectPass<'a> {
             for ((mv, a), dv) in m.v.iter_mut().zip(&shape.v).zip(&fields.din) {
                 *mv = if inside(*a) { (in_w + 0.5 - dv).clamp(0.0, 1.0) } else { 0.0 };
             }
-            paint_fx(lay, &m, &st.paint, self.stroke_frame(st), self.anchor, self.big, st.common.blend, st.common.opacity, self.patterns);
+            if st.common.blend == BlendMode::Normal {
+                // A Normal stroke replaces the layer under it instead of blending with it
+                // (Photoshop): at 50 % opacity an opaque pixel under the stroke turns into the
+                // stroke colour at 50 % alpha, not a 50/50 mix.
+                let mut stroke_px = Buffer { rect: self.big, px: vec![[0.0; 4]; lay.px.len()] };
+                paint_fx(&mut stroke_px, &m, &st.paint, self.stroke_frame(st), self.anchor, self.big, BlendMode::Normal, st.common.opacity, self.patterns);
+                for ((p, s), cov) in lay.px.iter_mut().zip(&stroke_px.px).zip(&m.v) {
+                    if s[3] <= 0.0 {
+                        continue;
+                    }
+                    let kept = p[3] * (1.0 - cov.clamp(0.0, 1.0));
+                    let alpha = kept + s[3];
+                    if alpha > 0.0 {
+                        *p = [(p[0] * kept + s[0] * s[3]) / alpha, (p[1] * kept + s[1] * s[3]) / alpha, (p[2] * kept + s[2] * s[3]) / alpha, alpha.min(1.0)];
+                    }
+                }
+            } else {
+                paint_fx(lay, &m, &st.paint, self.stroke_frame(st), self.anchor, self.big, st.common.blend, st.common.opacity, self.patterns);
+            }
         }
     }
 

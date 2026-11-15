@@ -55,19 +55,23 @@ fn stats_match_their_definitions() {
     h[0] = 25;
     h[100] = 50;
     h[255] = 25;
-    let s = stats(&h, None).unwrap();
+    let s = stats(&h, None, 100).unwrap();
     assert_eq!(s.pixels, 100);
     assert!((s.mean - (5000.0 + 6375.0) / 100.0).abs() < 1e-9);
     assert_eq!(s.median, 100);
     assert_eq!(s.clipped, [25.0, 25.0], "a quarter of the pixels clip at each end");
     // One level: its count and the percent at or below it.
-    let one = stats(&h, Some([100, 100])).unwrap();
+    let one = stats(&h, Some([100, 100]), 100).unwrap();
     assert_eq!((one.count, one.percentile), (Some(50), Some(75.0)));
     // A dragged range (either direction): the count and percent within it.
-    let range = stats(&h, Some([200, 50])).unwrap();
+    let range = stats(&h, Some([200, 50]), 100).unwrap();
     assert_eq!((range.level, range.count, range.percentile), (Some([50, 200]), Some(50), Some(50.0)));
-    assert!(stats(&[0; 256], Some([0, 255])).is_none(), "an empty histogram has no statistics");
-    assert!(stats(&h, None).unwrap().std_dev > 0.0);
+    assert!(stats(&[0; 256], Some([0, 255]), 0).is_none(), "an empty histogram has no statistics");
+    assert!(stats(&h, None, 100).unwrap().std_dev > 0.0);
+    // The Pixels row reports the kept pixels (a selection's size, transparent ones included),
+    // not the bins' sum: a selection of only transparent pixels still has statistics.
+    let empty_bins = stats(&[0; 256], None, 500).expect("pixels were counted");
+    assert_eq!(empty_bins.pixels, 500);
 }
 
 #[test]
@@ -97,7 +101,8 @@ fn luminosity_and_rgb_channels_are_counted() {
     app.run("select.rect", json!({"x": 0, "y": 0, "width": 20, "height": 20})).unwrap();
     app.run("edit.fill", json!({"color": "#ff0000"})).unwrap();
     let doc = &app.session.active().unwrap().doc;
-    let h = tone::compute_histograms(doc, tone::IMAGE, ToneSpace::Rgb);
+    // The whole input: the selection left over the fill would mask the panel's count.
+    let h = tone::compute_histograms(doc, tone::IMAGE, ToneSpace::Rgb, HistScope::WholeInput);
     assert_eq!(bins(&h, doc.mode, HistChannel::Red)[255], 800);
     assert_eq!(bins(&h, doc.mode, HistChannel::Green)[0], 400);
     let red_lum = (0.30f32 * 255.0).round() as usize;
@@ -115,9 +120,10 @@ fn sources_count_the_image_the_layer_or_the_adjustment_composite() {
     let st = app.session.active().unwrap();
     let invert = st.doc.layers[1].id;
     let doc = &st.doc;
-    let image = tone::compute_histograms(doc, tone::IMAGE, ToneSpace::Rgb);
+    // The whole input: the selection left over the fill would mask the panel's count.
+    let image = tone::compute_histograms(doc, tone::IMAGE, ToneSpace::Rgb, HistScope::WholeInput);
     assert_eq!((image[0][0], image[0][128]), (512, 512), "black (inverted white) and the grey above it");
-    let upto = tone::compute_histograms(doc, HistSource::UpTo(invert), ToneSpace::Rgb);
+    let upto = tone::compute_histograms(doc, HistSource::UpTo(invert), ToneSpace::Rgb, HistScope::WholeInput);
     assert_eq!(upto[0][0], 1024, "the adjustment composite hides the grey layer above");
     // The panel offers Adjustment Composite only with an adjustment layer selected.
     assert_eq!(resolve_source(st, HistSourceChoice::AdjustmentComposite).0, HistSourceChoice::EntireImage);
@@ -140,7 +146,7 @@ fn cache_level_follows_size_and_the_preference_cap() {
     assert!(auto > 1, "a large document counts a proxy, level {auto}");
     assert_eq!(tone::cache_level(doc, 2), 2, "capped by Cache Levels");
     assert_eq!(tone::cache_level(doc, 0), 1, "out-of-range caps clamp");
-    let exact = tone::compute_histograms_at(doc, tone::IMAGE, ToneSpace::Rgb, 1);
+    let exact = tone::compute_histograms_at(doc, tone::IMAGE, ToneSpace::Rgb, HistScope::Selection, 1);
     assert_eq!(exact.level, 1);
     assert_eq!(exact[0][255], 6000 * 3000, "level 1 counts every pixel");
     let small = app_with(json!({"width": 64, "height": 64}));
@@ -363,9 +369,9 @@ fn uncapped_counts_keep_their_proxy_and_a_cap_reduces_by_powers_of_two() {
     let doc = &big.session.active().unwrap().doc;
     let pixels = |h: &Histograms| h[0].iter().map(|&c| u64::from(c)).sum::<u64>();
     // 6000 / 768 = 7: a 7x proxy, 858 x 429 (rounded up), not an 8x one.
-    let auto = tone::compute_histograms(doc, tone::IMAGE, ToneSpace::Rgb);
+    let auto = tone::compute_histograms(doc, tone::IMAGE, ToneSpace::Rgb, HistScope::Selection);
     assert_eq!(pixels(&auto), 858 * 429);
-    let capped = tone::compute_histograms_at(doc, tone::IMAGE, ToneSpace::Rgb, 3);
+    let capped = tone::compute_histograms_at(doc, tone::IMAGE, ToneSpace::Rgb, HistScope::Selection, 3);
     assert_eq!(capped.level, 3);
     assert_eq!(pixels(&capped), 1500 * 750, "level 3 is a 4x proxy");
 }
@@ -415,4 +421,133 @@ fn inspect_preview_is_the_active_documents() {
     assert_ne!(app.session.active().unwrap().doc.id, other.key.doc);
     app.doc_hist_preview = Some(other);
     assert_eq!(inspect(&app)["preview"], false);
+}
+
+/// A selection changes no pixels, but the panel counts different ones: it must recompute for
+/// the selection instead of riding the #125 view-only fast path, and its Pixels statistic
+/// reports the selection's size. A later view-only edit without a selection change keeps the
+/// selection's histogram.
+#[test]
+fn the_panel_follows_the_selection() {
+    let mut app = app_with(json!({"width": 640, "height": 480}));
+    settle(&mut app);
+    let whole = app.doc_hist.clone().expect("landed");
+    assert_eq!(inspect_stats(&app)["pixels"], 640 * 480);
+    app.run("select.rect", json!({"x": 0, "y": 0, "width": 20, "height": 10})).unwrap();
+    assert_eq!(inspect(&app)["current"], false, "the selection changed what the panel counts");
+    settle(&mut app);
+    let selected = app.doc_hist.clone().expect("landed");
+    assert_eq!(selected.key.revision, app.session.active().unwrap().revision, "fresh for the selection revision");
+    assert_eq!(inspect_stats(&app)["pixels"], 200, "Pixels counts the selection");
+    assert_ne!(selected.key.source, whole.key.source, "the selection changed the histogram's identity");
+    // A later view-only edit (no selection change) keeps the selection histogram.
+    app.run("layer.new.layer", json!({})).unwrap();
+    settle(&mut app);
+    let after = app.doc_hist.clone().expect("landed");
+    assert_eq!(after.key.source, selected.key.source, "same selection, same histogram identity");
+    assert_eq!(inspect_stats(&app)["pixels"], 200);
+}
+
+/// A worker result computed before a selection change is dropped at the door: it must not be
+/// cached for the selection now on screen (which would reset the 250 ms throttle and delay the
+/// recomputation).
+#[test]
+fn a_result_computed_before_a_selection_change_is_not_cached() {
+    let mut app = app_with(json!({"width": 64, "height": 64}));
+    settle(&mut app);
+    let before = app.doc_hist.clone().expect("landed");
+    app.run("select.rect", json!({"x": 0, "y": 0, "width": 8, "height": 8})).unwrap();
+    // A worker still holding the pre-selection result lands: the panel must reject it.
+    let (tx, rx) = std::sync::mpsc::channel();
+    let stale = Arc::new((*before.hist).clone());
+    let _ = tx.send((before.key, 1.0, stale.clone()));
+    app.hist_job = Some((before.key, rx));
+    let ctx = egui::Context::default();
+    update(&mut app, &ctx);
+    assert!(app.hist_job.is_none(), "the stale job was consumed, not kept");
+    let after = app.doc_hist.clone().expect("the previous entry stands");
+    assert_eq!(after.key.revision, before.key.revision, "the stale result was not cached over it");
+    assert!(!Arc::ptr_eq(&after.hist, &stale), "the stale result was not accepted");
+    assert!(Arc::ptr_eq(&after.hist, &before.hist), "the previous histogram still stands");
+}
+
+/// A result computed for the revision just before a pixel edit still lands: the panel shows the
+/// newer data, marked stale, instead of dropping it and lagging behind continuous edits. Only
+/// another document or selection is dropped at the door.
+#[test]
+fn a_result_one_revision_behind_still_lands() {
+    let mut app = app_with(json!({"width": 64, "height": 64}));
+    settle(&mut app);
+    let before = app.doc_hist.clone().expect("landed");
+    app.run("edit.fill", json!({"color": "#000000"})).unwrap(); // a newer revision exists
+    let (tx, rx) = std::sync::mpsc::channel();
+    let newer = Arc::new((*before.hist).clone());
+    let _ = tx.send((before.key, 1.0, newer.clone()));
+    app.hist_job = Some((before.key, rx));
+    let ctx = egui::Context::default();
+    update(&mut app, &ctx);
+    assert!(app.hist_job.is_none(), "the job was consumed");
+    let landed = app.doc_hist.clone().expect("the one-revision-old result lands");
+    assert_eq!(landed.key.revision, before.key.revision, "landed as computed");
+    assert!(Arc::ptr_eq(&landed.hist, &newer));
+    assert_eq!(inspect(&app)["current"], false, "still marked stale for the newer revision");
+}
+
+/// The selection key is hashed once per document revision, not per frame: a memo for the
+/// current revision is served as-is, and a new revision (any selection change is one) rehashes.
+#[test]
+fn the_selection_key_is_memoized_per_revision() {
+    let mut app = app_with(json!({"width": 16, "height": 16}));
+    settle(&mut app);
+    let (doc, rev) = {
+        let st = app.session.active().unwrap();
+        (st.doc.id, st.revision)
+    };
+    let (_, _, real) = app.hist_sel_key.expect("refreshed while the panel updates");
+    // A poisoned memo for the same revision is served verbatim: the mask is not rehashed.
+    app.hist_sel_key = Some((doc, rev, real ^ 0xdead_beef));
+    let key_of = |app: &PhotocraftApp| {
+        let st = app.session.active().unwrap();
+        let (_, source) = resolve_source(st, source_choice(&app.ui.histogram_panel));
+        let poisoned = app.hist_sel_key.is_some_and(|(d, r, _)| d == st.doc.id && r == st.revision);
+        (poisoned, tone::tag(source, tone_space(st.doc.mode), HistScope::Selection, app.hist_sel_key.map_or(0, |(_, _, k)| k)))
+    };
+    assert_eq!(key_of(&app), (true, committed_key(&app).unwrap().0.source), "the memo is served, not rehashed");
+    app.run("select.rect", json!({"x": 0, "y": 0, "width": 8, "height": 8})).unwrap();
+    let (rev2, fresh) = {
+        let st = app.session.active().unwrap();
+        (st.revision, tone::selection_key(&st.doc))
+    };
+    assert_ne!(rev2, rev, "a selection change is a new revision");
+    let ctx = egui::Context::default();
+    update(&mut app, &ctx);
+    assert_eq!(app.hist_sel_key, Some((doc, rev2, fresh)), "the new revision rehashed the mask");
+}
+
+/// The panel's Pixels statistic counts the pixels the selection covers, transparent ones
+/// included, while the histogram bins keep skipping them: a selection over a transparent canvas
+/// reports the selection's size.
+#[test]
+fn the_panel_reports_the_selection_size_over_transparent_pixels() {
+    let mut app = app_with(json!({"width": 32, "height": 32, "background": "transparent"}));
+    app.run("select.rect", json!({"x": 0, "y": 0, "width": 16, "height": 32})).unwrap();
+    settle(&mut app);
+    assert_eq!(inspect_stats(&app)["pixels"], 16 * 32, "the transparent selected pixels still count");
+    app.ui.histogram_panel.view = HistView::Expanded;
+    frame(&mut app);
+}
+
+/// The tone editors' histogram shows the adjustment's whole input (Photoshop's dialogs are not
+/// selection-masked), so a selection change — view-only, no pixels moved — keeps the cached
+/// histogram (#125). The panel's masked histogram is covered above.
+#[test]
+fn the_tone_histogram_cache_ignores_selection_changes() {
+    let mut app = app_with(json!({"width": 64, "height": 64}));
+    let src = tone::IMAGE;
+    let first = tone::histograms(&mut app, src, ToneSpace::Rgb);
+    assert!(Arc::ptr_eq(&first, &tone::histograms(&mut app, src, ToneSpace::Rgb)), "unchanged state reuses the cache");
+    app.run("select.rect", json!({"x": 0, "y": 0, "width": 8, "height": 8})).unwrap();
+    assert!(Arc::ptr_eq(&first, &tone::histograms(&mut app, src, ToneSpace::Rgb)), "a selection change is view-only for the whole-input histogram");
+    app.run("select.deselect", json!({})).unwrap();
+    assert!(Arc::ptr_eq(&first, &tone::histograms(&mut app, src, ToneSpace::Rgb)), "deselecting keeps it too");
 }

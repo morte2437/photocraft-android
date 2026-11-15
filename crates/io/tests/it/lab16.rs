@@ -2,11 +2,11 @@
 //! on the full 0..65535 range. Layer pixels, the merged image and patterns use that scale, and
 //! the documents' a*/b* stay on the 8-bit scale `(a + 128) / 255` at every depth.
 
+use craft_psd::PsdFile;
 use photocraft_color::{ColorMode, PixelFormat, SampleType};
 use photocraft_doc::{Document, Layer, LayerContent};
 use photocraft_geom::{Rect, Size};
 use photocraft_io::*;
-use photocraft_psd::PsdFile;
 use photocraft_raster::Surface;
 
 /// a* = 52.29, b* = −85.08 (a gradient stop of psd-tools 4x4_16bit_lab) on the document scale.

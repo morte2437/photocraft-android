@@ -110,8 +110,8 @@ fn flattens_layers_and_keeps_alpha_channels() {
     assert_eq!(d.channels.len(), 4);
     assert!(d.channels[3].spot.is_none(), "the saved selection stays an alpha channel");
     // The black fill on the upper layer is solid ink in all three plates.
-    for k in 0..3 {
-        assert!(d.channels[k].surface.pixel(1, 1)[0] > 0.99);
+    for channel in d.channels.iter().take(3) {
+        assert!(channel.surface.pixel(1, 1)[0] > 0.99);
     }
     // Back to RGB: the alpha channel survives, the inks become colour channels.
     s.execute("image.mode.rgb", json!({})).unwrap();
@@ -182,7 +182,7 @@ fn psd_round_trip_keeps_names_inks_and_values() {
         s.execute("image.mode.multichannel", json!({})).unwrap();
         let d = doc(&s).clone();
         let out = photocraft_io::export(&d, "x.psd", &photocraft_io::ExportOptions::default()).unwrap();
-        let file = photocraft_io::document_to_psd(&d);
+        let file = photocraft_io::document_to_psd(&d).unwrap();
         assert_eq!(file.header.color_mode.as_u16(), 7);
         assert_eq!(file.header.channels, 4);
         // Photoshop stores ink as dark: a solid-ink sample is 0.
@@ -206,7 +206,7 @@ fn psd_stores_ink_as_dark() {
     let mut s = session("grayscale", 8);
     s.execute("edit.fill", json!({"color": "#000000"})).unwrap();
     s.execute("image.mode.multichannel", json!({})).unwrap();
-    let file = photocraft_io::document_to_psd(doc(&s));
+    let file = photocraft_io::document_to_psd(doc(&s)).unwrap();
     let merged = file.decode_merged().unwrap();
     assert!(merged.iter().all(|&b| b == 0), "solid black ink is stored as 0");
 }

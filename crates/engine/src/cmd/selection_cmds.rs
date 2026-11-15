@@ -17,6 +17,8 @@ mod modify_window;
 mod color_range_performance;
 #[cfg(test)]
 mod color_range_window_tests;
+#[cfg(test)]
+mod wand_seed_outside_tests;
 
 fn has_doc(s: &Session) -> std::result::Result<(), String> {
     s.active().map(|_| ()).ok_or_else(|| "no document open".into())
@@ -70,7 +72,11 @@ fn sample_pixels(s: &Session, all_layers: bool, window: Option<Rect>) -> Result<
             surf.read_rgba_into(area, &mut px);
             Ok((area, px))
         }
-        _ => Ok((area, photocraft_compose::render(&d.doc, area).into_px())),
+        _ => {
+            // The composite allocates inside compose; report a failure at its boundary.
+            crate::allocation::checkpoint("sampling pixels for a selection")?;
+            Ok((area, photocraft_compose::render(&d.doc, area).into_px()))
+        }
     }
 }
 
@@ -135,9 +141,15 @@ fn magic_wand(s: &mut Session, p: &Value) -> Result<Value> {
         Some(plane) => plane,
         None => sample_rgba8(s, b(p, "sampleAllLayers", false))?,
     };
-    let region = sel::wand_region(&img, area, (x, y), f(p, "tolerance", 32.0), b(p, "contiguous", true), b(p, "antiAlias", true));
-    drop(img);
     let m = mode(p);
+    // Subtract and Intersect grow the region from the seed through the selection only (#11779).
+    // A global match (Contiguous off) ignores the limit, so it skips the full-area mask.
+    let contiguous = b(p, "contiguous", true);
+    let within = (contiguous && matches!(m, SelectionMode::Subtract | SelectionMode::Intersect))
+        .then(|| s.active().and_then(|st| st.doc.selection.as_ref()).map(|sel| sel::mask_from_surface(Some(sel), area)))
+        .flatten();
+    let region = sel::wand_region_within(&img, area, (x, y), f(p, "tolerance", 32.0), contiguous, b(p, "antiAlias", true), within.as_deref());
+    drop(img);
     let selected = s.edit("Magic Wand", |doc, _| {
         doc.selection = sel::combine_region(doc.selection.as_ref(), region.as_ref(), m);
         Ok(doc.selection.is_some())
@@ -158,10 +170,10 @@ fn parse_color(p: &Value) -> [f32; 3] {
 }
 
 /// Composite RGB (the compositor's output profile for the document) → CIE Lab D50.
-fn lab_transform(s: &Session) -> Result<std::sync::Arc<photocraft_cms::Transform>> {
+fn lab_transform(s: &Session) -> Result<std::sync::Arc<craft_cms::Transform>> {
     let d = s.active().ok_or(EngineError::NoDocument)?;
     let src = crate::color_cmds::composite_profile(&d.doc);
-    photocraft_cms::cached(&src, photocraft_cms::Builtin::LabD50.profile(), photocraft_cms::TransformOptions::default())
+    craft_cms::cached(&src, craft_cms::Builtin::LabD50.profile(), craft_cms::TransformOptions::default())
         .map_err(|e| EngineError::Other(format!("colour management: {e}")))
 }
 
@@ -170,17 +182,19 @@ fn decode_lab(v: [f32; 3]) -> [f32; 3] {
     [v[0] * 100.0, v[1] * 255.0 - 128.0, v[2] * 255.0 - 128.0]
 }
 
-fn colour_to_lab(t: &photocraft_cms::Transform, rgb: [f32; 3]) -> [f32; 3] {
+fn colour_to_lab(t: &craft_cms::Transform, rgb: [f32; 3]) -> [f32; 3] {
     let mut out = [0.0f32; 3];
-    t.eval(&rgb.map(|v| v.clamp(0.0, 1.0)), &mut out);
+    // `t` is an RGB → Lab transform, which takes three values and gives three.
+    let _ = t.eval(&rgb.map(|v| v.clamp(0.0, 1.0)), &mut out);
     decode_lab(out)
 }
 
 /// RGBA pixels → Lab + alpha (L, a, b, alpha).
-fn pixels_to_lab(t: &photocraft_cms::Transform, px: &[[f32; 4]]) -> Vec<[f32; 4]> {
+fn pixels_to_lab(t: &craft_cms::Transform, px: &[[f32; 4]]) -> Vec<[f32; 4]> {
     let src: Vec<[f32; 4]> = px.iter().map(|p| [p[0].clamp(0.0, 1.0), p[1].clamp(0.0, 1.0), p[2].clamp(0.0, 1.0), p[3]]).collect();
     let mut out = vec![[0.0f32; 4]; px.len()];
-    t.convert_f32(src.as_flattened(), 4, out.as_flattened_mut(), 4, true);
+    // Whole RGBA pixels in and out of an RGB → Lab transform: never refused.
+    let _ = t.convert_f32(src.as_flattened(), 4, out.as_flattened_mut(), 4, true);
     for p in &mut out {
         let [l, a, b] = decode_lab([p[0], p[1], p[2]]);
         *p = [l, a, b, p[3]];
@@ -191,7 +205,7 @@ fn pixels_to_lab(t: &photocraft_cms::Transform, px: &[[f32; 4]]) -> Vec<[f32; 4]
 /// Prepared Sampled Colors query shared by the command and its interactive preview.
 /// Samples always come from the original document; reducing an image must not change them.
 pub struct ColorRangeSamples {
-    to_lab: std::sync::Arc<photocraft_cms::Transform>,
+    to_lab: std::sync::Arc<craft_cms::Transform>,
     range: sel::LabRange,
     grid: bool,
     fuzziness: f32,
@@ -291,7 +305,7 @@ impl ColorRangeSamples {
         // 8-bit documents are compared on the 8-bit Lab grid, samples and pixels alike.
         let grid = s.active().is_some_and(|d| d.doc.depth == photocraft_doc::SampleType::U8);
         let q = |c: [f32; 3]| if grid { sel::quantize_lab8(c) } else { c };
-        let colour_to_lab = |t: &photocraft_cms::Transform, c: [f32; 3]| q(colour_to_lab(t, c));
+        let colour_to_lab = |t: &craft_cms::Transform, c: [f32; 3]| q(colour_to_lab(t, c));
         let foreground = || {
             let [r, g, b, _] = s.tools.foreground;
             sel::LabRange::point(colour_to_lab(&to_lab, [r, g, b]))
@@ -540,42 +554,67 @@ fn crop_mask(m: &[f32], pw: usize, pad: usize, w: usize, h: usize) -> Vec<f32> {
     out
 }
 
+/// Pushes a pixel onto the grow frontier, reporting an allocation failure instead of aborting.
+fn try_push(stack: &mut Vec<usize>, i: usize) -> Result<()> {
+    crate::allocation::try_push(stack, i, "growing a selection")
+}
+
 /// Grow (contiguous) / Similar (anywhere): pixels whose colour lies within
-/// the selected pixels' colour range widened by the tolerance.
+/// tolerance of any selected pixel (indexed via ColorMatcher BVH).
 fn grow_similar(s: &mut Session, p: &Value, contiguous: bool) -> Result<Value> {
     let tol = f(p, "tolerance", 32.0) / 255.0;
     let (area, px) = sample_pixels(s, b(p, "sampleAllLayers", false), None)?;
     let (_, m) = current_mask(&s.active().ok_or(EngineError::NoDocument)?.doc);
-    let (mut lo, mut hi) = ([f32::MAX; 4], [f32::MIN; 4]);
-    for (q, v) in px.iter().zip(&m) {
-        if *v >= 0.5 {
-            for c in 0..4 {
-                lo[c] = lo[c].min(q[c]);
-                hi[c] = hi[c].max(q[c]);
-            }
-        }
-    }
-    if lo[0] > hi[0] {
+    let matcher =
+        sel::ColorMatcher::new(px.iter().zip(&m).filter_map(|(q, v)| (*v >= 0.5).then_some(*q)), tol).map_err(|message| EngineError::Other(message.into()))?;
+    if matcher.is_empty() {
         return Err(EngineError::Other("selection is empty".into()));
     }
-    let inside = |q: &[f32; 4]| (0..4).all(|c| q[c] >= lo[c] - tol - 1e-6 && q[c] <= hi[c] + tol + 1e-6);
     let (w, h) = (area.width() as usize, area.height() as usize);
-    let mut out: Vec<f32> = m.iter().map(|v| if *v >= 0.5 { 1.0 } else { 0.0 }).collect();
+    let mut out = crate::allocation::filled(m.len(), 0.0f32, "growing a selection")?;
+    for (o, v) in out.iter_mut().zip(&m) {
+        *o = if *v >= 0.5 { 1.0 } else { 0.0 };
+    }
     if contiguous {
-        let mut stack: Vec<usize> = (0..out.len()).filter(|i| out[*i] > 0.0).collect();
+        // Frontier stack: only push selected pixels adjacent to at least one unselected pixel.
+        // Every push goes through `try_push` so a canvas-sized stack fails instead of aborting.
+        let mut stack: Vec<usize> = Vec::new();
+        for y in 0..h {
+            for x in 0..w {
+                let i = y * w + x;
+                if out[i] == 0.0 {
+                    continue;
+                }
+                let has_unselected_neighbor =
+                    (x > 0 && out[i - 1] == 0.0) || (x + 1 < w && out[i + 1] == 0.0) || (y > 0 && out[i - w] == 0.0) || (y + 1 < h && out[i + w] == 0.0);
+                if has_unselected_neighbor {
+                    try_push(&mut stack, i)?;
+                }
+            }
+        }
         while let Some(i) = stack.pop() {
             let (x, y) = (i % w, i / w);
             let n = [(x > 0).then(|| i - 1), (x + 1 < w).then(|| i + 1), (y > 0).then(|| i - w), (y + 1 < h).then(|| i + w)];
             for j in n.into_iter().flatten() {
-                if out[j] == 0.0 && inside(&px[j]) {
+                if out[j] == 0.0 && matcher.matches(px[j]) {
                     out[j] = 1.0;
-                    stack.push(j);
+                    try_push(&mut stack, j)?;
                 }
             }
         }
     } else {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            use rayon::prelude::*;
+            out.par_iter_mut().zip(px.par_iter()).for_each(|(o, q)| {
+                if *o == 0.0 && matcher.matches(*q) {
+                    *o = 1.0;
+                }
+            });
+        }
+        #[cfg(target_arch = "wasm32")]
         for (o, q) in out.iter_mut().zip(&px) {
-            if inside(q) {
+            if *o == 0.0 && matcher.matches(*q) {
                 *o = 1.0;
             }
         }
@@ -592,7 +631,32 @@ fn lasso(s: &mut Session, p: &Value) -> Result<Value> {
     if pts.len() < 3 {
         return Err(EngineError::BadParams { cmd: "select.lasso".into(), msg: "needs at least 3 points".into() });
     }
-    polygon_selection(s, "select.lasso", "Lasso", &pts, p)
+    // The History step is named after the tool: the Polygonal Lasso sends `polygonal` (Photoshop).
+    // The Patch and Content-Aware Move tools draw with this command and send their own name as
+    // `historyName`, so the plain Lasso tool keeps "Lasso".
+    // A bad name is refused even when `polygonal` picks the step's name.
+    let named = match p.get("historyName") {
+        None | Some(Value::Null) => None,
+        Some(Value::String(n)) if history_name(n).is_some() => history_name(n),
+        Some(_) => {
+            let msg = "historyName must be 1-64 characters with a visible one, and no control, line-break or hidden format characters";
+            return Err(EngineError::BadParams { cmd: "select.lasso".into(), msg: msg.into() });
+        }
+    };
+    let step = if b(p, "polygonal", false) { "Polygonal Lasso" } else { named.unwrap_or("Lasso") };
+    polygon_selection(s, "select.lasso", step, &pts, p)
+}
+
+/// The History step name for `historyName` `n`: refused when it has a control or line-break
+/// character anywhere; otherwise without its invisible end padding (see
+/// [`photocraft_plugins::manifest::trim_name`]), so a name that looks like "Patch Tool" is "Patch Tool",
+/// and then held to the plug-in menu-label rule.
+fn history_name(n: &str) -> Option<&str> {
+    if n.chars().any(|c| c.is_control() || matches!(c, '\u{2028}' | '\u{2029}')) {
+        return None;
+    }
+    let t = photocraft_plugins::manifest::trim_name(n);
+    photocraft_plugins::manifest::printable_name(t).then_some(t)
 }
 
 /// Selects the polygon `pts` with the lasso tools' `mode`, `antiAlias` and `feather` params, as
@@ -725,7 +789,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "select.lasso",
             "Lasso",
             [],
-            r##"{"points":[[x,y],…],"mode":"replace|add|subtract|intersect"="replace","antiAlias":bool=true,"feather":px=0}"##,
+            r##"{"points":[[x,y],…],"mode":"replace|add|subtract|intersect"="replace","antiAlias":bool=true,"feather":px=0,"polygonal":bool=false,"historyName"?:text (1..64 characters with a visible one, no control, line-break or hidden format characters, invisible padding at the ends (spaces, joiners, fillers, blank Braille and other default-ignorable blanks, and selectors cut off by them) trimmed; the History step name when a tool other than the Lasso draws it, e.g. "Patch Tool"; default "Lasso")}"##,
             has_doc,
             lasso
         ),

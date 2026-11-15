@@ -7,7 +7,7 @@
 
 use std::sync::Arc;
 
-use photocraft_doc::{Document, Fill, Layer, LayerContent, TextLayer};
+use photocraft_doc::{Document, Fill, GradientStyle, Layer, LayerContent, TextLayer};
 use photocraft_geom::{Affine, Point, Rect};
 use photocraft_raster::Surface;
 
@@ -52,8 +52,12 @@ fn map_angle(a: &Affine, deg: f32) -> f32 {
 }
 
 fn map_fill(a: &Affine, f: &mut Fill) {
-    if let Fill::Gradient { angle, offset, .. } = f {
+    if let Fill::Gradient { angle, offset, style, reverse, .. } = f {
         *angle = map_angle(a, *angle);
+        // An Angle gradient sweeps clockwise from its angle; a mirror turns the sweep around.
+        if *style == GradientStyle::Angle && a.m[0] * a.m[3] - a.m[1] * a.m[2] < 0.0 {
+            *reverse = !*reverse;
+        }
         // The centre offset (a fraction of the frame) turns with the canvas: exact for 90° turns
         // and flips, where the frame's sides swap with the axes. Scale (Image Size) resizes the
         // frame too, so only each axis's direction applies.
@@ -138,6 +142,26 @@ pub(crate) fn retarget_type_resolution(doc: &mut Document, dpi: f32) {
         }
         retag_text(dpi, t);
     });
+    // The styles travelling with the copies scale the same way: a style a copy brings to a
+    // document that lacks it defines the rewritten size, so the copy has no local override.
+    let st = &mut doc.text_styles;
+    let sets = st
+        .character
+        .iter_mut()
+        .map(|c| &mut c.attrs)
+        .chain(st.paragraph.iter_mut().chain([&mut st.basic]).flat_map(|p| [&mut p.para_attrs, &mut p.char_attrs]));
+    for attrs in sets {
+        for (key, v) in attrs.iter_mut() {
+            let Some(n) = v.as_f64().filter(|n| n.is_finite()) else { continue };
+            let n = n as f32;
+            let scaled = match key.as_str() {
+                "size_pt" | "leading_pt" => point_size(n, k),
+                "baseline_shift_pt" | "first_line_indent_pt" | "start_indent_pt" | "end_indent_pt" | "space_before_pt" | "space_after_pt" => grown(n, k),
+                _ => continue,
+            };
+            *v = serde_json::json!(scaled);
+        }
+    }
 }
 
 /// A positive size in points times `k`, kept finite and above zero (a tiny ratio must not make
@@ -156,6 +180,14 @@ fn grown(v: f32, k: f64) -> f32 {
 /// the parts Free Transform (`transform_layer`) doesn't move are touched: unlinked vector masks,
 /// gradient fill angles, effect reference points and artboards.
 pub(crate) fn transform_layer_geometry(l: &mut Layer, a: &Affine, content: bool, dpi: f32) {
+    if content && let Some(f) = &mut l.frame {
+        f.transform = a.mul(&f.transform);
+        // Past `Frame::valid`'s bounds it would no longer load; the vector mask, moved below,
+        // keeps the clip as a plain masked group.
+        if !f.valid() {
+            l.frame = None;
+        }
+    }
     if let Some(vm) = l.vector_mask.as_mut()
         && (content || !vm.linked)
     {
@@ -210,9 +242,27 @@ pub(crate) fn transform_doc_marks(doc: &mut Document, a: &Affine) {
     if let Some(wp) = &mut doc.work_path {
         *wp = wp.transform(a);
     }
+    // A note's icon point maps with the pixels; its popup keeps its size (#11795). Under Image Size
+    // and Canvas Size it also keeps its offset from the icon, as Photoshop's does. Where it sits
+    // after a turn or flip wasn't measured, so it keeps today's origin there: the top-left of the
+    // mapped rectangle.
     for n in &mut doc.notes {
+        // An all-zero popup means none is stored (PSD export writes its default one): keep it.
+        if n.popup == [0.0; 4] {
+            n.position = map_pt(a, n.position);
+            continue;
+        }
+        let [px, py] = n.position;
+        let (dx, dy, w, h) = (n.popup[0] - px, n.popup[1] - py, n.popup[2] - n.popup[0], n.popup[3] - n.popup[1]);
         n.position = map_pt(a, n.position);
-        n.popup = map_box(a, n.popup);
+        let [m0, m1, m2, m3, ..] = a.m;
+        let [x, y] = if m1.abs() < EPS && m2.abs() < EPS && m0 > 0.0 && m3 > 0.0 {
+            [n.position[0] + dx, n.position[1] + dy]
+        } else {
+            let [l, t, ..] = map_box(a, n.popup);
+            [l, t]
+        };
+        n.popup = [x, y, x + w, y + h];
     }
     for g in &mut doc.measurement.count_groups {
         for p in &mut g.points {
@@ -255,6 +305,18 @@ pub(crate) fn transform_doc_marks(doc: &mut Document, a: &Affine) {
     }
 }
 
+/// Runs `f` (Image Size, Canvas Size, Image Rotation) and puts the count points back where they
+/// were: they keep their document coordinates, also where they end up off the canvas, as in the
+/// reference application (#11762). Other marks follow the map as `f` applies it.
+pub(crate) fn keeping_count_points<R>(doc: &mut Document, f: impl FnOnce(&mut Document) -> R) -> R {
+    let saved: Vec<Vec<[f64; 2]>> = doc.measurement.count_groups.iter().map(|g| g.points.clone()).collect();
+    let r = f(doc);
+    for (g, points) in doc.measurement.count_groups.iter_mut().zip(saved) {
+        g.points = points;
+    }
+    r
+}
+
 /// Applies `a` to all non-pixel geometry of the document (layers and document marks).
 pub(crate) fn transform_geometry(doc: &mut Document, a: &Affine) {
     let dpi = doc.resolution_dpi;
@@ -269,9 +331,34 @@ pub(crate) fn transform_geometry(doc: &mut Document, a: &Affine) {
 pub(crate) enum Refresh {
     /// Shapes only (their pixels are clipped to the canvas, which may have grown).
     Shapes,
-    /// Type, shapes and smart objects (after a resampling map). Smart objects whose source is
-    /// unavailable keep their (already mapped) cache.
+    /// Type, shapes and smart objects (after a resampling map: Image Size, Image Rotation ›
+    /// Arbitrary). Smart objects whose source is unavailable keep their (already mapped) cache;
+    /// so does type set in a font that isn't installed ([`keeps_own_pixels`]), which the caller
+    /// maps with the pixels instead of re-rendering it in a substitute face (#8860).
     All,
+}
+
+/// Type whose rendering [`Refresh::All`] keeps: it has pixels (a PSD's, say) and uses a font
+/// that isn't installed, so a re-render would draw a substitute face.
+pub(crate) fn keeps_own_pixels(t: &TextLayer) -> bool {
+    t.cache.is_some() && !crate::type_extra_cmds::missing_fonts_in_layer(t).is_empty()
+}
+
+/// Applies `map` to the cached pixels of every type layer [`keeps_own_pixels`] (inside groups
+/// too), for whole-image maps that otherwise move type by its transform alone.
+pub(crate) fn map_missing_font_type<E>(layers: &mut [Layer], map: &mut dyn FnMut(&Surface) -> Result<Surface, E>) -> Result<(), E> {
+    for l in layers {
+        match &mut l.content {
+            LayerContent::Group(g) => map_missing_font_type(&mut g.children, map)?,
+            LayerContent::Text(t) if keeps_own_pixels(t) => {
+                if let Some(c) = &mut t.cache {
+                    *c = map(c)?;
+                }
+            }
+            _ => {}
+        }
+    }
+    Ok(())
 }
 
 pub(crate) fn refresh(doc: &mut Document, what: Refresh) {
@@ -280,7 +367,7 @@ pub(crate) fn refresh(doc: &mut Document, what: Refresh) {
             match &mut l.content {
                 LayerContent::Group(g) => rec(snapshot, &mut g.children, what),
                 LayerContent::Shape(sh) => crate::vector_cmds::refresh_shape(snapshot, sh),
-                LayerContent::Text(t) if what == Refresh::All => crate::type_cmds::refresh(snapshot, t),
+                LayerContent::Text(t) if what == Refresh::All && !keeps_own_pixels(t) => crate::type_cmds::refresh(snapshot, t),
                 LayerContent::Smart(_) if what == Refresh::All => {
                     let _ = crate::smart_cmds::refresh_layer(snapshot, l);
                 }

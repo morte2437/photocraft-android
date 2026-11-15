@@ -98,6 +98,8 @@ pub struct BrushesPanelState {
     pub show_stroke: bool,
     /// The Brush Preset picker's cards: show the tip thumbnail.
     pub show_tip: bool,
+    /// The Brush Preset picker's search field (its gear menu's Show Search Bar).
+    pub show_search: bool,
     /// The Brush Preset picker's cards and the Brushes tab's grid cells and list rows: their size
     /// scale, from the picker's footer slider (`crate::brush_picker::body`) or the tab's preview-size
     /// slider. 1 is the standard size; the cards' width, height and
@@ -117,6 +119,7 @@ impl Default for BrushesPanelState {
             show_name: true,
             show_stroke: true,
             show_tip: true,
+            show_search: true,
             scale: 1.0,
         }
     }

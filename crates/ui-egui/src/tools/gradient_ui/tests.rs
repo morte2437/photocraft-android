@@ -202,14 +202,14 @@ fn sidebar_transparent_preset_reaches_classic_canvas_over_existing_art() {
 }
 
 #[test]
-fn gradient_blend_mode_reaches_live_and_classic_drags() {
+fn gradient_blend_mode_reaches_classic_drags_not_the_live_fill_layer() {
     use photocraft_color::BlendMode;
     for mode in [BlendMode::Difference, BlendMode::Multiply, BlendMode::Screen, BlendMode::Exclusion] {
         let mut live = app_with_gradient("linear");
         live.ui.tool_options.gradient_blend_mode = mode;
         drag(&mut live, [20.0, 60.0], [180.0, 60.0]);
         let layer = live.session.active().unwrap().doc.layers.last().unwrap();
-        assert_eq!(layer.blend, mode, "live {mode:?}");
+        assert_eq!(layer.blend, BlendMode::Normal, "the live fill layer is Normal whatever the Classic mode holds ({mode:?})");
 
         let mut classic = app_with_gradient("linear");
         classic.ui.tool_options.gradient_classic = true;
@@ -229,39 +229,6 @@ fn gradient_blend_mode_reaches_live_and_classic_drags() {
             assert!((actual - want).abs() < 0.02, "classic {mode:?}: {px:?}");
         }
     }
-}
-
-#[test]
-fn changing_live_gradient_mode_updates_selected_fill_layer() {
-    use photocraft_color::BlendMode;
-    let mut app = app_with_gradient("linear");
-    drag(&mut app, [20.0, 60.0], [180.0, 60.0]);
-    let before = app.ui.tool_options.clone();
-    app.ui.tool_options.gradient_blend_mode = BlendMode::Difference;
-    options_changed(&mut app, &before);
-    let layer = app.session.active().unwrap().doc.layers.last().unwrap();
-    assert_eq!(layer.blend, BlendMode::Difference);
-}
-
-#[test]
-fn changing_live_gradient_opacity_updates_selected_fill_layer() {
-    let mut app = app_with_gradient("linear");
-    drag(&mut app, [20.0, 60.0], [180.0, 60.0]);
-    let past = app.session.active().unwrap().history.past_len();
-    // A scrub is live on every frame and one undo step.
-    for pct in [70.0, 55.0, 40.0] {
-        app.ui.tool_options.fill_opacity = pct;
-        opacity_changed(&mut app, Some(7));
-    }
-    opacity_changed(&mut app, None);
-    let st = app.session.active().unwrap();
-    assert!((st.doc.layers.last().unwrap().opacity - 0.4).abs() < 1e-6);
-    assert_eq!(st.history.past_len(), past + 1, "one undo step, none for an unchanged value");
-    // Classic mode paints pixels: the options bar leaves the layer alone.
-    app.ui.tool_options.gradient_classic = true;
-    app.ui.tool_options.fill_opacity = 80.0;
-    opacity_changed(&mut app, None);
-    assert!((app.session.active().unwrap().doc.layers.last().unwrap().opacity - 0.4).abs() < 1e-6);
 }
 
 #[test]
@@ -438,4 +405,28 @@ fn the_ramp_covers_its_checkerboard_at_half_pixel_offsets() {
             .expect("the ramp mesh");
         assert_eq!(ramp, checker.round_to_pixels(ppp), "{ppp}x: the ramp covers every pixel of the checker");
     }
+}
+
+/// #9311 review: with an artboard selected, the live preview puts the new gradient layer where
+/// the commit will, on top of that board's contents, so it doesn't jump on release (#9147).
+#[test]
+fn the_preview_of_a_new_gradient_goes_inside_the_selected_artboard() {
+    let mut app = app_with_gradient("linear");
+    app.run("layer.new.artboard", json!({"x": 0, "y": 0, "width": 90, "height": 120, "name": "Board A"})).unwrap();
+    let b = app.run("layer.new.artboard", json!({"x": 100, "y": 0, "width": 100, "height": 120, "name": "Board B"})).unwrap();
+    let board = LayerId(b["layer"].as_u64().unwrap());
+    // Existing content on the board, so a preview at its bottom wouldn't pass.
+    app.run("layer.select", json!({"name": "Board B"})).unwrap();
+    app.run("layer.new.layer", json!({"name": "content"})).unwrap();
+    app.run("layer.select", json!({"name": "Board B"})).unwrap();
+    crate::canvas::tool_event(&mut app, ToolEvent::Down { x: 110.0, y: 60.0, pressure: 1.0 }, mods());
+    crate::canvas::tool_event(&mut app, ToolEvent::Move { x: 190.0, y: 60.0, pressure: 1.0 }, mods());
+    let (doc, _) = display_doc(&mut app, 0).expect("a preview while drawing");
+    let top = |d: &Document| d.layer(board).and_then(photocraft_doc::Layer::children).and_then(<[photocraft_doc::Layer]>::last).map(|l| l.id);
+    assert_eq!(top(&doc), Some(PREVIEW_LAYER), "the preview sits on top of Board B's contents");
+    let kids = doc.layer(board).and_then(photocraft_doc::Layer::children).map(<[photocraft_doc::Layer]>::len);
+    assert_eq!(kids, Some(2), "beside the board's existing layer");
+    crate::canvas::tool_event(&mut app, ToolEvent::Up { x: 190.0, y: 60.0 }, mods());
+    let committed = app.session.active().unwrap().active_layer;
+    assert_eq!(top(&app.session.active().unwrap().doc), committed, "and so does the committed layer");
 }

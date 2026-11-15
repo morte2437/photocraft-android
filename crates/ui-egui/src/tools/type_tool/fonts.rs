@@ -338,6 +338,18 @@ pub(super) fn font_picker(app: &mut PhotocraftApp, ui: &mut egui::Ui, current: &
     Some(style)
 }
 
+/// The options bar's hover text on the [`font_picker`] just drawn in `ui`: its name field and its
+/// arrow, by the ids [`family_picker_in`] gives them. Only the options bar calls it (#12057); the
+/// panels sharing the picker keep their texts.
+pub(super) fn font_picker_tip(ui: &egui::Ui, tip: &str) {
+    let field = ui.make_persistent_id(egui::IdSalt::new("type-font"));
+    for id in [field, field.with("arrow")] {
+        if let Some(r) = ui.ctx().read_response(id) {
+            r.on_hover_text(tip);
+        }
+    }
+}
+
 /// The font list's maximum height: it scrolls inside the menu, under the fixed preview and filters.
 pub(super) const FONT_LIST_HEIGHT: f32 = 440.0;
 /// The font list's width: star, style expander, name, format badge and sample.
@@ -784,11 +796,9 @@ pub(crate) fn family_picker_in(
     }
     if !open && !escape && ui.is_enabled() {
         let notches = if had_focus { f32::from(u8::from(up)) - f32::from(u8::from(down)) } else { 0.0 };
-        let hovered = input.hovered() || arrow.hovered();
-        if hovered {
-            ui.input_mut(|i| i.smooth_scroll_delta = egui::Vec2::ZERO);
-        }
-        let notches = notches + crate::widgets::wheel_notches_of(ui, field.with("family-wheel"), hovered, 1.0);
+        // A gesture that started over the field, not one scrolling the panel past it (#11353).
+        let wheel = crate::field_wheel::hover_notches(ui, field.with("family-wheel"), rect, 1.0);
+        let notches = notches + wheel;
         // Closed-field navigation stays alphabetical, independent of recent picks (#3350, #7407).
         let (rows, _) = font_menu_rows(families, labels, "", &[]);
         if let Some(i) = rows.iter().position(|(f, _)| *f == current)

@@ -205,3 +205,41 @@ fn dry_and_wet_transitions_match_frozen_kernel() {
         }
     }
 }
+
+/// A sample surface is read only under the dab: dabs that overhang the working rectangle or sit in
+/// a corner of a much larger one still match the frozen kernel.
+#[test]
+fn sampled_dabs_clipped_by_the_working_rectangle_match_frozen_kernel() {
+    use crate::retouch::Region;
+    use crate::{BrushContext, BrushSettings, Dab};
+    use photocraft_color::{PixelFormat, SampleType};
+    use photocraft_geom::Point;
+
+    let work_rect = Rect::new(10, 10, 60, 50);
+    let fmt = PixelFormat::new(photocraft_color::ColorMode::Cmyk, SampleType::U16, true);
+    let mut surface = Surface::new(fmt);
+    surface.fill_rect(Rect::new(0, 0, 80, 80), &from_rgba(&fmt, [0.25, 0.5, 0.75, 0.9]));
+    let mut source = Surface::new(PixelFormat::RGBA32F);
+    for y in 0..80 {
+        for x in 0..80 {
+            source.fill_rect(Rect::new(x, y, x + 1, y + 1), &[x as f32 / 80.0, y as f32 / 80.0, 0.3, 0.8]);
+        }
+    }
+    let ctx = BrushContext::new(&BrushSettings { size: 30.0, ..Default::default() });
+    for sample in [&source, &surface] {
+        let mut actual = Region::read(&surface, work_rect);
+        let mut expected = actual.clone();
+        let mut state = MixerState::default();
+        state.load([0.8, 0.2, 0.1, 1.0]);
+        let mut expected_state = state.clone();
+        // Overhanging the left edge, a corner, and the middle.
+        for (i, (x, y)) in [(8.0, 30.0), (62.0, 52.0), (30.0, 12.0), (35.0, 30.0)].into_iter().enumerate() {
+            let fp = ctx.footprint(&Dab::round(Point::new(x, y), 12.0, 1.0), i);
+            let settings = MixerSettings { wet: 0.8, mix: 0.7, ..Default::default() };
+            reference(&mut expected, &fp, fmt, Some(sample), &settings, &mut expected_state, false);
+            apply_mixer_dab(&mut actual, &fp, fmt, Some(sample), &settings, &mut state, false);
+            assert_eq!(actual, expected, "dab {i}");
+            assert_eq!(state, expected_state, "state after dab {i}");
+        }
+    }
+}

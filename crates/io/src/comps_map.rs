@@ -14,11 +14,11 @@
 
 use std::collections::HashMap;
 
+use craft_psd::descriptor::{Descriptor, UnicodeString, Value, VersionedDescriptor};
+use craft_psd::metadata::{MetadataItem, parse_shmd, write_shmd};
 use photocraft_doc::comps::layer_position;
 use photocraft_doc::{Artboard, ArtboardBackground, CompLayerState, Document, Guides, Layer, LayerComp};
 use photocraft_geom::Rect;
-use photocraft_psd::descriptor::{Descriptor, UnicodeString, Value, VersionedDescriptor};
-use photocraft_psd::metadata::{MetadataItem, parse_shmd, write_shmd};
 
 use crate::blocks::{color_from_desc, color_to_desc, num};
 

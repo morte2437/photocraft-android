@@ -48,6 +48,12 @@ impl Style {
         Self { ppp, width, dash, phase }
     }
 
+    /// How far the pattern has marched and its period, in device pixels.
+    #[cfg(test)]
+    pub(crate) fn march(&self) -> (i64, i64) {
+        (self.phase, 2 * self.dash)
+    }
+
     /// The black runs of `[lo, hi)` along one pixel row (or column) of a band. A pixel is black
     /// where `(s + phase) mod 2·dash < dash`, `s` being its position along the edge plus `off`,
     /// `width` times its position across it: `x + w·y` on a horizontal edge, `y + w·x` on a

@@ -23,8 +23,12 @@ use crate::{EngineError, Result, Session};
 #[derive(Clone, Debug, PartialEq)]
 pub struct FadeSource {
     pub doc: DocId,
-    /// Document revision right after the command; any later change disables Fade.
+    /// Document revision right after the command, or after a later step that only showed or hid
+    /// other layers (#13805); any other change disables Fade.
     pub revision: u64,
+    /// History id of the state before the command, which Fade blends back towards. Steps that only
+    /// showed or hid other layers can sit between that state and the current one.
+    pub before: Option<u64>,
     pub target: FadeTarget,
     pub label: String,
 }
@@ -70,10 +74,12 @@ fn fadeable(id: &str) -> bool {
 /// Called after every successful command: remember a fadeable result.
 pub(crate) fn after_command(s: &mut Session, id: &str, params: &Value) {
     if !fadeable(id) {
+        keep_after_visibility(s, id, params);
         return;
     }
     let Some(st) = s.active() else { return };
     let label = st.history.undo_label().unwrap_or(id).to_string();
+    let before = st.history.past_len().checked_sub(1).and_then(|i| st.history.row_id(i));
     let prev = st.history.state(st.history.past_len().wrapping_sub(1));
     let prev = prev.as_deref();
     let surf_eq = |a: Option<&Surface>, b: Option<&Surface>| match (a, b) {
@@ -100,7 +106,7 @@ pub(crate) fn after_command(s: &mut Session, id: &str, params: &Value) {
     }
     let channel = channel.filter(|target| prev.is_none_or(|prev| !surf_eq(channel_surface(&st.doc, target), channel_surface(prev, target))));
     if let Some(target) = channel {
-        s.edit_state.fade = Some(FadeSource { doc: st.doc.id, revision: st.revision, target, label });
+        s.edit_state.fade = Some(FadeSource { doc: st.doc.id, revision: st.revision, before, target, label });
         return;
     }
     let Some(layer) = st.active_layer else { return };
@@ -113,7 +119,35 @@ pub(crate) fn after_command(s: &mut Session, id: &str, params: &Value) {
                 && !surf_eq(now.and_then(|l| l.mask.as_ref().map(|m| &m.surface)), was.and_then(|l| l.mask.as_ref().map(|m| &m.surface)))
         });
     let target = if mask { FadeTarget::Mask(layer) } else { FadeTarget::Pixels(layer) };
-    s.edit_state.fade = Some(FadeSource { doc: st.doc.id, revision: st.revision, target, label });
+    s.edit_state.fade = Some(FadeSource { doc: st.doc.id, revision: st.revision, before, target, label });
+}
+
+/// Hiding or showing another layer right after a fadeable step keeps Fade available, as in
+/// Photoshop (#13805): Fade still blends the step back towards the state before it. A step that
+/// shows or hides the faded layer itself leaves Fade disabled.
+fn keep_after_visibility(s: &mut Session, id: &str, params: &Value) {
+    let only_visibility = match id {
+        "layer.hideLayers" | "layer.showLayers" | "layer.showOnly" => true,
+        // The Layers panel's eye.
+        "layer.setProps" => {
+            params.as_object().is_some_and(|o| o.contains_key("visible") && o.keys().all(|k| matches!(k.as_str(), "layer" | "layers" | "visible" | "coalesce")))
+        }
+        _ => false,
+    };
+    let (Some(st), Some(f)) = (s.active(), s.edit_state.fade.as_ref()) else { return };
+    let (FadeTarget::Pixels(layer) | FadeTarget::Mask(layer)) = f.target else { return };
+    // Each of these commands changes the document once, so Fade was available right before it.
+    if !only_visibility || f.doc != st.doc.id || f.revision.checked_add(1) != Some(st.revision) {
+        return;
+    }
+    let visible = |doc: &Document| doc.layer(layer).map(|l| l.visible);
+    if fade::before_state(st, f).is_none_or(|before| visible(&before) != visible(&st.doc)) {
+        return;
+    }
+    let revision = st.revision;
+    if let Some(f) = s.edit_state.fade.as_mut() {
+        f.revision = revision;
+    }
 }
 
 /// Tile identity of a surface (pointer equality of its COW tiles).
@@ -313,7 +347,7 @@ pub use content_aware::{CafPlan, FillEdit, MAX_CAF_EDITS, MAX_CAF_POINTS, SelOp,
 use content_aware::{can_caf, content_aware_fill, delete_and_fill};
 pub use content_aware_scale::ContentAwareScalePreview;
 use content_aware_scale::content_aware_scale;
-pub use fade::fade_surface;
+pub use fade::{FadePreview, fade_preview, fade_surface};
 use fade::{can_fade, fade};
 pub use find_replace::find_matches;
 use find_replace::{find_replace, has_type_layer};
@@ -329,7 +363,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Fade…",
             ["Edit"],
             Some("Cmd+Shift+F"),
-            r##"{"opacity":0..100=100,"mode":"normal|multiply|screen|overlay|softLight|hardLight|darken|lighten|difference|color|luminosity"}"##,
+            r##"{"opacity":0..100=100,"mode":"normal|dissolve|darken|multiply|colorBurn|linearBurn|darkerColor|lighten|screen|colorDodge|linearDodge|lighterColor|overlay|softLight|hardLight|vividLight|linearLight|pinLight|hardMix|difference|exclusion|subtract|divide|hue|saturation|color|luminosity"}"##,
             can_fade,
             fade
         ),
@@ -415,3 +449,7 @@ pub fn custom_shapes(s: &Session) -> &[CustomShape] {
 #[cfg(test)]
 #[path = "edit_menu_cmds/tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "edit_menu_cmds/fade_visibility_tests.rs"]
+mod fade_visibility_tests;

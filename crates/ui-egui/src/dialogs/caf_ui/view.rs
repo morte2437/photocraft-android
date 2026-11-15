@@ -380,22 +380,19 @@ pub fn show(app: &mut PhotocraftApp, ctx: &egui::Context) {
             let pr = ERect::from_min_size(img.min, vec2((w.pw * w.k) as f32 * v.zoom, (w.ph * w.k) as f32 * v.zoom));
             clip.with_clip_rect(img.intersect(area)).image(tex.id(), pr, uv, Color32::WHITE);
         }
-        // The fill area's outline (marching ants: black dashes on white).
-        let phase = (ui.input(|i| i.time) * 8.0) as usize;
+        // The fill area's outline: marching ants, as the canvas draws them.
         match &w.outline {
-            Some(edges) => {
-                for e in edges {
-                    let (a, b) = (v.to_screen([f64::from(e[0][0]), f64::from(e[0][1])]), v.to_screen([f64::from(e[1][0]), f64::from(e[1][1])]));
-                    let dark = ((e[0][0] + e[0][1]) as usize / 4 + phase).is_multiple_of(2);
-                    clip.line_segment([a, b], Stroke::new(1.0, if dark { Color32::BLACK } else { Color32::WHITE }));
-                }
+            Some(segs) if segs.is_empty() => {}
+            Some(segs) => {
+                let time = ui.input(|i| i.time);
+                crate::canvas::marching_ants_mapped(&clip, segs, time, |p| v.to_screen([f64::from(p[0]), f64::from(p[1])]));
+                ctx.request_repaint_after(std::time::Duration::from_millis(100));
             }
             None => {
                 let b = v.rect(bounds(&w.base));
                 clip.rect_stroke(b, 0.0, Stroke::new(1.0, Color32::WHITE), egui::StrokeKind::Outside);
             }
         }
-        ctx.request_repaint_after(std::time::Duration::from_millis(120));
         if let Some((_, pts)) = &w.lasso
             && pts.len() > 1
         {

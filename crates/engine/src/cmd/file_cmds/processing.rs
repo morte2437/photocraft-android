@@ -1,11 +1,22 @@
-use super::batch_run::{batch_inputs_tree, process_tree};
+use super::batch_run::{BatchInput, batch_inputs_tree, process_document_copies, process_tree};
 use super::open::import_opened;
-use super::paths::{file_name, list_images, read_file, stem};
+use super::paths::{file_name, list_images, read_file, stem, untitled_name};
 use super::save::SaveOpts;
 use super::{
     ColorMode, Document, EngineError, Layer, LayerContent, LayerId, Result, Session, Surface, Value, buffer_surface, flattened_checked, json, size_param,
     str_param,
 };
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+#[path = "image_processor_formats_tests.rs"]
+mod image_processor_formats_tests;
+#[cfg(all(test, not(target_arch = "wasm32")))]
+#[path = "image_processor_tests.rs"]
+mod image_processor_tests;
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+#[path = "load_stack_name_tests.rs"]
+mod load_stack_name_tests;
 
 // ---------- Automate ----------
 
@@ -84,17 +95,33 @@ pub(super) fn parse_steps(v: &Value) -> Result<Vec<(String, Value)>> {
         .collect()
 }
 
+/// Resize and export folder inputs or copies of the current/all open documents.
+/// An omitted `source` keeps the folder-input contract; document sources include unsaved
+/// edits without modifying the original documents. Invalid parameters and missing documents
+/// return an error; processing failures and output-name collisions appear in per-file errors.
 pub(super) fn image_processor(s: &mut Session, p: &Value) -> Result<Value> {
-    let cmd = "file.scripts.imageProcessor";
+    let cmd = IMAGE_PROCESSOR;
+    let source = match p.get("source") {
+        None | Some(Value::Null) => "folder",
+        Some(Value::String(source)) if matches!(source.as_str(), "folder" | "current" | "open") => source.as_str(),
+        _ => return Err(EngineError::BadParams { cmd: cmd.into(), msg: "source must be folder, current or open".into() }),
+    };
     let output = str_param(p, "output", cmd)?.to_string();
-    let inputs = batch_inputs_tree(p, cmd, &output)?;
-    let format = p.get("format").and_then(Value::as_str).unwrap_or("jpg").to_string();
+    if p.get("format").is_none() && ["jpeg", "psd", "tiff"].iter().any(|key| p.get(key).is_some()) {
+        return image_processor_formats(s, p, source, &output);
+    }
+    let format = p.get("format").and_then(Value::as_str).unwrap_or("jpg");
+    // The format becomes a filename extension, never a path supplied by a caller.
+    if format.trim_start_matches('.').is_empty() || format.contains(['/', '\\']) || format.chars().any(char::is_control) {
+        return Err(EngineError::BadParams { cmd: cmd.into(), msg: "format must be a filename extension".into() });
+    }
     let fit = match (size_param(p, "width"), size_param(p, "height")) {
         (None, None) => None,
         (w, h) => Some(json!({"width": w.unwrap_or(1e9), "height": h.unwrap_or(1e9), "dontEnlarge": true})),
     };
     let to_srgb = p.get("convertToSrgb").and_then(Value::as_bool).unwrap_or(false);
-    let r = process_tree(s, &inputs, &output, &format, SaveOpts::from_params(s, p, cmd)?.or_quality(8.0), "", &|scratch, _| {
+    let save = SaveOpts::from_params(s, p, cmd)?.or_quality(8.0);
+    let process = |scratch: &mut Session, _: &str| {
         if to_srgb && scratch.active().is_some_and(|d| d.doc.mode != ColorMode::Rgb) {
             scratch.execute("image.mode.rgb", json!({}))?;
         }
@@ -102,8 +129,140 @@ pub(super) fn image_processor(s: &mut Session, p: &Value) -> Result<Value> {
             fit_image(scratch, fp)?;
         }
         Ok(false)
-    });
+    };
+    let r = if source == "folder" {
+        let inputs = batch_inputs_tree(p, cmd, &output)?;
+        process_tree(s, &inputs, &output, format, save, "", &process)
+    } else {
+        let documents = if source == "current" { vec![s.active().ok_or(EngineError::NoDocument)?] } else { s.documents().iter().collect() };
+        if documents.is_empty() {
+            return Err(EngineError::NoDocument);
+        }
+        process_document_copies(s, &documents, &output, format, save, &process)
+    };
     Ok(r)
+}
+
+const IMAGE_PROCESSOR: &str = "file.scripts.imageProcessor";
+const IMAGE_PROCESSOR_NO_FORMAT: &str = "You must save to at least one file type.";
+
+fn image_processor_param(message: impl Into<String>) -> EngineError {
+    EngineError::BadParams { cmd: IMAGE_PROCESSOR.into(), msg: message.into() }
+}
+
+struct ProcessorFormat {
+    extension: &'static str,
+    save: SaveOpts,
+    fit: Option<Value>,
+    srgb: bool,
+}
+
+fn processor_bool(options: &Value, key: &str, default: bool) -> Result<bool> {
+    match options.get(key) {
+        None => Ok(default),
+        Some(value) => value.as_bool().ok_or_else(|| image_processor_param(format!("{key} must be true or false"))),
+    }
+}
+
+fn processor_number(options: &Value, key: &str, default: f64, max: f64) -> Result<f64> {
+    match options.get(key) {
+        None => Ok(default),
+        Some(value) => {
+            value.as_f64().filter(|n| (1.0..=max).contains(n)).ok_or_else(|| image_processor_param(format!("{key} must be a number from 1 to {max}")))
+        }
+    }
+}
+
+fn processor_format(s: &Session, key: &str, extension: &'static str, options: &Value) -> Result<Option<ProcessorFormat>> {
+    if options.is_null() || options == &Value::Bool(false) {
+        return Ok(None);
+    }
+    if !options.is_object() {
+        return Err(image_processor_param(format!("{key} must be an object or false")));
+    }
+    if !processor_bool(options, "enabled", true)? {
+        return Ok(None);
+    }
+    let fit = if processor_bool(options, "resize", false)? {
+        let width = processor_number(options, "width", 1.0, 30_000.0)?;
+        let height = processor_number(options, "height", 1.0, 30_000.0)?;
+        Some(json!({"width": width, "height": height, "dontEnlarge": true}))
+    } else {
+        None
+    };
+    let (params, srgb) = match key {
+        "jpeg" => (json!({"quality": processor_number(options, "quality", 5.0, 12.0)?}), processor_bool(options, "convertToSrgb", false)?),
+        "psd" => (json!({"maximizeCompatibility": processor_bool(options, "maximizeCompatibility", true)?}), false),
+        _ => {
+            let compression = if processor_bool(options, "lzw", false)? { "lzw" } else { "none" };
+            (json!({"tiffLayers": true, "tiffCompression": compression}), false)
+        }
+    };
+    let save = SaveOpts::from_params(s, &params, IMAGE_PROCESSOR)?;
+    Ok(Some(ProcessorFormat { extension, save, fit, srgb }))
+}
+
+enum ProcessorInputs<'a> {
+    Folder(Vec<BatchInput>),
+    Documents(Vec<&'a crate::DocState>),
+}
+
+fn image_processor_formats(s: &Session, p: &Value, source: &str, output: &str) -> Result<Value> {
+    // Resolve all settings and collect inputs before a format can write any files.
+    let mut formats = Vec::new();
+    for (key, extension) in [("jpeg", "jpg"), ("psd", "psd"), ("tiff", "tif")] {
+        if let Some(options) = p.get(key)
+            && let Some(format) = processor_format(s, key, extension, options)?
+        {
+            formats.push(format);
+        }
+    }
+    if formats.is_empty() {
+        return Err(image_processor_param(IMAGE_PROCESSOR_NO_FORMAT));
+    }
+    let inputs = match source {
+        "folder" => ProcessorInputs::Folder(batch_inputs_tree(p, IMAGE_PROCESSOR, output)?),
+        "current" => ProcessorInputs::Documents(vec![s.active().ok_or(EngineError::NoDocument)?]),
+        _ if s.documents().is_empty() => return Err(EngineError::NoDocument),
+        _ => ProcessorInputs::Documents(s.documents().iter().collect()),
+    };
+    let mut files = Vec::new();
+    let mut errors = Vec::new();
+    for format in formats {
+        // The existing runners prepare fresh scratch documents for each output.
+        let process = |scratch: &mut Session, out: &str| {
+            if let ProcessorInputs::Folder(inputs) = &inputs
+                && super::paths::is_file(out)
+                && inputs.iter().any(|input| super::paths::same_file(&input.path, out))
+            {
+                return Err(EngineError::Other(format!("output would replace a source file: {out}")));
+            }
+            if let Some(fit) = &format.fit {
+                fit_image(scratch, fit)?;
+            }
+            if format.srgb {
+                scratch.execute("edit.convertToProfile", json!({"profile": "srgb", "flatten": true}))?;
+            }
+            Ok(false)
+        };
+        let mut result = match &inputs {
+            ProcessorInputs::Folder(inputs) => process_tree(s, inputs, output, format.extension, format.save, "", &process),
+            ProcessorInputs::Documents(documents) => process_document_copies(s, documents, output, format.extension, format.save, &process),
+        };
+        if let Some(Value::Array(written)) = result.get_mut("files").map(Value::take) {
+            files.extend(written);
+        }
+        if let Some(Value::Array(failed)) = result.get_mut("errors").map(Value::take) {
+            errors.extend(failed.into_iter().map(|mut failure| {
+                failure["format"] = json!(format.extension);
+                if let Some(Value::String(message)) = failure.get_mut("error") {
+                    *message = format!("{}: {message}", format.extension);
+                }
+                failure
+            }));
+        }
+    }
+    Ok(json!({"files": files, "errors": errors}))
 }
 
 pub(super) fn load_files_into_stack(s: &mut Session, p: &Value) -> Result<Value> {
@@ -124,7 +283,11 @@ pub(super) fn load_files_into_stack(s: &mut Session, p: &Value) -> Result<Value>
     let first = &docs[0].1;
     let w = docs.iter().map(|(_, d)| d.size.width).max().unwrap_or(1);
     let h = docs.iter().map(|(_, d)| d.size.height).max().unwrap_or(1);
-    let mut stack = Document::new(stem(&paths[0]), photocraft_doc::Size::new(w, h), first.mode, first.depth);
+    // A new unsaved "Untitled-N" document, like Photoshop's Load Layers, not one named after a file.
+    let doc_name = untitled_name("Untitled", |n| s.documents().iter().any(|d| d.doc.name == n) || s.held_open_named(n));
+    // The smart object (Create Smart Object) keeps the first file's name.
+    let smart_name = stem(&paths[0]);
+    let mut stack = Document::new(doc_name, photocraft_doc::Size::new(w, h), first.mode, first.depth);
     stack.resolution_dpi = first.resolution_dpi;
     stack.icc_profile = first.icc_profile.clone();
     let fmt = stack.pixel_format();
@@ -142,7 +305,7 @@ pub(super) fn load_files_into_stack(s: &mut Session, p: &Value) -> Result<Value>
         // for Layer › Smart Objects › Stack Mode. Like Photoshop, they sit at the top level of the
         // contents, with no wrapper group.
         let layers = std::mem::take(&mut stack.layers);
-        let smart = crate::smart_cmds::layers_to_smart(&stack, &stem(&paths[0]), layers)?;
+        let smart = crate::smart_cmds::layers_to_smart(&stack, &smart_name, layers)?;
         stack.layers = vec![smart];
     }
     let i = s.add_document(stack, None);
@@ -150,10 +313,9 @@ pub(super) fn load_files_into_stack(s: &mut Session, p: &Value) -> Result<Value>
         s.execute("select.allLayers", json!({}))?;
         s.execute("edit.autoAlignLayers", json!({"projection": "auto"}))?;
         if smart {
-            let name = s.active().map(|d| d.doc.name.clone()).unwrap_or_default();
             s.edit("Convert to Smart Object", |doc, active| {
                 let layers = std::mem::take(&mut doc.layers);
-                let smart = crate::smart_cmds::layers_to_smart(doc, &name, layers)?;
+                let smart = crate::smart_cmds::layers_to_smart(doc, &smart_name, layers)?;
                 *active = Some(smart.id);
                 doc.layers = vec![smart];
                 Ok(())

@@ -1752,9 +1752,9 @@ fn placed_blocks_parse_back() {
         assert!((a - b).abs() < 1e-9);
     }
     assert_eq!(p.stack, Some(stack));
-    let tb = photocraft_psd::TaggedBlock::new(*b"SoLd", sold.clone());
+    let tb = craft_psd::TaggedBlock::new(*b"SoLd", sold.clone());
     tb.check_structure().unwrap();
-    let pl = photocraft_psd::TaggedBlock::new(*b"PlLd", plld_bytes(&spec, &mut w));
+    let pl = craft_psd::TaggedBlock::new(*b"PlLd", plld_bytes(&spec, &mut w));
     pl.check_structure().unwrap();
     // A template keeps its other keys; an unmoved transform keeps its exact quad.
     let mut tmpl = sold_descriptor(&sold).unwrap();

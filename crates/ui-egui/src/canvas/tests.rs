@@ -46,7 +46,7 @@ fn display_image_matches_egui_unmultiplied_conversion() {
     let reference = |img: photocraft_raster::Rgba8Image| egui::ColorImage::from_rgba_unmultiplied([img.width as usize, img.height as usize], &img.pixels);
     assert_eq!(super::display_image(None, &buf).pixels, reference(buf.to_rgba8()).pixels);
     let mut doc = photocraft_doc::Document::new("t", photocraft_geom::Size::new(1, 1), photocraft_doc::ColorMode::Rgb, photocraft_doc::SampleType::U8);
-    doc.icc_profile = Some(photocraft_cms::Builtin::AdobeRgbCompat.profile().to_bytes());
+    doc.icc_profile = Some(craft_cms::Builtin::AdobeRgbCompat.profile().to_bytes());
     let mut color = photocraft_engine::color_cmds::ColorState::default();
     color.settings.monitor_profile = "srgb".into();
     let d = color.canvas_display(&doc).unwrap();
@@ -143,7 +143,7 @@ fn a_channel_overlay_follows_a_size_changing_preview() {
             canvas_view(&mut app, ui, 0, Rect::from_min_size(Pos2::ZERO, vec2(800.0, 600.0)), view.clone(), true);
         });
         output.textures_delta.clear();
-        let overlay = crate::channel_view::ensure(&mut app, &ctx, 0).expect("the channel overlay");
+        let overlay = crate::channel_view::ensure(&mut app, &ctx, 0, None).expect("the channel overlay");
         let mesh = output
             .shapes
             .iter()
@@ -270,12 +270,14 @@ fn every_filter_previews_off_the_ui_thread_and_a_newer_value_cancels_the_old() {
     let stale = crate::filter_dialog::FilterPreviewKey {
         doc: st.doc.id,
         revision: st.revision,
+        sources: Vec::new(),
         dialog: d.id,
         active: st.active_layer,
         target: st.channel_view.target,
         command: "filter.blur.gaussianBlur".into(),
         params: json!({"radius": 999.0}),
         k: 1,
+        tool_colors: (app.session.tools.foreground, app.session.tools.background),
     };
     let (told, cancelled) = std::sync::mpsc::channel();
     app.filter_preview_worker
@@ -323,12 +325,14 @@ fn gated_blur_preview(app: &mut PhotocraftApp, ctx: &egui::Context) -> (std::syn
     let key = crate::filter_dialog::FilterPreviewKey {
         doc: st.doc.id,
         revision: st.revision,
+        sources: Vec::new(),
         dialog: d.id,
         active: st.active_layer,
         target: st.channel_view.target,
         command: command.into(),
         params,
         k: 1,
+        tool_colors: (app.session.tools.foreground, app.session.tools.background),
     };
     let doc = app.session.documents()[0].doc.clone();
     let documents: Vec<_> = app.session.documents().iter().map(|d| d.doc.clone()).collect();
@@ -347,6 +351,7 @@ fn gated_blur_preview(app: &mut PhotocraftApp, ctx: &egui::Context) -> (std::syn
                 key.target,
                 &documents,
                 &Default::default(),
+                Some(key.tool_colors),
             )
             .map(|d| {
                 let buffer = photocraft_compose::flatten(&d);
@@ -394,6 +399,231 @@ fn a_held_preview_frame_stays_on_the_canvas_when_the_proxy_factor_changes() {
     drive_until(&mut app, &ctx, "the full-resolution frame", |a| a.filter_preview.as_ref().is_some_and(|p| p.key.k == 1 && p.result.is_some()));
     let (k, _, size) = ensure_filter_preview(&mut app, 0, &ctx).expect("the new frame");
     assert_eq!((k, size), (1, [2400, 2200]));
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn indexed_matte_preview_matches_commit_and_refreshes_tool_colors_inline_and_on_worker() {
+    for background in [false, true] {
+        for depth in [8, 16, 32] {
+            for matte in ["foreground", "background"] {
+                let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), Default::default());
+                app.background_jobs = background;
+                app.run("file.new", json!({"width": 64, "height": 48, "depth": depth, "background": "transparent"})).unwrap();
+                app.run("edit.assignProfile", json!({"profile": "adobe-rgb-compat"})).unwrap();
+                app.run("edit.colorSettings", json!({"workingRgb": "display-p3"})).unwrap();
+                app.session
+                    .edit("Translucent edge", |doc, active| {
+                        let format = doc.pixel_format();
+                        doc.layer_mut(active.unwrap())
+                            .unwrap()
+                            .surface_mut()
+                            .unwrap()
+                            .fill_rect(photocraft_geom::Rect::new(0, 0, 32, 48), &photocraft_raster::from_rgba(&format, [1.0, 0.0, 0.0, 0.5]));
+                        Ok(())
+                    })
+                    .unwrap();
+                let source = app.session.active().unwrap().doc.clone();
+                let params = json!({"palette": "exact", "forced": "none", "dither": "none", "matte": matte});
+                crate::filter_dialog::open(&mut app, "image.mode.indexedColor").unwrap();
+                app.ui.dialogs.last_mut().unwrap().fields.extend(params.as_object().unwrap().clone());
+                let ctx = egui::Context::default();
+                let mut previous = None;
+                for (foreground, background_color) in [("#3366cc", "#cc6633"), ("#26bf59", "#bf26a6")] {
+                    app.session.execute("tools.setColors", json!({"foreground": foreground, "background": background_color})).unwrap();
+                    let colors = (app.session.tools.foreground, app.session.tools.background);
+                    let shown = ensure_filter_preview(&mut app, 0, &ctx);
+                    if background {
+                        assert!(shown.is_none(), "old tool colors must not remain visible");
+                    }
+                    drive_until(&mut app, &ctx, "the current matte colors", |app| {
+                        app.filter_preview.as_ref().is_some_and(|p| p.key.tool_colors == colors && p.result.is_some())
+                    });
+                    let preview = app.filter_preview.as_ref().unwrap().result.as_ref().unwrap();
+                    let mut applied = photocraft_engine::Session::new();
+                    applied.color.settings = app.session.color.settings.clone();
+                    applied.tools.foreground = colors.0;
+                    applied.tools.background = colors.1;
+                    applied.add_document((*source).clone(), None);
+                    applied.execute("image.mode.indexedColor", params.clone()).unwrap();
+                    let committed = &applied.active().unwrap().doc;
+                    assert_eq!(preview.icc_profile, source.icc_profile);
+                    assert_eq!(preview.color_table, committed.color_table);
+                    let actual = preview.layers[0].surface().unwrap().read_region(preview.bounds());
+                    let expected = committed.layers[0].surface().unwrap().read_region(committed.bounds());
+                    assert_eq!(actual, expected, "{matte}, {depth}-bit, worker={background}");
+                    if let Some(previous) = previous {
+                        assert_ne!(actual, previous, "changing the selected tool color refreshes the pixels");
+                    }
+                    previous = Some(actual);
+                    assert_eq!(app.session.active().unwrap().doc.mode, photocraft_doc::ColorMode::Rgb, "preview does not commit");
+                }
+            }
+        }
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn cross_scale_indexed_matte_preview_rejects_old_tool_colors_from_cached_and_worker_results() {
+    let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), Default::default());
+    app.background_jobs = true;
+    app.run("file.new", json!({"width": 2400, "height": 2200, "depth": 8, "background": "transparent"})).unwrap();
+    app.run("edit.assignProfile", json!({"profile": "adobe-rgb-compat"})).unwrap();
+    app.run("edit.colorSettings", json!({"workingRgb": "display-p3"})).unwrap();
+    app.session
+        .edit("Translucent edge", |doc, active| {
+            let format = doc.pixel_format();
+            doc.layer_mut(active.unwrap())
+                .unwrap()
+                .surface_mut()
+                .unwrap()
+                .fill_rect(photocraft_geom::Rect::new(0, 0, 32, 48), &photocraft_raster::from_rgba(&format, [1.0, 0.0, 0.0, 0.5]));
+            Ok(())
+        })
+        .unwrap();
+    app.ui.views.get_mut(0).expect("the new document's view").zoom = 0.25;
+    let params = json!({"palette": "exact", "forced": "none", "dither": "none", "matte": "foreground"});
+    crate::filter_dialog::open(&mut app, "image.mode.indexedColor").unwrap();
+    app.ui.dialogs.last_mut().unwrap().fields.extend(params.as_object().unwrap().clone());
+    app.session.execute("tools.setColors", json!({"foreground": "#3366cc", "background": "#cc6633"})).unwrap();
+    let ctx = egui::Context::default();
+    drive_until(&mut app, &ctx, "the first indexed preview", |a| a.filter_preview.as_ref().is_some_and(|p| p.result.is_some()));
+    let old = app.filter_preview.as_ref().expect("the first preview").key.clone();
+    assert_eq!(old.k, 2, "the zoomed-out large document uses the reduced preview");
+
+    app.session.execute("tools.setColors", json!({"foreground": "#26bf59", "background": "#bf26a6"})).unwrap();
+    app.ui.views.get_mut(0).expect("the new document's view").zoom = 1.0;
+    let new_colors = (app.session.tools.foreground, app.session.tools.background);
+    let new = crate::filter_dialog::FilterPreviewKey { k: 1, tool_colors: new_colors, ..old.clone() };
+    assert_ne!(old.tool_colors, new.tool_colors);
+    assert_ne!(old.k, new.k, "the cache and request use different preview factors");
+
+    // Keep the current worker pending so the only possible frame is the cached old-color one.
+    let (release_new, wait_new) = std::sync::mpsc::channel();
+    app.filter_preview_worker
+        .start(new.clone(), ctx.clone(), move |_| {
+            wait_new.recv_timeout(std::time::Duration::from_secs(60)).expect("the test releases the job");
+            crate::dialogs::filter_preview_worker::Computed { result: None, ms: 0.0 }
+        })
+        .expect("the worker starts");
+    assert!(ensure_filter_preview(&mut app, 0, &ctx).is_none(), "the cached old-color frame is not painted while the new worker runs");
+    release_new.send(()).expect("released");
+    drive_until(&mut app, &ctx, "the new worker to finish", |a| !a.filter_preview_worker.busy());
+    assert_eq!(app.filter_preview.as_ref().expect("the current request").key, new);
+    assert!(app.filter_preview.as_ref().unwrap().result.is_none());
+
+    // Start an old-color worker while its request is current, then move the dialog to a new
+    // cross-scale request before the old result lands. Its real preview must not replace the
+    // current request through the loose worker-result gate.
+    app.session.execute("tools.setColors", json!({"foreground": "#3366cc", "background": "#cc6633"})).unwrap();
+    app.ui.views.get_mut(0).expect("the new document's view").zoom = 0.25;
+    let old_worker = old.clone();
+    let doc = app.session.documents()[0].doc.clone();
+    let documents: Vec<_> = app.session.documents().iter().map(|d| d.doc.clone()).collect();
+    let color = app.session.color.settings.clone();
+    let (release_old, wait_old) = std::sync::mpsc::channel();
+    app.filter_preview_worker
+        .start(old_worker.clone(), ctx.clone(), move |_| {
+            wait_old.recv_timeout(std::time::Duration::from_secs(60)).expect("the test releases the job");
+            let result = crate::filter_dialog::preview_document_for_target(
+                &doc,
+                old_worker.active,
+                &old_worker.command,
+                &old_worker.params,
+                old_worker.k,
+                None,
+                old_worker.target,
+                &documents,
+                &color,
+                Some(old_worker.tool_colors),
+            )
+            .map(|doc| {
+                let buffer = photocraft_compose::flatten(&doc);
+                (std::sync::Arc::new(doc), buffer)
+            });
+            crate::dialogs::filter_preview_worker::Computed { result, ms: 0.0 }
+        })
+        .expect("the worker starts");
+    assert!(ensure_filter_preview(&mut app, 0, &ctx).is_none(), "the old cached request is not current");
+
+    app.session.execute("tools.setColors", json!({"foreground": "#26bf59", "background": "#bf26a6"})).unwrap();
+    app.ui.views.get_mut(0).expect("the new document's view").zoom = 1.0;
+    app.ui.dialogs[0].fields.insert("matte".into(), json!("background"));
+    let mut new_late = new.clone();
+    new_late.params.as_object_mut().unwrap().insert("matte".into(), json!("background"));
+    assert!(ensure_filter_preview(&mut app, 0, &ctx).is_none(), "the current request has no result while the old worker runs");
+    release_old.send(()).expect("released");
+    drive_until(&mut app, &ctx, "the stale old-color worker to finish", |a| {
+        if let Some(shown) = &a.filter_preview {
+            assert_eq!(shown.key.tool_colors, new.tool_colors, "the stale old-color worker result was not painted");
+            assert_ne!(shown.key.k, old.k, "the stale old-scale worker result was not painted");
+        }
+        a.filter_preview.as_ref().is_some_and(|p| p.key == new_late && p.result.is_some()) && !a.filter_preview_worker.busy()
+    });
+    assert_eq!(app.filter_preview.as_ref().expect("the current request").key, new_late);
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn match_color_preview_rejects_cached_and_late_frames_from_an_old_source_layer_or_revision() {
+    use crate::dialogs::filter_preview_worker::Computed;
+
+    let command = "image.adjustments.matchColor";
+    for change_layer in [true, false] {
+        let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), Default::default());
+        app.run("file.new", json!({"width": 16, "height": 16, "background": "white"})).unwrap();
+        app.run("file.new", json!({"width": 16, "height": 16, "background": "white"})).unwrap();
+        let red = app.session.active().unwrap().active_layer.unwrap();
+        app.run("edit.fill", json!({"contents": "color", "color": "#cc4422"})).unwrap();
+        app.run("layer.new.layer", json!({"name": "Blue"})).unwrap();
+        let blue = app.session.active().unwrap().active_layer.unwrap();
+        app.run("edit.fill", json!({"contents": "color", "color": "#2266cc"})).unwrap();
+        assert!(app.session.set_active(0));
+        crate::filter_dialog::open(&mut app, command).unwrap();
+        app.ui.dialogs[0].fields.extend([("source".into(), json!(1)), ("sourceLayer".into(), json!(red))]);
+        let ctx = egui::Context::default();
+        assert!(ensure_filter_preview(&mut app, 0, &ctx).is_some(), "the first source preview reaches the canvas");
+        let preview = app.filter_preview.as_ref().unwrap();
+        let old = preview.key.clone();
+        let doc = preview.result.as_ref().unwrap().clone();
+        let mut slider = old.clone();
+        slider.params["fade"] = json!(25.0);
+        assert!(old.same_target(&slider), "a slider on the same source layer keeps the last frame");
+
+        app.background_jobs = true;
+        let (release, wait) = std::sync::mpsc::channel();
+        assert!(
+            app.filter_preview_worker
+                .start(old.clone(), ctx.clone(), move |_| {
+                    wait.recv_timeout(std::time::Duration::from_secs(60)).expect("the test releases the job");
+                    let buffer = photocraft_compose::flatten(&doc);
+                    Computed { result: Some((doc, buffer)), ms: 0.0 }
+                })
+                .unwrap()
+        );
+        let current_layer = if change_layer {
+            app.ui.dialogs[0].fields.insert("sourceLayer".into(), json!(blue));
+            blue
+        } else {
+            assert!(app.session.set_active(1));
+            app.session.select_layer(red).unwrap();
+            app.session.execute("edit.fill", json!({"contents": "color", "color": "#448822"})).unwrap();
+            assert!(app.session.set_active(0));
+            red
+        };
+        let source = &app.session.documents()[1];
+        let sources = vec![(source.doc.id, source.revision)];
+        assert!(ensure_filter_preview(&mut app, 0, &ctx).is_none(), "the cached old preview is not displayed");
+        app.filter_preview = None;
+        release.send(()).unwrap();
+        drive_until(&mut app, &ctx, "a current Match Color preview", |app| {
+            let Some(preview) = &app.filter_preview else { return false };
+            assert_eq!(preview.key.params["sourceLayer"], json!(current_layer), "a late worker published the wrong layer");
+            assert_eq!(preview.key.sources, sources, "a late worker published the wrong source revision");
+            preview.result.is_some() && !app.filter_preview_worker.busy()
+        });
+    }
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -496,12 +726,14 @@ fn a_mid_drag_empty_result_leaves_the_preview_alone() {
     let key = crate::filter_dialog::FilterPreviewKey {
         doc: st.doc.id,
         revision: st.revision,
+        sources: Vec::new(),
         dialog: d.id,
         active: st.active_layer,
         target: st.channel_view.target,
         command: "filter.blur.gaussianBlur".into(),
         params: json!({"radius": moved}),
         k: 1,
+        tool_colors: (app.session.tools.foreground, app.session.tools.background),
     };
     let (release_empty, wait) = std::sync::mpsc::channel::<()>();
     app.filter_preview_worker
@@ -890,7 +1122,21 @@ fn gpu_display_luts_are_per_display() {
     assert_eq!((gpu.display_lut_signature(key, 1), gpu.display_lut_signature(key, 4)), (Some(s1), Some(s4)));
     assert!(gpu.has_display_lut(key, 4));
     // The shared texture's key is the same for both displays.
-    assert_eq!(texture_key(canvas_display(&app, &doc, Some(1)).0.as_deref()), texture_key(canvas_display(&app, &doc, Some(4)).0.as_deref()));
+    assert_eq!(texture_key(canvas_display(&app, &doc, Some(1)).0.as_deref(), &doc), texture_key(canvas_display(&app, &doc, Some(4)).0.as_deref(), &doc));
+}
+
+/// The GPU canvas texture of a Multichannel document is filled by the CPU compositor, so its
+/// key carries the ink preview (Color Settings › Spot) like the CPU canvas key does.
+#[test]
+fn gpu_texture_key_follows_the_ink_preview() {
+    use super::display::ink_preview_key;
+    use photocraft_color::{ColorMode, SampleType};
+    let size = photocraft_doc::Size::new(2, 2);
+    let inks = Document::new("m", size, ColorMode::Multichannel, SampleType::U8);
+    let rgb = Document::new("r", size, ColorMode::Rgb, SampleType::U8);
+    assert_ne!(ink_preview_key(&inks), 0);
+    assert_eq!(texture_key(None, &inks), ink_preview_key(&inks));
+    assert_eq!(texture_key(None, &rgb), 0);
 }
 
 /// The navigator's update after an edit (its image with the edit's damage, grown by the
@@ -935,20 +1181,38 @@ fn navigator_damage_updates_match_a_full_thumbnail() {
 #[test]
 fn tab_context_uses_clicked_document_and_existing_close_commands() {
     let items = tab_context_items(2, 3, true);
-    assert_eq!(items.iter().map(|(_, id, _, _)| *id).collect::<Vec<_>>(), ["file.close", "file.closeOthers", "file.closeAll", "file.revealInFinder"]);
-    assert_eq!(items[0].2, json!({"document": 2}));
+    assert_eq!(
+        items.iter().map(|(_, id, _, _)| *id).collect::<Vec<_>>(),
+        [
+            "window.arrange.consolidateAllToTabs",
+            "file.close",
+            "file.closeAll",
+            "file.closeOthers",
+            "window.arrange.floatInWindow",
+            "file.new",
+            "file.open",
+            "file.revealInFinder"
+        ]
+    );
     assert_eq!(items[1].2, json!({"document": 2}));
-    assert_eq!(items[2].2, json!({}));
     assert_eq!(items[3].2, json!({"document": 2}));
-    assert!(items[3].3, "a saved document can be revealed in the file manager");
-    assert!(!tab_context_items(2, 3, false)[3].3, "an unsaved document cannot");
-    assert!(!tab_context_items(0, 1, false)[1].3);
-    assert!(items.iter().all(|(_, id, _, _)| photocraft_engine::commands::find(id).is_some()));
+    assert_eq!(items[2].2, json!({}));
+    assert_eq!(items[7].2, json!({"document": 2}));
+    assert!(items[7].3, "a saved document can be revealed in the file manager");
+    assert!(!tab_context_items(2, 3, false)[7].3, "an unsaved document cannot");
+    assert!(!tab_context_items(0, 1, false)[3].3);
+    // The window.* rows and file.new / file.open are UI commands; the doc_tab_menu tests check them.
+    assert!(
+        items
+            .iter()
+            .filter(|r| r.1.starts_with("file.close") || r.1 == "file.revealInFinder")
+            .all(|(_, id, _, _)| photocraft_engine::commands::find(id).is_some())
+    );
 }
 
 #[test]
 fn tab_context_reveal_names_the_platform_file_manager() {
-    let (label, id, _, _) = &tab_context_items(0, 1, true)[3];
+    let (label, id, _, _) = &tab_context_items(0, 1, true)[7];
     assert_eq!((*label, *id), (crate::menus::reveal_label(), "file.revealInFinder"));
 }
 
@@ -1099,7 +1363,7 @@ fn tab_close_others_prompts_for_unsaved_nonactive_document() {
     app.run("file.new", json!({"width": 8, "height": 8, "name": "Edited"})).unwrap();
     app.run("edit.fill", json!({"color": "#ff0000"})).unwrap();
     assert_eq!(app.session.active_index(), Some(1));
-    let (_, id, params, _) = tab_context_items(0, 2, false)[1].clone();
+    let (_, id, params, _) = tab_context_items(0, 2, false)[3].clone();
     crate::menus::invoke(&mut app, &egui::Context::default(), id, params).unwrap();
     assert!(app.discard.is_some(), "close others must ask before discarding the edited tab");
     assert_eq!(app.session.documents().len(), 2);
@@ -1210,6 +1474,56 @@ fn clone_overlay_app(size: f32) -> PhotocraftApp {
     app
 }
 
+/// A focused canvas can remain primary after another document becomes active.
+#[test]
+fn clone_cursor_from_an_inactive_document_cannot_replace_the_active_offset_reference() {
+    let rect = Rect::from_min_size(Pos2::ZERO, vec2(400.0, 300.0));
+    let ctx = egui::Context::default();
+    let frame = |app: &mut PhotocraftApp, idx: usize, primary: bool, at: Option<[f64; 2]>| {
+        let view = View { zoom: 2.0, center: [32.0, 32.0], doc_size: [64, 64], fit_pending: false, fill_pending: false, ..Default::default() };
+        let event =
+            at.map_or(egui::Event::PointerGone, |at| egui::Event::PointerMoved(rect.center() + vec2((at[0] as f32 - 32.0) * 2.0, (at[1] as f32 - 32.0) * 2.0)));
+        let input = egui::RawInput { screen_rect: Some(rect), events: vec![event], ..Default::default() };
+        let mut output = ctx.run_ui(input, |ui| {
+            canvas_view(app, ui, idx, rect, view.clone(), primary);
+        });
+        output.textures_delta.clear();
+    };
+    for tool in [Tool::CloneStamp, Tool::Healing] {
+        for aligned in [false, true] {
+            let mut app = clone_overlay_app(12.0);
+            app.background_jobs = false;
+            app.ui.extras.rulers = false;
+            app.run("file.new", json!({"width": 64, "height": 64})).unwrap();
+            app.ui.tool = tool;
+            app.ui.tool_options.clone_aligned = aligned;
+            let document = app.session.active().unwrap().doc.id;
+            let slots = app.session.presets.clone.clone();
+            let revision = app.session.active().unwrap().revision;
+            // Warm up hover detection, then establish the active document's own reference.
+            for _ in 0..2 {
+                frame(&mut app, 1, true, Some([40.0, 30.0]));
+            }
+            assert_eq!(app.ui.presets_ui.clone_cursor, Some((document, [40.0, 30.0])));
+            assert_eq!(crate::preset_panels::clone_offset_readout(&app), Some([-24.0, -14.0]));
+            // A different, still-focused window draws as primary without activating its document.
+            frame(&mut app, 0, true, Some([12.0, 24.0]));
+            assert_eq!(app.session.active_index(), Some(1));
+            assert!(app.hover_doc.is_some(), "the inactive canvas really received hover input");
+            assert_eq!(app.ui.presets_ui.clone_cursor, Some((document, [40.0, 30.0])), "{tool:?}/{aligned}: retain the active document's reference");
+            assert_eq!(crate::preset_panels::clone_offset_readout(&app), Some([-24.0, -14.0]));
+            assert_eq!(crate::preset_panels::clone_offset_edit(&app, [-20.0, -10.0]).unwrap()["anchor"], json!([40.0, 30.0]));
+            frame(&mut app, 1, true, Some([44.0, 34.0]));
+            assert_eq!(app.ui.presets_ui.clone_cursor, Some((document, [44.0, 34.0])), "the active canvas still updates normally");
+            frame(&mut app, 0, false, Some([8.0, 12.0]));
+            frame(&mut app, 1, true, None);
+            assert_eq!(app.ui.presets_ui.clone_cursor, Some((document, [44.0, 34.0])), "secondary views and leaving the canvas retain the reference");
+            assert_eq!(app.session.presets.clone, slots, "hover does not establish a source anchor");
+            assert_eq!(app.session.active().unwrap().revision, revision, "hover does not paint");
+        }
+    }
+}
+
 /// One frame of the overlay at (32, 32): its shapes and texture uploads.
 fn clone_overlay_frame(ctx: &egui::Context, app: &mut PhotocraftApp, xf: &ViewXform) -> egui::FullOutput {
     ctx.run_ui(Default::default(), |ui| {
@@ -1299,6 +1613,181 @@ fn clone_overlay_follows_the_brush_hardness() {
     assert_eq!(clone_overlay_alpha(&big, &mut output)(32, 32), 255, "a 1000 px soft brush previews too");
 }
 
+#[test]
+fn clone_overlay_opacity_and_flow_match_a_stamp_on_another_layer() {
+    let ctx = egui::Context::default();
+    let xf = clone_overlay_view(100.0, 1.0);
+    for depth in [8, 16, 32] {
+        for clipped in [true, false] {
+            let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), Default::default());
+            app.run("file.new", json!({"width": 64, "height": 64, "depth": depth})).unwrap();
+            crate::retouch_ui::set_source(&mut app, 16.0, 16.0);
+            app.run("layer.new.layer", json!({})).unwrap();
+            app.ui.tool = Tool::CloneStamp;
+            app.ui.tool_options.clone_sample = "all".into();
+            app.session.tools.brush.size = 20.0;
+            app.session.presets.clone.overlay.clipped = clipped;
+            // Settings change under a stationary cursor, including after a cached full-strength preview.
+            for (opacity, flow) in [(1.0, 1.0), (0.5, 1.0), (1.0, 0.25), (0.5, 0.4)] {
+                let mut cached = clone_overlay_frame(&ctx, &mut app, &xf);
+                cached.textures_delta.clear();
+                app.run("tools.setBrush", json!({"size": 20, "hardness": 1.0, "opacity": opacity, "flow": flow})).unwrap();
+                let revision = app.session.active().unwrap().revision;
+                let mut output = clone_overlay_frame(&ctx, &mut app, &xf);
+                let tint = output
+                    .shapes
+                    .iter()
+                    .find_map(|s| match &s.shape {
+                        egui::Shape::Mesh(mesh) => mesh.vertices.first().map(|v| v.color.a()),
+                        _ => None,
+                    })
+                    .expect("the overlay mesh");
+                // An unclipped preview may reuse its texture when only tint changes.
+                if output.textures_delta.set.is_empty() {
+                    app.clone_preview = None;
+                    output = clone_overlay_frame(&ctx, &mut app, &xf);
+                }
+                let alpha = clone_overlay_alpha(&app, &mut output)(32, 32) as f32 / 255.0 * tint as f32 / 255.0;
+                assert_eq!(app.session.active().unwrap().revision, revision, "hovering is read-only");
+                let mut params = crate::retouch_ui::clone_params(&app).unwrap();
+                params["points"] = json!([[32, 32]]);
+                app.run("paint.cloneStamp", params).unwrap();
+                let st = app.session.active().unwrap();
+                let printed = st.doc.layer(st.active_layer.unwrap()).unwrap().surface().unwrap().rgba(32, 32)[3];
+                assert!((printed - opacity * flow).abs() < 0.01, "opacity={opacity} flow={flow}: printed {printed}");
+                assert!((alpha - printed).abs() < 0.01, "{depth} clipped={clipped} opacity={opacity} flow={flow}: preview {alpha}, print {printed}");
+                assert!(app.session.undo());
+            }
+        }
+    }
+}
+
+#[test]
+fn clone_overlay_separate_opacity_setting_still_multiplies_the_brush_opacity() {
+    let ctx = egui::Context::default();
+    let mut app = clone_overlay_app(20.0);
+    app.session.tools.brush.opacity = 0.5;
+    app.session.presets.clone.overlay.opacity = 40.0;
+    let mut output = clone_overlay_frame(&ctx, &mut app, &clone_overlay_view(100.0, 1.0));
+    let alpha = output
+        .shapes
+        .iter()
+        .find_map(|s| match &s.shape {
+            egui::Shape::Mesh(mesh) => mesh.vertices.first().map(|v| v.color.a()),
+            _ => None,
+        })
+        .unwrap();
+    output.textures_delta.clear();
+    assert_eq!(alpha, 51, "50% brush opacity times 40% overlay opacity");
+}
+
+#[test]
+fn clone_overlay_refreshes_when_the_source_layer_changes_at_the_same_coordinates() {
+    let ctx = egui::Context::default();
+    let mut app = clone_overlay_app(20.0);
+    app.run("layer.new.layer", json!({})).unwrap();
+    let xf = clone_overlay_view(100.0, 1.0);
+    let mut output = clone_overlay_frame(&ctx, &mut app, &xf);
+    assert_eq!(clone_overlay_alpha(&app, &mut output)(32, 32), 255, "the picked white source survives the layer switch");
+    crate::retouch_ui::set_source(&mut app, 16.0, 16.0);
+    let mut output = clone_overlay_frame(&ctx, &mut app, &xf);
+    assert_eq!(clone_overlay_alpha(&app, &mut output)(32, 32), 0, "picking the transparent layer refreshes the cached overlay");
+}
+
+#[test]
+fn clone_overlay_strength_changes_leave_the_healing_preview_at_full_strength() {
+    let ctx = egui::Context::default();
+    let mut app = clone_overlay_app(20.0);
+    app.session.tools.brush.opacity = 0.5;
+    app.session.tools.brush.flow = 0.4;
+    let xf = clone_overlay_view(100.0, 1.0);
+    let mut output = clone_overlay_frame(&ctx, &mut app, &xf);
+    assert!((i32::from(clone_overlay_alpha(&app, &mut output)(32, 32)) - 102).abs() <= 1);
+    app.ui.tool = Tool::Healing;
+    let mut output = clone_overlay_frame(&ctx, &mut app, &xf);
+    assert_eq!(clone_overlay_alpha(&app, &mut output)(32, 32), 255, "Healing Brush still previews its full-strength texture");
+}
+
+fn clone_overlay_center(app: &PhotocraftApp, output: &mut egui::FullOutput) -> Color32 {
+    let cache = app.clone_preview.as_ref().unwrap();
+    let upload = output.textures_delta.set.get(&cache.texture.id()).and_then(|d| d.last()).expect("the source preview was refreshed");
+    let egui::ImageData::Color(image) = &upload.image;
+    let pixel = image.pixels[(32 - cache.rect.y0) as usize * image.width() + (32 - cache.rect.x0) as usize];
+    output.textures_delta.clear();
+    pixel
+}
+
+#[test]
+fn clone_overlay_repicking_on_the_original_layer_updates_preview_and_both_layers() {
+    let ctx = egui::Context::default();
+    let mut app = clone_overlay_app(12.0);
+    let source = app.session.active().unwrap().active_layer.unwrap();
+    for (point, color) in [([16, 16], "#ff0000"), ([8, 8], "#0000ff")] {
+        app.run("paint.pencil", json!({"points": [point], "size": 6, "color": color})).unwrap();
+    }
+    crate::retouch_ui::set_source(&mut app, 16.0, 16.0);
+    app.run("layer.new.layer", json!({})).unwrap();
+    let target = app.session.active().unwrap().active_layer.unwrap();
+    app.run("tools.setBrush", json!({"size": 6, "hardness": 1, "opacity": 1, "flow": 1})).unwrap();
+    let xf = clone_overlay_view(100.0, 1.0);
+    let mut output = clone_overlay_frame(&ctx, &mut app, &xf);
+    assert_eq!(clone_overlay_center(&app, &mut output), Color32::RED);
+    let stamp = |app: &mut PhotocraftApp| {
+        let mut params = crate::retouch_ui::clone_params(app).unwrap();
+        params["points"] = json!([[32, 32]]);
+        app.run("paint.cloneStamp", params).unwrap();
+    };
+    stamp(&mut app);
+    app.run("layer.select", json!({"layer": source.0})).unwrap();
+    crate::retouch_ui::set_source(&mut app, 8.0, 8.0);
+    stamp(&mut app);
+    assert_eq!(app.session.active().unwrap().doc.layer(source).unwrap().surface().unwrap().rgba(32, 32), [0.0, 0.0, 1.0, 1.0]);
+    app.run("layer.select", json!({"layer": target.0})).unwrap();
+    let mut output = clone_overlay_frame(&ctx, &mut app, &xf);
+    assert_eq!(clone_overlay_center(&app, &mut output), Color32::BLUE);
+    stamp(&mut app);
+    assert_eq!(app.session.active().unwrap().doc.layer(target).unwrap().surface().unwrap().rgba(32, 32), [0.0, 0.0, 1.0, 1.0]);
+}
+
+#[test]
+fn clone_overlay_between_documents_updates_after_source_edits_and_blends_with_the_destination() {
+    let ctx = egui::Context::default();
+    let mut app = clone_overlay_app(12.0);
+    crate::paint_mouse::sync_tool_brush(&mut app);
+    app.run("paint.pencil", json!({"points": [[16,16]], "size": 8, "color": "#ff0000"})).unwrap();
+    app.run("file.new", json!({"width": 64, "height": 64})).unwrap();
+    app.run("paint.pencil", json!({"points": [[32,32]], "size": 16, "color": "#000000"})).unwrap();
+    app.run("layer.new.layer", json!({})).unwrap();
+    app.run("tools.setBrush", json!({"size": 8, "hardness": 1, "opacity": 1, "flow": 1})).unwrap();
+    let xf = clone_overlay_view(100.0, 1.0);
+    let mut output = clone_overlay_frame(&ctx, &mut app, &xf);
+    assert_eq!(clone_overlay_center(&app, &mut output), Color32::RED);
+    app.run("cloneSource.overlay", json!({"blend": "difference"})).unwrap();
+    let mut output = clone_overlay_frame(&ctx, &mut app, &xf);
+    assert_eq!(clone_overlay_center(&app, &mut output), Color32::RED, "Difference uses the black destination, not the white source document");
+    let revision = app.session.active().unwrap().revision;
+    assert!(app.session.set_active(0));
+    app.run("paint.pencil", json!({"points": [[16,16]], "size": 8, "color": "#00ff00"})).unwrap();
+    assert!(app.session.set_active(1));
+    assert_eq!(app.session.active().unwrap().revision, revision);
+    let mut output = clone_overlay_frame(&ctx, &mut app, &xf);
+    assert_eq!(clone_overlay_center(&app, &mut output), Color32::GREEN, "editing another document invalidates the cached source");
+    let mods = egui::Modifiers::NONE;
+    tool_event(&mut app, ToolEvent::Down { x: 32.0, y: 32.0, pressure: 1.0 }, mods);
+    assert!(crate::retouch_ui::source_marker_point(&app).is_none(), "the source crosshair belongs to the other document");
+    tool_event(&mut app, ToolEvent::Up { x: 32.0, y: 32.0 }, mods);
+    let st = app.session.active().unwrap();
+    assert_eq!(st.doc.layer(st.active_layer.unwrap()).unwrap().surface().unwrap().rgba(32, 32), [0.0, 1.0, 0.0, 1.0]);
+    app.run("cloneSource.select", json!({"index": 1})).unwrap();
+    assert!(crate::retouch_ui::clone_params(&app).is_none(), "an empty slot cannot reuse coordinates from another document");
+    let before = app.session.active().unwrap().doc.clone();
+    let revision = app.session.active().unwrap().revision;
+    tool_event(&mut app, ToolEvent::Down { x: 48.0, y: 48.0, pressure: 1.0 }, mods);
+    tool_event(&mut app, ToolEvent::Up { x: 48.0, y: 48.0 }, mods);
+    assert_eq!(app.session.active().unwrap().doc, before, "painting with an empty slot cannot sample stale coordinates");
+    assert_eq!(app.session.active().unwrap().revision, revision, "the refused gesture does not create a history edit");
+}
+
 /// A scaled Clone Source reads a larger source area than the overlay covers: a large brush's
 /// overlay shrinks around the pointer until that area fits the sampling budget, rather than
 /// vanishing.
@@ -1330,6 +1819,73 @@ fn clone_overlay_shows_for_the_healing_brush_too() {
             assert_eq!(clone_overlay_alpha(&app, &mut output)(32, 32), 255, "{tool:?}: the source shows under the brush");
         }
         output.textures_delta.clear();
+    }
+}
+
+/// Pattern Preview changes the Healing Brush source overlay at a stationary cursor.
+#[test]
+fn clone_healing_overlay_wraps_with_the_live_texture_at_source_edges() {
+    let ctx = egui::Context::default();
+    let xf = clone_overlay_view(100.0, 1.0);
+    let mut app = clone_overlay_app(12.0);
+    app.ui.tool = Tool::Healing;
+    app.run("cloneSource.set", json!({"source": [0,0]})).unwrap();
+    app.run("file.new", json!({"width": 64, "height": 64, "background": "transparent"})).unwrap();
+    let mut output = clone_overlay_frame(&ctx, &mut app, &xf);
+    assert_eq!(clone_overlay_alpha(&app, &mut output)(30, 32), 0);
+    app.ui.view.pattern_preview = true;
+    assert_eq!(crate::retouch_ui::clone_params(&app).unwrap()["wrap"], true);
+    let mut output = clone_overlay_frame(&ctx, &mut app, &xf);
+    assert_eq!(clone_overlay_alpha(&app, &mut output)(30, 32), 255, "the repeated source is visible before painting");
+    let live = photocraft_engine::retouch_cmds::LiveRetouch::begin(
+        &app.session,
+        "paint.healingBrush",
+        &json!({"points": [[32,32]], "size": 12, "hardness": 100, "wrap": true}),
+    )
+    .unwrap();
+    let st = app.session.active().unwrap();
+    assert_eq!(live.doc.layer(st.active_layer.unwrap()).unwrap().surface().unwrap().rgba(30, 32), [1.0; 4]);
+    app.ui.view.pattern_preview = false;
+    let mut output = clone_overlay_frame(&ctx, &mut app, &xf);
+    assert_eq!(clone_overlay_alpha(&app, &mut output)(30, 32), 0);
+}
+
+/// Unsupported cross-document targets never reuse a cached pixel-layer source overlay.
+#[test]
+fn clone_overlay_suppresses_cross_document_masks_and_channels() {
+    for tool in [Tool::CloneStamp, Tool::Healing] {
+        for mask in [false, true] {
+            let ctx = egui::Context::default();
+            let xf = clone_overlay_view(100.0, 1.0);
+            let mut app = clone_overlay_app(12.0);
+            app.ui.tool = tool;
+            app.run("file.new", json!({"width": 64, "height": 64})).unwrap();
+            if mask {
+                app.run("layer.layerMask.revealAll", json!({})).unwrap();
+            } else {
+                app.run("channel.new", json!({"fill": "white"})).unwrap();
+            }
+            app.run("channel.target", json!({"channel": "composite"})).unwrap();
+            app.ui.mask_target = false;
+            let mut output = clone_overlay_frame(&ctx, &mut app, &xf);
+            assert!(output.shapes.iter().any(|s| matches!(s.shape, egui::Shape::Mesh(_))));
+            output.textures_delta.clear();
+            let revision = app.session.active().unwrap().revision;
+            if mask {
+                app.ui.mask_target = true;
+            } else {
+                app.session.active_mut().unwrap().channel_view.target = photocraft_engine::channel_cmds::ChannelTarget::Alpha(0);
+            }
+            assert_eq!(app.session.active().unwrap().revision, revision, "only the target changed");
+            let mut output = clone_overlay_frame(&ctx, &mut app, &xf);
+            assert!(!output.shapes.iter().any(|s| matches!(s.shape, egui::Shape::Mesh(_))), "{tool:?}, mask={mask}: the gesture has no supported source");
+            output.textures_delta.clear();
+            app.ui.mask_target = false;
+            app.run("channel.target", json!({"channel": "composite"})).unwrap();
+            let mut output = clone_overlay_frame(&ctx, &mut app, &xf);
+            assert!(output.shapes.iter().any(|s| matches!(s.shape, egui::Shape::Mesh(_))), "returning to pixels restores the source overlay");
+            output.textures_delta.clear();
+        }
     }
 }
 
@@ -1391,14 +1947,11 @@ fn clone_overlay_is_clipped_to_a_shaped_tip() {
 }
 
 #[test]
-fn wayland_start_screen_hint_does_not_claim_file_drop_works() {
+fn wayland_start_screen_hint_offers_file_drop() {
     let x11 = PhotocraftApp::new(photocraft_engine::Session::new(), Default::default());
     let wayland = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services { is_wayland: true, ..Default::default() });
     assert!(start_screen_drop_hint(&x11).starts_with("Drop"));
-    // Pasting a copied image file works on Wayland (#338): the hint says how.
-    let hint = start_screen_drop_hint(&wayland);
-    assert!(!hint.contains("Drop"), "{hint}");
-    assert!(hint.ends_with(&format!("paste a copied image with {}.", crate::notices::paste_hint(&wayland))), "{hint}");
+    assert!(start_screen_drop_hint(&wayland).starts_with("Drop"));
 }
 
 /// A tiling window manager can hand PhotoCraft a canvas narrower than the Home card (460
@@ -1419,8 +1972,10 @@ fn start_screen_buttons_stay_inside_a_narrow_canvas() {
         PhotocraftApp::setup_context(&h.ctx, crate::theme::ThemeKind::default());
         h.state_mut().1 = true;
         h.run_steps(3);
-        for label in ["New document", "Join us on Discord"] {
-            for node in h.query_all_by_label_contains(label) {
+        for label in ["New file", "Open…"] {
+            let nodes: Vec<_> = h.query_all_by_label(label).collect();
+            assert!(!nodes.is_empty(), "`{label}` is rendered in a {width}-point-wide canvas");
+            for node in nodes {
                 let r = node.rect();
                 assert!(r.left() >= 0.0 && r.right() <= width, "`{label}` is clipped in a {width}-point-wide canvas: {r:?}");
             }
@@ -1450,6 +2005,27 @@ fn home_recent_list_hides_when_the_preference_is_off() {
     h.run_steps(3);
     assert!(h.query_by_label("hidden.psd").is_none(), "hidden when off");
     assert_eq!(h.state().0.ui.recent_files.len(), 1, "the list itself is kept");
+}
+
+#[test]
+fn start_screen_narrow_window_renders_actions_row() {
+    use egui_kittest::kittest::Queryable;
+    let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
+    app.push_recent("/tmp/photocraft-narrow/test.psd");
+    // Window narrower than 640px (e.g. 500px width split-screen)
+    let mut h = egui_kittest::Harness::builder().with_size(egui::vec2(500.0, 600.0)).build_ui_state(
+        |ui, (app, ready): &mut (PhotocraftApp, bool)| {
+            if *ready {
+                egui::CentralPanel::default().frame(egui::Frame::NONE).show(ui, |ui| document_area(app, ui));
+            }
+        },
+        (app, false),
+    );
+    PhotocraftApp::setup_context(&h.ctx, crate::theme::ThemeKind::default());
+    h.state_mut().1 = true;
+    h.run_steps(3);
+    assert!(h.query_by_label("New file").is_some(), "New file button must be present in narrow mode");
+    assert!(h.query_all_by_label("Open…").next().is_some(), "Open… button must be present in narrow mode");
 }
 
 /// The Home screen's × takes a file off Recent without opening it, and its right-click menu
@@ -1613,6 +2189,72 @@ fn eyedropper_drag_updates_the_sampled_colour() {
     assert!(app.session.tools.foreground[1] > 0.99 && app.session.tools.foreground[0] < 0.01);
 }
 
+/// #10074: painting a group looked as if it worked (the stroke's trail followed the pointer) and
+/// vanished on release with only a status-bar note. Photoshop refuses at the press with a
+/// message; so does PhotoCraft, and nothing is painted or drawn.
+#[test]
+fn painting_a_group_is_refused_at_the_press_with_a_message() {
+    let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), Default::default());
+    app.run("file.new", json!({"width": 40, "height": 20, "background": "white"})).unwrap();
+    app.run("layer.new.layer", json!({})).unwrap();
+    app.run("layer.groupLayers", json!({})).unwrap();
+    let group = app.session.active().unwrap().active_layer.unwrap();
+    assert!(app.session.active().unwrap().doc.layer(group).unwrap().is_group());
+    let errors = |app: &PhotocraftApp| -> Vec<String> {
+        app.ui
+            .dialogs
+            .iter()
+            .filter(|d| d.kind == crate::state::DialogKind::Error)
+            .map(|d| d.fields.get("message").and_then(|m| m.as_str()).unwrap_or_default().to_string())
+            .collect()
+    };
+    app.ui.tool_options.gradient_classic = true;
+    for tool in [Tool::Brush, Tool::Pencil, Tool::Eraser, Tool::CloneStamp, Tool::PaintBucket, Tool::MagicEraser, Tool::RedEye, Tool::Gradient] {
+        app.ui.dialogs.clear();
+        app.ui.tool = tool;
+        tool_event(&mut app, ToolEvent::Down { x: 10.0, y: 10.0, pressure: 1.0 }, egui::Modifiers::NONE);
+        // Brush and Classic gradient use the measured alerts (#11898, #12017).
+        let want = match tool {
+            Tool::Brush => "Could not use the brush tool because the pixels in a group cannot be edited without merging the group.".to_string(),
+            Tool::Gradient => "Could not use the gradient tool because the pixels in a group cannot be edited without merging the group.".to_string(),
+            _ => format!("Could not use the {} because the target layer is a group.", tool.label()),
+        };
+        assert_eq!(errors(&app), [want], "{tool:?}");
+        assert!(app.drag.is_none() && app.live_stroke.is_none(), "{tool:?} starts no stroke");
+        tool_event(&mut app, ToolEvent::Move { x: 20.0, y: 10.0, pressure: 1.0 }, egui::Modifiers::NONE);
+        tool_event(&mut app, ToolEvent::Up { x: 20.0, y: 10.0 }, egui::Modifiers::NONE);
+        assert!(app.trail.is_none(), "{tool:?} draws no trail");
+    }
+    // Tools that don't paint the group's pixels are unaffected.
+    app.ui.dialogs.clear();
+    app.ui.tool = Tool::RectMarquee;
+    tool_event(&mut app, ToolEvent::Down { x: 10.0, y: 10.0, pressure: 1.0 }, egui::Modifiers::NONE);
+    assert!(errors(&app).is_empty());
+    tool_event(&mut app, ToolEvent::Move { x: 20.0, y: 15.0, pressure: 1.0 }, egui::Modifiers::NONE);
+    tool_event(&mut app, ToolEvent::Up { x: 20.0, y: 15.0 }, egui::Modifiers::NONE);
+    assert!(app.session.active().unwrap().doc.selection.is_some(), "a marquee still selects with a group active");
+    app.run("select.deselect", json!({})).unwrap();
+    // A group's mask can be painted: targeting it paints, without the message.
+    app.run("layer.layerMask.revealAll", json!({})).unwrap();
+    app.ui.mask_target = true;
+    app.sync_mask_targets();
+    assert_eq!(paint_target(&app), json!("mask"));
+    let mask_at = |app: &PhotocraftApp, x: i32| {
+        let st = app.session.active().unwrap();
+        st.doc.layer(group).unwrap().mask.as_ref().unwrap().surface.sample_channel(x, 10, 0)
+    };
+    let before = mask_at(&app, 15);
+    // Black on a reveal-all mask hides: a stroke that paints shows.
+    app.run("tools.setColors", json!({"foreground": [0.0, 0.0, 0.0, 1.0], "background": [1.0, 1.0, 1.0, 1.0]})).unwrap();
+    app.ui.tool = Tool::Brush;
+    tool_event(&mut app, ToolEvent::Down { x: 10.0, y: 10.0, pressure: 1.0 }, egui::Modifiers::NONE);
+    assert!(errors(&app).is_empty(), "the mask is paintable");
+    assert!(app.drag.is_some(), "the stroke starts on the mask");
+    tool_event(&mut app, ToolEvent::Move { x: 20.0, y: 10.0, pressure: 1.0 }, egui::Modifiers::NONE);
+    tool_event(&mut app, ToolEvent::Up { x: 20.0, y: 10.0 }, egui::Modifiers::NONE);
+    assert_ne!(mask_at(&app, 15), before, "the stroke painted the group's mask");
+}
+
 /// #4298: an adjustment layer has no pixels, so after its icon thumbnail is clicked (the
 /// Layers panel no longer targets the mask) Fill, the fill keys and the Paint Bucket still
 /// edit its mask, as in Photoshop, instead of failing with "not a pixel layer".
@@ -1706,7 +2348,7 @@ fn mask_view_uploads_each_live_stroke_before_release() {
                 app.ui.tool = Tool::Brush;
                 let ctx = egui::Context::default();
                 ctx.input_mut(|i| i.max_texture_side = 256);
-                let tex = crate::channel_view::ensure(&mut app, &ctx, 0).unwrap();
+                let tex = crate::channel_view::ensure(&mut app, &ctx, 0, None).unwrap();
                 ctx.tex_manager().write().take_delta().clear();
                 let revision = app.session.documents()[0].revision;
                 let steps = app.session.documents()[0].history.past_len();
@@ -1717,7 +2359,7 @@ fn mask_view_uploads_each_live_stroke_before_release() {
                     tool_event(&mut app, ToolEvent::Move { x, y: 30.0, pressure: 1.0 }, egui::Modifiers::NONE);
                     let shown = display_doc(&mut app, 0).0;
                     assert!(shown.layer(layer).unwrap().mask.as_ref().unwrap().value(x as i32, 30) < 0.1);
-                    assert_eq!(crate::channel_view::ensure(&mut app, &ctx, 0), Some(tex));
+                    assert_eq!(crate::channel_view::ensure(&mut app, &ctx, 0, None), Some(tex));
                     let mut delta = ctx.tex_manager().write().take_delta();
                     let uploads = delta.set.get(&tex).unwrap_or_else(|| panic!("{depth}-bit {mode}: live mask texture must upload before release at {x}"));
                     assert_eq!(uploads.len(), 1);
@@ -1742,7 +2384,7 @@ fn mask_view_uploads_each_live_stroke_before_release() {
                     assert_eq!(app.session.documents()[0].revision, revision);
                     assert_eq!(app.session.documents()[0].history.past_len(), steps);
                     assert_eq!(app.session.documents()[0].doc.layer(layer).unwrap(), &original);
-                    crate::channel_view::ensure(&mut app, &ctx, 0);
+                    crate::channel_view::ensure(&mut app, &ctx, 0, None);
                     assert!(ctx.tex_manager().write().take_delta().set.is_empty(), "idle frame does not upload");
                 }
                 tool_event(&mut app, ToolEvent::Up { x: 70.0, y: 30.0 }, egui::Modifiers::NONE);
@@ -1750,7 +2392,7 @@ fn mask_view_uploads_each_live_stroke_before_release() {
                 assert_eq!(st.history.past_len(), steps + 1);
                 assert!(st.doc.layer(layer).unwrap().mask.as_ref().unwrap().value(50, 30) < 0.1);
                 assert_eq!(st.doc.layer(layer).unwrap().content, original.content);
-                crate::channel_view::ensure(&mut app, &ctx, 0);
+                crate::channel_view::ensure(&mut app, &ctx, 0, None);
                 let mut delta = ctx.tex_manager().write().take_delta();
                 // The commit takes the live stroke's pixels, which the texture already shows: at
                 // most a partial upload, never the whole mask again.
@@ -1758,7 +2400,7 @@ fn mask_view_uploads_each_live_stroke_before_release() {
                 delta.clear();
                 app.session.undo();
                 assert_eq!(app.session.documents()[0].doc.layer(layer).unwrap(), &original);
-                crate::channel_view::ensure(&mut app, &ctx, 0);
+                crate::channel_view::ensure(&mut app, &ctx, 0, None);
                 let mut delta = ctx.tex_manager().write().take_delta();
                 let upload = &delta.set.get(&tex).unwrap()[0];
                 let egui::ImageData::Color(image) = &upload.image;
@@ -1803,14 +2445,14 @@ fn channel_views_show_live_targets_and_discarded_strokes() {
         app.run("tools.setBrush", json!({"brush": {"size": 12, "hardness": 1.0, "smoothing": {"amount": 0.0}}})).unwrap();
         app.ui.tool = Tool::Brush;
         let ctx = egui::Context::default();
-        let tex = crate::channel_view::ensure(&mut app, &ctx, 0).unwrap();
+        let tex = crate::channel_view::ensure(&mut app, &ctx, 0, None).unwrap();
         ctx.tex_manager().write().take_delta().clear();
         let original = app.session.documents()[0].doc.clone();
         let steps = app.session.documents()[0].history.past_len();
         tool_event(&mut app, ToolEvent::Down { x: 10.0, y: 30.0, pressure: 1.0 }, egui::Modifiers::NONE);
         tool_event(&mut app, ToolEvent::Move { x: 50.0, y: 30.0, pressure: 1.0 }, egui::Modifiers::NONE);
         let shown = display_doc(&mut app, 0).0;
-        crate::channel_view::ensure(&mut app, &ctx, 0);
+        crate::channel_view::ensure(&mut app, &ctx, 0, None);
         let mut delta = ctx.tex_manager().write().take_delta();
         let upload = &delta.set.get(&tex).expect("live channel upload")[0];
         let pos = upload.pos.expect("partial channel upload");
@@ -1849,7 +2491,7 @@ fn channel_views_show_live_targets_and_discarded_strokes() {
         // document revision did not change. There is no committed damage rectangle to use.
         app.drag = None;
         app.live_stroke = None;
-        crate::channel_view::ensure(&mut app, &ctx, 0);
+        crate::channel_view::ensure(&mut app, &ctx, 0, None);
         let mut delta = ctx.tex_manager().write().take_delta();
         let upload = &delta.set.get(&tex).unwrap()[0];
         assert!(upload.pos.is_none(), "discarding a preview refreshes the view");
@@ -2099,12 +2741,66 @@ fn brush_drag_shows_the_real_stroke_and_commits_it() {
     assert_eq!(alpha(&app.session.documents()[0].doc, 40, 30), 0.0, "not committed yet");
     // The canvas redraws only what the stroke touched.
     let dk = canvas_display(&app, &app.session.documents()[0].doc, None).1;
-    let d = damage_since(&app, 0, (rev, dk), (rev, key), dk, None).unwrap();
+    let d = damage_since(&app, 0, (rev, dk), (rev, key), dk, (rev, None)).unwrap();
     assert!(d.contains(40, 30) && !d.contains(40, 2) && d.height() < 60, "{d:?}");
     tool_event(&mut app, ToolEvent::Up { x: 100.0, y: 30.0 }, m);
     let doc = app.session.documents()[0].doc.clone();
     assert!(app.live_stroke.is_none() && display_doc(&mut app, 0).1 == 0);
     assert_eq!((alpha(&doc, 40, 30), alpha(&doc, 40, 38)), (alpha(&shown, 40, 30), alpha(&shown, 40, 38)), "commit matches the preview");
+}
+
+/// #9329 PR C: Paste Into is three revisions; the canvas redraws what the whole command
+/// changed (the pasted area), not the whole document as when only one revision counted.
+#[test]
+fn paste_into_refreshes_only_the_pasted_area() {
+    let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), Default::default());
+    app.background_jobs = false;
+    let ctx = egui::Context::default();
+    app.run("file.new", json!({"width": 800, "height": 600})).unwrap();
+    app.run("select.rect", json!({"x": 40, "y": 40, "width": 100, "height": 100})).unwrap();
+    app.run("edit.copy", json!({})).unwrap();
+    app.run("select.rect", json!({"x": 500, "y": 400, "width": 90, "height": 60})).unwrap();
+    ensure_texture(&mut app, &ctx, 0, None).expect("a texture");
+    let rev = app.session.active().unwrap().revision;
+    app.perf.last_refresh_px = 0;
+    app.run("edit.pasteSpecial.pasteInto", json!({})).unwrap();
+    assert!(app.session.active().unwrap().revision >= rev + 2, "several revisions");
+    ensure_texture(&mut app, &ctx, 0, None).expect("a texture");
+    let px = app.perf.last_refresh_px;
+    assert!(px > 0 && px < 800 * 600 / 4, "refreshed {px} px of {}", 800 * 600);
+}
+
+/// The Move tool's Auto-Select pick is its own revision that changes no pixels: the drag
+/// that follows still redraws only where the layer was and is.
+#[test]
+fn auto_select_move_is_still_bounded() {
+    let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), Default::default());
+    app.background_jobs = false;
+    let ctx = egui::Context::default();
+    app.run("file.new", json!({"width": 800, "height": 600})).unwrap();
+    for (x, color) in [(100, "#ff0000"), (500, "#0000ff")] {
+        app.run("layer.new.layer", json!({})).unwrap();
+        app.run("select.rect", json!({"x": x, "y": 100, "width": 40, "height": 40})).unwrap();
+        app.run("edit.fill", json!({"color": color})).unwrap();
+    }
+    app.run("select.deselect", json!({})).unwrap();
+    app.ui.tool = Tool::Move;
+    app.ui.tool_options.move_auto_select = true;
+    app.ui.extras.snap = false;
+    app.ui.view.show.smart_guides = false;
+    let active = app.session.active().unwrap().active_layer;
+    ensure_texture(&mut app, &ctx, 0, None).expect("a texture");
+    let rev = app.session.active().unwrap().revision;
+    let m = egui::Modifiers::NONE;
+    tool_event(&mut app, ToolEvent::Down { x: 120.0, y: 120.0, pressure: 1.0 }, m);
+    assert_ne!(app.session.active().unwrap().active_layer, active, "Auto-Select picked the red layer");
+    assert_eq!(app.session.active().unwrap().revision, rev + 1, "the pick is one revision");
+    tool_event(&mut app, ToolEvent::Move { x: 150.0, y: 130.0, pressure: 1.0 }, m);
+    app.perf.last_refresh_px = 0;
+    ensure_texture(&mut app, &ctx, 0, None).expect("a texture");
+    let px = app.perf.last_refresh_px;
+    assert!(px > 0 && px < 800 * 600 / 4, "refreshed {px} px of {}", 800 * 600);
+    tool_event(&mut app, ToolEvent::Up { x: 150.0, y: 130.0 }, m);
 }
 
 #[test]
@@ -2151,6 +2847,8 @@ fn drag_frames(smoothing: f32, xs: &[f64]) -> (std::sync::Arc<Document>, std::sy
     app.run("tools.setBrush", json!({"brush": {"size": 16, "hardness": 0.5}})).unwrap();
     // What the options bar's Smoothing field writes.
     app.session.tools.brush.smoothing.amount = smoothing;
+    // Catch-up on Stroke End starts off (#11887); these tests draw the catch-up tail.
+    app.session.tools.brush.smoothing.catch_up_on_end = true;
     app.ui.tool = Tool::Brush;
     ensure_texture(&mut app, &ctx, 0, None);
     let m = egui::Modifiers::NONE;
@@ -2222,7 +2920,7 @@ fn smoothed_stroke_shows_its_catch_up_tail_while_drawing() {
     // And the commit is what `paint.stroke` gives with that smoothing.
     let mut s = photocraft_engine::Session::new();
     s.execute("file.new", json!({"width": 200, "height": 80, "background": "transparent"})).unwrap();
-    s.execute("tools.setBrush", json!({"brush": {"size": 16, "hardness": 0.5, "smoothing": {"amount": 0.5}}})).unwrap();
+    s.execute("tools.setBrush", json!({"brush": {"size": 16, "hardness": 0.5, "smoothing": {"amount": 0.5, "catchUpOnEnd": true}}})).unwrap();
     let mut pts = vec![json!([10.0, 40.0, 1.0])];
     pts.extend(xs.iter().map(|&x| json!([x, 40.0 + (x / 7.0).sin() * 8.0, 1.0])));
     // (Round tips without dynamics draw the same for any seed.)
@@ -2735,8 +3433,9 @@ fn retouch_drags_show_the_footprint_without_wedges() {
         let ctx = egui::Context::default();
         let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), Default::default());
         app.run("file.new", json!({"width": 120, "height": 60})).unwrap();
-        app.run("tools.setBrush", json!({"brush": {"size": 30, "hardness": hardness}})).unwrap();
         app.ui.tool = Tool::Remove;
+        crate::paint_mouse::sync_tool_brush(&mut app);
+        app.run("tools.setBrush", json!({"brush": {"size": 30, "hardness": hardness}})).unwrap();
         tool_event(&mut app, ToolEvent::Down { x: 20.0, y: 30.0, pressure: 1.0 }, egui::Modifiers::NONE);
         for i in 1..80 {
             let t = f64::from(i) * 0.5;
@@ -3030,4 +3729,267 @@ fn torn_off_document_is_not_drawn_again_in_the_main_window() {
         let tabs = h.state().0.tab_strip.as_ref().map(|s| s.tabs.iter().map(|(doc, _)| *doc).collect::<Vec<_>>());
         assert_eq!(tabs, Some(vec![1]), "{kind:?}: only the docked document stays on the main tab strip");
     }
+}
+
+/// #8230: Edit › Fade opens with a Preview checkbox, and the canvas shows the layer faded with the
+/// dialog's opacity, at full size, on the background worker and the inline path alike. Cancel
+/// leaves the document, its history and Fade itself as they were; OK applies what was shown.
+#[test]
+fn fade_dialog_previews_the_faded_layer_and_cancel_keeps_the_document() {
+    for background in [false, true] {
+        let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({"width": 40, "height": 30, "background": "white"})).unwrap();
+        app.run("edit.fill", json!({"color": "#000000"})).unwrap();
+        app.background_jobs = background;
+        let ctx = egui::Context::default();
+        let st = app.session.active().unwrap();
+        let (layer, steps, revision) = (st.active_layer.unwrap(), st.history.past_len(), st.revision);
+        let id = crate::filter_dialog::open(&mut app, "edit.fade").expect("Fade has a dialog");
+        let d = app.ui.dialog_mut(id).expect("the dialog");
+        assert_eq!(d.fields.get("__preview"), Some(&json!(true)), "a Preview checkbox, on");
+        d.fields.insert("opacity".into(), json!(25));
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let (k, size) = loop {
+            if let Some((k, _, size)) = ensure_filter_preview(&mut app, 0, &ctx)
+                && app.filter_preview.as_ref().is_some_and(|p| p.key.params.get("opacity") == Some(&json!(25)))
+            {
+                break (k, size);
+            }
+            assert!(std::time::Instant::now() < deadline, "background jobs {background}: no preview");
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        };
+        assert_eq!((k, size), (1, [40, 30]), "background jobs {background}: full size");
+        let shown = app.filter_preview.as_ref().and_then(|p| p.result.as_ref()).expect("a result").layer(layer).unwrap().surface().unwrap().pixel(3, 3);
+        assert!((shown[0] - 0.75).abs() < 0.01, "background jobs {background}: {shown:?}");
+
+        // Cancel: nothing changed, nothing previewed, and Fade is still there to use.
+        app.ui.close_dialog(id);
+        assert!(ensure_filter_preview(&mut app, 0, &ctx).is_none(), "background jobs {background}: no preview after Cancel");
+        let st = app.session.active().unwrap();
+        assert_eq!(st.doc.layer(layer).unwrap().surface().unwrap().pixel(3, 3)[0], 0.0, "background jobs {background}: the layer is untouched");
+        assert_eq!((st.history.past_len(), st.revision), (steps, revision), "background jobs {background}: no history step");
+        assert!(app.session.is_enabled("edit.fade"), "background jobs {background}: Fade is still available");
+
+        // OK applies the faded layer as one step.
+        let id = crate::filter_dialog::open(&mut app, "edit.fade").unwrap();
+        app.ui.dialog_mut(id).unwrap().fields.insert("opacity".into(), json!(25));
+        crate::dialogs::confirm(&mut app, id).unwrap();
+        let st = app.session.active().unwrap();
+        let faded = st.doc.layer(layer).unwrap().surface().unwrap().pixel(3, 3)[0];
+        assert!((faded - shown[0]).abs() < 1e-6, "background jobs {background}: OK applies the preview ({faded})");
+        assert_eq!(st.history.past_len(), steps + 1);
+    }
+}
+
+/// #11276: Float All in Windows leaves a document that already floats in its one window; a
+/// second floating window would share the document's view and overwrite its centre.
+#[test]
+fn float_all_keeps_one_window_per_floating_document() {
+    let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({"width": 400, "height": 300, "name": "one"})).unwrap();
+    app.run("file.new", json!({"width": 400, "height": 300, "name": "two"})).unwrap();
+    app.sync_views();
+    let ctx = egui::Context::default();
+    let first = crate::menus::invoke(&mut app, &ctx, "window.arrange.floatInWindow", json!({"document": 0})).unwrap()["window"].as_u64();
+    for _ in 0..2 {
+        let all = crate::menus::invoke(&mut app, &ctx, "window.arrange.floatAllInWindows", json!({})).unwrap();
+        assert_eq!(all["windows"][0].as_u64(), first, "the floating document keeps its window");
+        for doc in 0..2 {
+            let n = app.ui.windows.iter().filter(|w| w.open && w.floating && w.document == doc).count();
+            assert_eq!(n, 1, "document {doc}: one floating window");
+        }
+    }
+}
+
+/// #11276: the zoom a floating document took (its window draws the document's own view) stays
+/// when the windows are consolidated back into tabs.
+#[test]
+fn consolidating_keeps_the_zoom_set_while_floating() {
+    let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({"width": 400, "height": 300, "name": "floating"})).unwrap();
+    app.sync_views();
+    let ctx = egui::Context::default();
+    crate::menus::invoke(&mut app, &ctx, "window.arrange.floatInWindow", json!({"document": 0})).unwrap();
+    crate::zoom_levels::set_from_field(&mut app.ui.views[0], false, 200.0, false);
+    crate::menus::invoke(&mut app, &ctx, "window.arrange.consolidateAllToTabs", json!({})).unwrap();
+    assert!(app.ui.windows.is_empty());
+    assert!((app.ui.views[0].zoom - 2.0).abs() < 1e-3, "the tab shows the floating zoom: {}", app.ui.views[0].zoom);
+}
+
+/// #11276: a New Window for Document (not floating) keeps a view of its own beside the main
+/// canvas: zooming either leaves the other as it was.
+#[test]
+fn a_new_window_for_document_keeps_its_own_view() {
+    let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({"width": 400, "height": 300, "name": "doc"})).unwrap();
+    app.sync_views();
+    crate::menus::invoke(&mut app, &egui::Context::default(), "window.arrange.newWindowForDocument", json!({})).unwrap();
+    let mut h = egui_kittest::Harness::builder().with_size(egui::vec2(900.0, 700.0)).build_ui_state(
+        |ui, (app, ready): &mut (PhotocraftApp, bool)| {
+            if *ready {
+                egui::CentralPanel::default().frame(egui::Frame::NONE).show(ui, |ui| document_area(app, ui));
+                extra_windows(app, ui.ctx());
+            }
+        },
+        (app, false),
+    );
+    PhotocraftApp::setup_context(&h.ctx, crate::theme::ThemeKind::ALL[0]);
+    h.state_mut().1 = true;
+    h.run_steps(4);
+    assert!(h.state().0.ui.windows.iter().any(|w| w.open && !w.floating), "the extra window is open");
+    let window_zoom = |h: &egui_kittest::Harness<'_, (PhotocraftApp, bool)>| h.state().0.ui.windows[0].view.zoom;
+    let before = window_zoom(&h);
+    crate::zoom_levels::set_from_field(&mut h.state_mut().0.ui.views[0], false, 300.0, false);
+    h.run_steps(3);
+    assert!((h.state().0.ui.views[0].zoom - 3.0).abs() < 1e-3, "the main canvas keeps its zoom");
+    assert!((window_zoom(&h) - before).abs() < 1e-3, "the extra window keeps its own: {}", window_zoom(&h));
+    let main = h.state().0.ui.views[0].zoom;
+    crate::zoom_levels::set_from_field(&mut h.state_mut().0.ui.windows[0].view, false, 50.0, false);
+    h.run_steps(3);
+    assert!((window_zoom(&h) - 0.5).abs() < 1e-3, "the extra window keeps its zoom");
+    assert!((h.state().0.ui.views[0].zoom - main).abs() < 1e-3, "the main canvas is not written over");
+}
+
+/// #11276: in a tiled arrangement the active document's cell zooms from the Navigator and the
+/// status bar too.
+#[test]
+fn a_tiled_document_follows_navigator_and_status_bar_zoom() {
+    for layout in ["twoUpVertical", "tileAllVertically", "fourUp"] {
+        let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
+        for name in ["one", "two", "three"] {
+            app.run("file.new", json!({"width": 400, "height": 300, "name": name})).unwrap();
+        }
+        app.sync_views();
+        crate::menus::invoke(&mut app, &egui::Context::default(), &format!("window.arrange.{layout}"), json!({})).unwrap();
+        let mut h = egui_kittest::Harness::builder().with_size(egui::vec2(900.0, 700.0)).build_ui_state(
+            |ui, (app, ready): &mut (PhotocraftApp, bool)| {
+                if *ready {
+                    egui::CentralPanel::default().frame(egui::Frame::NONE).show(ui, |ui| document_area(app, ui));
+                }
+            },
+            (app, false),
+        );
+        PhotocraftApp::setup_context(&h.ctx, crate::theme::ThemeKind::ALL[0]);
+        h.state_mut().1 = true;
+        h.run_steps(4);
+        let active = h.state().0.session.active_index().unwrap();
+        for pct in [200.0, 50.0] {
+            crate::zoom_levels::set_from_field(&mut h.state_mut().0.ui.views[active], false, pct, false);
+            h.run_steps(3);
+            let zoom = h.state().0.ui.views[active].zoom;
+            assert!((zoom - pct / 100.0).abs() < 1e-3, "{layout} {pct}%: {zoom}");
+        }
+    }
+}
+
+/// #11276: a document floating in its own window zooms from the zoom typed into the status bar
+/// and into the Navigator, as a tabbed one does; the window doesn't keep or write back an older
+/// copy of the view. Only the typed zoom fields are driven here, not the Navigator's slider or
+/// zoom buttons.
+#[test]
+fn a_floating_document_follows_navigator_and_status_bar_zoom() {
+    use egui_kittest::kittest::{NodeT, Queryable};
+    let mut h = egui_kittest::Harness::builder().with_size(egui::vec2(1400.0, 900.0)).with_max_steps(64).build_eframe(|cc| {
+        PhotocraftApp::setup_context(&cc.egui_ctx, Default::default());
+        let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({"width": 400, "height": 300, "name": "floating"})).unwrap();
+        app.run("file.new", json!({"width": 400, "height": 300, "name": "docked"})).unwrap();
+        crate::menus::invoke(&mut app, &egui::Context::default(), "window.arrange.floatInWindow", json!({"document": 0})).unwrap();
+        app
+    });
+    h.run_steps(6);
+    let ctx = h.ctx.clone();
+    crate::menus::invoke(h.state_mut(), &ctx, "window.panel.navigator", json!({})).unwrap();
+    h.run_steps(6);
+    assert_eq!(h.state().session.active_index(), Some(0), "the floating document is active");
+    // The status bar's zoom field (bottom left) and the Navigator's.
+    let fields = |h: &egui_kittest::Harness<'_, PhotocraftApp>| {
+        let mut f: Vec<egui::Rect> = h
+            .query_all_by_role(egui::accesskit::Role::SpinButton)
+            .filter(|n| n.accesskit_node().label().as_deref() == Some("Zoom"))
+            .map(|n| n.rect())
+            .collect();
+        f.sort_by(|a, b| a.left().total_cmp(&b.left()));
+        f
+    };
+    assert_eq!(fields(&h).len(), 2, "the status bar's and the Navigator's zoom fields");
+    for (field, typed, want) in [(0, "200", 2.0), (1, "50", 0.5), (0, "300", 3.0), (1, "100", 1.0)] {
+        let at = fields(&h)[field].center();
+        h.event(egui::Event::PointerMoved(at));
+        h.event(egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed: true, modifiers: egui::Modifiers::NONE });
+        h.event(egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed: false, modifiers: egui::Modifiers::NONE });
+        h.run_steps(2);
+        h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::A);
+        h.event(egui::Event::Text(typed.into()));
+        h.key_press(egui::Key::Enter);
+        h.run_steps(60);
+        let window = h.state().ui.windows[0].view.zoom;
+        assert!((window - want).abs() < 1e-3, "field {field}, typed {typed}: the window shows {window}");
+        assert!((h.state().ui.views[0].zoom - want).abs() < 1e-3, "field {field}, typed {typed}: not written back over by the window");
+    }
+}
+
+#[test]
+fn free_transform_redraws_only_the_moving_layer_when_the_box_opens_and_closes() {
+    // Opening the box swapped the canvas to a preview document with no damage for it, so a
+    // gigapixel canvas recomposited in full (over a second) on every ⌘T, and again on Cancel.
+    let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), Default::default());
+    app.run("file.new", json!({"width": 400, "height": 200, "background": "transparent"})).unwrap();
+    app.run("layer.new.layer", json!({})).unwrap();
+    app.session
+        .edit("paint", |doc, a| {
+            doc.layer_mut(a.unwrap()).unwrap().surface_mut().unwrap().fill_rect(photocraft_geom::Rect::new(20, 20, 60, 50), &[1.0, 0.0, 0.0, 1.0]);
+            Ok(())
+        })
+        .unwrap();
+    let rev = app.session.documents()[0].revision;
+    crate::transform_tool::begin(&mut app, &egui::Context::default()).expect("the box opens");
+    let (_, key) = display_doc(&mut app, 0);
+    assert_eq!(key, crate::transform_tool::preview_key(app.transform_preview.as_ref().unwrap().session));
+    let dk = canvas_display(&app, &app.session.documents()[0].doc, None).1;
+    let opened = damage_since(&app, 0, (rev, dk), (rev, key), dk, (rev, None)).expect("opening the box has a damage area");
+    assert!(opened.contains(20, 20) && opened.contains(59, 49), "{opened:?}");
+    assert!(opened.width() < 400 && opened.height() < 200, "not the whole canvas: {opened:?}");
+    let canceled = damage_since(&app, 0, (rev, key ^ dk), (rev, 0), dk, (rev, None)).expect("canceling has one too");
+    assert_eq!(canceled, opened);
+    // A commit (one revision later) adds what it changed; anything else redraws everything.
+    let moved = photocraft_geom::Rect::new(100, 20, 140, 50);
+    let committed = damage_since(&app, 0, (rev, key ^ dk), (rev + 1, 0), dk, (rev, Some(moved))).expect("committing too");
+    assert!(committed.contains(20, 20) && committed.contains(139, 49), "{committed:?}");
+    assert!(damage_since(&app, 0, (rev, key ^ dk), (rev + 2, 0), dk, (rev + 1, Some(moved))).is_none(), "a later revision isn't ours");
+}
+
+/// tanish2k09 on #10406: an armed eyedropper owns the image of the primary canvas only, the one
+/// its picks come from and its pipette is drawn on. A secondary canvas (a Window › Arrange › New
+/// Window view) is never left without a cursor for it.
+#[test]
+fn an_armed_eyedropper_hides_no_cursor_on_a_secondary_canvas() {
+    let ctx = egui::Context::default();
+    let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), Default::default());
+    app.run("file.new", json!({"width": 400, "height": 300})).unwrap();
+    app.sync_views();
+    app.ui.tool = crate::state::Tool::Move;
+    let id = crate::adjust_dialog::open(&mut app, "image.adjustments.curves").unwrap();
+    let base = app.ui.dialog_mut(id).map(|d| crate::filter_dialog::params_of(&d.fields)).unwrap();
+    let dialog = app.ui.dialog_mut(id).unwrap();
+    dialog.fields.insert("__curvePicker".into(), json!("black"));
+    dialog.fields.insert("__curvePickerBase".into(), base);
+    assert!(crate::adjust_dialog::picker_armed(&app), "the black-point eyedropper is armed");
+    let view = app.ui.views[0].clone();
+    let rect = Rect::from_min_size(Pos2::ZERO, vec2(400.0, 300.0));
+    let cursor = |app: &mut PhotocraftApp, primary: bool| {
+        let mut icon = egui::CursorIcon::Default;
+        for _ in 0..3 {
+            let mut input = egui::RawInput::default();
+            input.events.push(egui::Event::PointerMoved(Pos2::new(200.0, 150.0)));
+            let mut out = ctx.run_ui(input, |ui| {
+                canvas_view(app, ui, 0, rect, view.clone(), primary);
+            });
+            out.textures_delta.clear();
+            icon = out.platform_output.cursor_icon;
+        }
+        icon
+    };
+    assert_eq!(cursor(&mut app, true), egui::CursorIcon::None, "the primary canvas hides the icon under the pipette it draws");
+    assert_ne!(cursor(&mut app, false), egui::CursorIcon::None, "a secondary canvas keeps a cursor");
 }

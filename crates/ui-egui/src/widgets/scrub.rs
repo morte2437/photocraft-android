@@ -63,7 +63,8 @@ fn scrub_option_area(ui: &Ui, label: &Response, tip: Option<&'static str>) {
     ui.data_mut(|d| d.insert_temp(label_scrub_id(), scrub));
 }
 
-pub(super) fn scrub_label_within(ui: &Ui, label: &Response, max_gap: f32) -> Response {
+// Shared headers may put a control between the label and its field.
+pub(crate) fn scrub_label_within(ui: &Ui, label: &Response, max_gap: f32) -> Response {
     // Drag only, not focusable: Tab goes to the value field, not to its label as well.
     let resp = label.interact(Sense::DRAG);
     let scrub = label_scrub_response(ui, &resp, label.rect, max_gap, Some(label.id));

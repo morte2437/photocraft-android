@@ -32,6 +32,142 @@ fn points_and_picas_use_the_points_per_inch() {
     assert_eq!(pt_per_in(&f), 72.27);
 }
 
+/// #6214: `n` columns are `n × width + (n − 1) × gutter` points. Photoshop's default Column
+/// Size (180 pt, 12 pt gutter) at 300 ppi: 1 column is 2.5 in (750 px), 2 are 372 pt
+/// (1550 px), 3 are 564 pt (2350 px).
+#[test]
+fn columns_convert_both_ways() {
+    let cols = (180.0, 12.0);
+    for (n, px) in [(1.0, 750.0), (2.0, 1550.0), (3.0, 2350.0), (0.5, 350.0)] {
+        assert!((columns_to_px(n, 300.0, 72.0, cols, false) - px).abs() < 1e-9, "{n} columns");
+        assert!((px_to_columns(px, 300.0, 72.0, cols, false) - n).abs() < 1e-9, "{px} px");
+    }
+    // Traditional points (72.27 pt/in) and other resolutions round-trip too.
+    for (ppi, res, cols) in [(72.27, 72.0, (100.0, 0.0)), (72.0, 150.0, (240.0, 18.0)), (72.0, 1.0, (1.0, 10_000.0))] {
+        for n in [1.0, 2.0, 4.0, 12.0, 0.25] {
+            // A relative delta under one column can be shorter than the gutter: it's zero.
+            for relative in [false, true].into_iter().filter(|r| !*r || n >= 1.0) {
+                let px = columns_to_px(n, res, ppi, cols, relative);
+                assert!((px_to_columns(px, res, ppi, cols, relative) - n).abs() < 1e-9, "{n} at {res} ppi, {cols:?}, relative {relative}");
+            }
+        }
+    }
+    // Canvas Size's relative deltas: zero stays zero, and shrinking mirrors growing.
+    assert_eq!(columns_to_px(0.0, 300.0, 72.0, cols, true), 0.0);
+    assert_eq!(px_to_columns(0.0, 300.0, 72.0, cols, true), 0.0);
+    assert_eq!(columns_to_px(-2.0, 300.0, 72.0, cols, true), -1550.0);
+}
+
+/// #6214: a zero, negative, NaN or missing Column Size falls back instead of dividing by zero.
+#[test]
+fn degenerate_column_size_does_not_panic() {
+    let mut f = Map::new();
+    assert_eq!(column_size(&f), (180.0, 12.0));
+    for (w, g, want) in [
+        (json!(0.0), json!(0.0), (180.0, 0.0)),
+        (json!(-5.0), json!(-3.0), (180.0, 0.0)),
+        (json!(f64::NAN), json!(f64::INFINITY), (180.0, 12.0)),
+        (json!("x"), json!(null), (180.0, 12.0)),
+        (json!(90.0), json!(6.0), (90.0, 6.0)),
+    ] {
+        f.insert("__colWidth".into(), w);
+        f.insert("__colGutter".into(), g);
+        let cols = column_size(&f);
+        assert_eq!(cols, want);
+        for px in [0.0, 1.0, 750.0, -10.0, 1e12] {
+            assert!(px_to_columns(px, 300.0, 72.0, cols, false).is_finite());
+            assert!(px_to_columns(px, 0.0, 72.0, cols, true).is_finite());
+        }
+    }
+}
+
+/// #6214: the dialogs read Column Size from the preferences; Columns is a Width-only unit and
+/// picking another unit on Width leaves it.
+#[test]
+fn columns_unit_is_width_only_and_follows_the_preference() {
+    let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
+    app.session.execute("file.new", json!({"width": 200, "height": 100})).unwrap();
+    app.session.execute("prefs.set", json!({"path": "unitsAndRulers.columnWidth", "value": 0})).unwrap();
+    app.session.execute("prefs.set", json!({"path": "unitsAndRulers.gutter", "value": 6})).unwrap();
+    for command in ["image.imageSize", "image.canvasSize"] {
+        let id = open(&mut app, command).unwrap();
+        let f = &mut app.ui.dialog_mut(id).unwrap().fields;
+        assert_eq!((f.get("__colWidth"), f.get("__colGutter")), (Some(&json!(0.0)), Some(&json!(6.0))), "{command}");
+        assert_eq!(column_size(f), (180.0, 6.0), "{command}: a zero width falls back");
+        f.insert("__unit".into(), json!("in"));
+        set_unit(f, "width", "col");
+        assert_eq!((field_unit(f, "width"), field_unit(f, "height")), ("col".to_string(), "in".to_string()), "{command}");
+        set_unit(f, "height", "col");
+        assert_eq!(field_unit(f, "height"), "in", "{command}: Height has no Columns");
+        set_unit(f, "height", "mm");
+        assert_eq!((field_unit(f, "width"), field_unit(f, "height")), ("col".to_string(), "mm".to_string()), "{command}");
+        set_unit(f, "width", "pt");
+        assert_eq!((field_unit(f, "width"), field_unit(f, "height")), ("pt".to_string(), "pt".to_string()), "{command}");
+        // A stray shared `col` (automation) shows Height in pixels rather than as columns.
+        f.insert("__unit".into(), json!("col"));
+        assert_eq!(field_unit(f, "height"), "px", "{command}");
+        app.ui.close_dialog(id);
+    }
+}
+
+/// #6214: 2 columns typed into Image Size's Width at 300 ppi resize to 1550 px wide (the
+/// default 180 pt columns with 12 pt gutters), Height following the proportions; Canvas Size
+/// counts whole inches, so its 2 columns are 600 px.
+#[test]
+fn typed_columns_resize_the_document() {
+    use egui_kittest::Harness;
+    for command in ["image.imageSize", "image.canvasSize"] {
+        let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
+        app.session.execute("file.new", json!({"width": 1000, "height": 500, "resolution": 300})).unwrap();
+        let mut h = Harness::builder().with_size(egui::vec2(1400.0, 900.0)).build_ui_state(|ui, app| crate::dialogs::show(app, ui.ctx()), app);
+        PhotocraftApp::setup_context(&h.ctx, crate::theme::ThemeKind::ALL[0]);
+        let id = open(h.state_mut(), command).unwrap();
+        set_unit(&mut h.state_mut().ui.dialog_mut(id).unwrap().fields, "width", "col");
+        h.run_steps(3);
+        type_width(&mut h, "2");
+        let f = fields(&h);
+        let px = if command == "image.imageSize" { 1550.0 } else { 600.0 };
+        assert!((num(&f, "width") - px).abs() < 1e-6, "{command}: {f:?}");
+        crate::dialogs::confirm(h.state_mut(), id).unwrap();
+        let want = if command == "image.imageSize" { photocraft_doc::Size::new(1550, 775) } else { photocraft_doc::Size::new(600, 500) };
+        assert_eq!(h.state().session.active().unwrap().doc.size, want, "{command}");
+    }
+}
+
+/// Canvas Size's Columns as measured in the reference application: a column is one inch at the
+/// document resolution whatever Column Size says, and only whole columns count. At 300 ppi with
+/// Column Size 360 pt / 24 pt: a 1001 px canvas shows as 3 columns, typed 1.5 is 2 columns
+/// (600 px), and Relative +1 column adds 300 px.
+#[test]
+fn canvas_size_columns_are_whole_inches() {
+    use egui_kittest::Harness;
+    assert_eq!(canvas_px_to_columns(1001.0, 300.0), 3.0);
+    assert_eq!(canvas_px_to_columns(1001.0, 72.0), 14.0);
+    assert_eq!(canvas_columns_to_px(1.5, 72.0), 144.0);
+    assert_eq!(canvas_columns_to_px(-1.0, 300.0), -300.0);
+    assert!(canvas_px_to_columns(1000.0, 0.0).is_finite());
+    for (relative, typed, want) in [(false, "1.5", 600), (true, "1", 1301)] {
+        let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
+        app.session.execute("file.new", json!({"width": 1001, "height": 500, "resolution": 300})).unwrap();
+        app.session.execute("prefs.set", json!({"path": "unitsAndRulers.columnWidth", "value": 360})).unwrap();
+        app.session.execute("prefs.set", json!({"path": "unitsAndRulers.gutter", "value": 24})).unwrap();
+        let mut h = Harness::builder().with_size(egui::vec2(1400.0, 900.0)).build_ui_state(|ui, app| crate::dialogs::show(app, ui.ctx()), app);
+        PhotocraftApp::setup_context(&h.ctx, crate::theme::ThemeKind::ALL[0]);
+        let id = open(h.state_mut(), "image.canvasSize").unwrap();
+        let f = &mut h.state_mut().ui.dialog_mut(id).unwrap().fields;
+        set_unit(f, "width", "col");
+        if relative {
+            f.insert("relative".into(), json!(true));
+            f.insert("width".into(), json!(0.0));
+            f.insert("height".into(), json!(0.0));
+        }
+        h.run_steps(3);
+        type_width(&mut h, typed);
+        crate::dialogs::confirm(h.state_mut(), id).unwrap();
+        assert_eq!(h.state().session.active().unwrap().doc.size, photocraft_doc::Size::new(want, 500), "relative {relative}");
+    }
+}
+
 #[test]
 fn dialog_maps_to_engine_command() {
     let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
@@ -48,6 +184,30 @@ fn dialog_maps_to_engine_command() {
     d.fields.insert("anchor".into(), json!("topLeft"));
     crate::dialogs::confirm(&mut app, id).unwrap();
     assert_eq!(app.session.active().unwrap().doc.size, photocraft_doc::Size::new(120, 50));
+}
+
+/// #9260: OK with a new Width resizes a document whose own resolution is outside the range
+/// the command accepts (an imported PNG's pHYs of 1 px/m is 0.0254 ppi); the dialog sends that
+/// resolution back unchanged.
+#[test]
+fn ok_resizes_a_document_with_an_imported_resolution_out_of_range() {
+    for own in [0.0254_f32, 40_000.0] {
+        let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
+        app.session.execute("file.new", json!({"width": 200, "height": 100, "resolution": 72})).unwrap();
+        app.session
+            .edit("ppi", |doc, _| {
+                doc.resolution_dpi = own;
+                Ok(())
+            })
+            .unwrap();
+        let id = open(&mut app, "image.imageSize").unwrap();
+        let d = app.ui.dialog_mut(id).unwrap();
+        d.fields.insert("width".into(), json!(100));
+        d.fields.insert("height".into(), json!(50));
+        crate::dialogs::confirm(&mut app, id).unwrap();
+        let doc = &app.session.active().unwrap().doc;
+        assert_eq!((doc.size, doc.resolution_dpi), (photocraft_doc::Size::new(100, 50), own), "{own}");
+    }
 }
 
 #[test]
@@ -282,6 +442,35 @@ fn resample_on_resolution_keeps_the_physical_size() {
         crate::dialogs::confirm(h.state_mut(), id).unwrap();
         let doc = &h.state().session.active().unwrap().doc;
         assert_eq!((doc.size, doc.resolution_dpi), (photocraft_doc::Size::new(size.0 as u32, size.1 as u32), 300.0), "{unit}");
+    }
+}
+
+/// #6979 with #6214's per-field units: Width in Columns (physical) beside Height in pixels.
+/// A new Resolution with Resample on keeps the print width; linked, the height follows the
+/// proportions, unlinked it keeps its pixels. 372 x 300 px at 72 ppi is 2 columns (the default
+/// 180 pt columns, 12 pt gutter) wide; at 300 ppi 2 columns are 1550 px.
+#[test]
+fn resample_on_resolution_with_width_in_columns() {
+    for (constrain, size) in [(true, (1550.0, 1250.0)), (false, (1550.0, 300.0))] {
+        let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
+        app.session.execute("file.new", json!({"width": 372, "height": 300, "resolution": 72})).unwrap();
+        let mut h = egui_kittest::Harness::builder()
+            .with_size(egui::vec2(1400.0, 900.0))
+            .build_ui_state(|ui, app: &mut PhotocraftApp| crate::dialogs::show(app, ui.ctx()), app);
+        PhotocraftApp::setup_context(&h.ctx, crate::theme::ThemeKind::ALL[0]);
+        let id = open(h.state_mut(), "image.imageSize").unwrap();
+        let d = h.state_mut().ui.dialog_mut(id).unwrap();
+        d.fields.insert("resample".into(), json!("bicubic"));
+        d.fields.insert("__unit".into(), json!("px"));
+        d.fields.insert("__constrain".into(), json!(constrain));
+        set_unit(&mut d.fields, "width", "col");
+        h.run_steps(3);
+        type_into(&mut h, 2, "300");
+        let f = fields(&h);
+        assert_eq!((num(&f, "width"), num(&f, "height"), num(&f, "resolution")), (size.0, size.1, 300.0), "constrain {constrain}: {f:?}");
+        crate::dialogs::confirm(h.state_mut(), id).unwrap();
+        let doc = &h.state().session.active().unwrap().doc;
+        assert_eq!(doc.size, photocraft_doc::Size::new(size.0 as u32, size.1 as u32), "constrain {constrain}");
     }
 }
 

@@ -56,7 +56,7 @@ fn fixtures() -> Vec<(&'static str, Option<&'static str>, Descriptor)> {
     ellipse.items.last_mut().unwrap().1 = D::Boolean(false);
     cases.push(("AddT", Some("addTo"), ellipse));
     for mode in ["Scrn", "H", "linearDodge"] {
-        cases.push(("Fade", Some("fade"), desc("null").with("Opct", pct(25.5)).with("Md  ", enm("BlnM", mode))));
+        cases.push(("Fade", Some("fade"), desc("null").with("Opct", pct(25.0)).with("Md  ", enm("BlnM", mode))));
     }
     for edge in ["AdCH", "AdRg", "AdTp", "AdCV", "AdBt"] {
         cases.push(("Dstr", Some("distribute"), desc("null").with("null", target_ref("Lyr ")).with("Usng", enm("ADSt", edge))));
@@ -262,12 +262,12 @@ fn noncanonical_group_f_enums_keep_their_bytes_and_flags() {
     }
 }
 
-/// Fade writes native defaults and clamps only its documented opacity range.
+/// Fade writes native defaults; a recorded opacity just outside 0..=100 wraps modulo 100 on import.
 #[test]
 fn fade_defaults_and_opacity_limits_are_explicit() {
     let native = export_item("edit.fade", &json!({}), "S").unwrap().descriptor.unwrap();
     assert_eq!(native, desc("null").with("Opct", pct(100.0)).with("Md  ", enm("BlnM", "Nrml")));
-    for (opacity, expected) in [(-5.0, 0.0), (0.0, 0.0), (100.0, 100.0), (105.0, 100.0)] {
+    for (opacity, expected) in [(-5.0, 95.0), (0.0, 0.0), (100.0, 100.0), (105.0, 5.0), (250.0, 100.0)] {
         let bytes = file(AtnEvent::Code(*b"Fade"), desc("null").with("Opct", pct(opacity)).with("Md  ", enm("BlnM", "Nrml")));
         let loaded = import(&bytes).unwrap();
         assert!(loaded.unsupported.is_empty());
@@ -302,7 +302,6 @@ fn group_f_unsupported_settings_are_not_silently_replaced() {
         (*b"AddT", wrong_ref),
         (*b"PstI", desc("null").with("AntA", enm("Annt", "Unknown")).with("As  ", D::Class(class("Pxel")))),
         (*b"PstO", desc("null").with("AntA", enm("Annt", "Anno")).with("As  ", D::Class(class("Other")))),
-        (*b"Fade", desc("null").with("Opct", pct(50.0))),
         (*b"Fade", desc("null").with("Opct", px(50.0)).with("Md  ", enm("BlnM", "Nrml"))),
         (*b"Dstr", desc("null").with("null", target_ref("Lyr ")).with("Usng", enm("ADSt", "Unknown"))),
         (*b"RmvL", desc("null").with("apply", D::Boolean(true))),

@@ -84,6 +84,10 @@ fn text_field_in(
     let font = if mono { theme::mono(12.0) } else { egui::FontId::proportional(12.5) };
     let mut inner = rect.shrink2(TEXT_FIELD_PAD);
     inner.max.x = (inner.max.x - trailing).max(inner.min.x + 1.0);
+    // The editor covers the whole box but the trailing space, with the padding as its own margin,
+    // so a click in the padding is a click in the editor: it focuses it and places the caret, in
+    // a scrolled value too, as a click on the text does (#12302).
+    let editor = inner.expand2(TEXT_FIELD_PAD);
     let limit = char_limit.unwrap_or(TEXT_FIELD_LIMIT);
     // A value already past the limit (restored from a state file, set by automation) is shown and
     // edited as its first `limit` characters, so it is never laid out whole; the caller's string
@@ -98,17 +102,17 @@ fn text_field_in(
     let edit = egui::TextEdit::singleline(shown)
         .id(id)
         .hint_text(hint.to_owned())
-        .frame(egui::Frame::NONE)
+        .frame(egui::Frame::NONE.inner_margin(TEXT_FIELD_PAD))
         .font(font)
-        .min_size(inner.size())
+        .min_size(editor.size())
         .align(egui::Align2::LEFT_CENTER)
         .char_limit(limit);
     // A child Ui keeps the field's selection colour local: `Visuals::selection` also fills selected
     // list rows and slider trails, which must keep the theme's.
     let layout = egui::Layout::centered_and_justified(egui::Direction::TopDown);
-    let mut child = ui.new_child(egui::UiBuilder::new().max_rect(inner).layout(layout));
-    // The theme's 24 pt interact height would make the edit taller than the box's inside.
-    child.spacing_mut().interact_size.y = inner.height();
+    let mut child = ui.new_child(egui::UiBuilder::new().max_rect(editor).layout(layout));
+    // The theme's 24 pt interact height would make the edit taller than the box.
+    child.spacing_mut().interact_size.y = editor.height();
     child.style_mut().visuals.selection.bg_fill = t.field_selection();
     let response = child.add(edit);
     if let Some(b) = bounded

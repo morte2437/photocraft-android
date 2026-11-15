@@ -79,14 +79,14 @@ pub(crate) fn consume_attempt_allowance(bytes: u64) -> Result<(), IoError> {
     ATTEMPT_ALLOWANCE.with(|a| match a.get() {
         Some(remaining) => {
             if bytes == u64::MAX || bytes > remaining {
-                return Err(IoError::PsdImportBudget { required: bytes, limit: remaining });
+                return Err(IoError::PsdImportBudget { required: bytes, limit: remaining, free_memory: None });
             }
             a.set(Some(remaining - bytes));
             Ok(())
         }
         None => {
             // Unknown allowance during reentrant gate must fail closed.
-            Err(IoError::PsdImportBudget { required: bytes, limit: 0 })
+            Err(IoError::PsdImportBudget { required: bytes, limit: 0, free_memory: None })
         }
     })
 }
@@ -193,7 +193,7 @@ mod tests {
         set_active_attempt_budget(u64::MAX);
 
         let err = consume_attempt_allowance(u64::MAX).expect_err("the overflow sentinel is never a charge");
-        assert!(matches!(err, IoError::PsdImportBudget { required, limit } if required == u64::MAX && limit == u64::MAX));
+        assert!(matches!(err, IoError::PsdImportBudget { required, limit, .. } if required == u64::MAX && limit == u64::MAX));
         assert_eq!(active_attempt_remaining(), Some(u64::MAX), "a refused sentinel charge leaves the parent's allowance untouched");
 
         // One byte below the sentinel is an ordinary, enormous charge.

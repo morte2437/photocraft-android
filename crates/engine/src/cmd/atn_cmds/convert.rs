@@ -69,14 +69,18 @@ fn convert_action(file: &AtnFile, a: &AtnAction, set: &str, unsupported: &mut Ve
     let mut action = Action::new(name.clone(), Vec::new());
     action.set = Some(clip_name(set));
     for (i, item) in a.items.iter().enumerate() {
-        let mapped = match (event_for(&item.event), &item.descriptor) {
-            (Some(e), Some(d)) => (e.from)(d),
-            (Some(e), None) => (e.from)(&Descriptor::default()),
-            (None, _) => Mapped::Unsupported { harmless: false },
+        let menu = item.descriptor.is_none().then(|| super::menu_item::from_event(&item.event)).flatten();
+        let mapped = match (menu, event_for(&item.event), &item.descriptor) {
+            (Some(params), _, _) => Mapped::Steps(vec![(super::MENU_ITEM.into(), params)]),
+            (_, Some(e), Some(d)) => (e.from)(d),
+            (_, Some(e), None) => (e.from)(&Descriptor::default()),
+            _ => Mapped::Unsupported { harmless: false },
         };
         let (new_steps, enabled) = match mapped {
             Mapped::Steps(mut s) => {
                 super::steps_gallery::remember_event(item, &mut s);
+                super::steps_stack::remember_item(item, &mut s);
+                super::steps_video::remember(item, &mut s);
                 (s, item.enabled)
             }
             Mapped::Unsupported { harmless } => {
@@ -134,6 +138,9 @@ pub struct Skipped {
 }
 
 pub(super) fn export_item(id: &str, params: &Value, set: &str) -> Option<AtnItem> {
+    if id == super::MENU_ITEM {
+        return super::menu_item::export(params);
+    }
     if id == PHOTOSHOP_STEP {
         let event = jstr(params, "event")?;
         let event = match params.get("eventKind") {
@@ -154,7 +161,7 @@ pub(super) fn export_item(id: &str, params: &Value, set: &str) -> Option<AtnItem
         return Some(AtnItem { event, dictionary: jstr(params, "name").unwrap_or("").as_bytes().to_vec(), descriptor, ..Default::default() });
     }
     let mut params = params.clone();
-    if (id == "actions.play" || id == "actions.conditional") && params.get("set").is_none() {
+    if (id == "actions.play" || id == "actions.conditional") && params.get("set").is_none_or(Value::is_null) {
         params["set"] = json!(set);
     }
     let (e, descriptor) = event_and_descriptor(id, &params)?;
@@ -164,23 +171,63 @@ pub(super) fn export_item(id: &str, params: &Value, set: &str) -> Option<AtnItem
     {
         return Some(AtnItem { event, dictionary: name, descriptor: Some(descriptor), ..Default::default() });
     }
-    let event = if e.code.is_empty() { AtnEvent::name(e.name) } else { AtnEvent::Code(e.code.as_bytes().try_into().ok()?) };
-    Some(AtnItem { event, dictionary: e.label.as_bytes().to_vec(), descriptor: Some(descriptor), ..Default::default() })
+    let event = if id == "path.set" || e.code.is_empty() { AtnEvent::name(e.name) } else { AtnEvent::Code(e.code.as_bytes().try_into().ok()?) };
+    let omit_descriptor = super::steps_stack::without_descriptor(id, &params) || super::steps_video::omitted(id, &params);
+    let descriptor = (!omit_descriptor).then_some(descriptor);
+    Some(AtnItem { event, dictionary: e.label.as_bytes().to_vec(), descriptor, ..Default::default() })
 }
 
-/// Photoshop applies only the rename when a Set mixes it with opacity or blend mode (#8304).
-/// Write each layer property separately, renaming last so named references still resolve.
+/// Photoshop applies only the rename when a Set mixes it with opacity or blend mode (#8304):
+/// write each layer property separately, renaming last so named references still resolve. A
+/// `.atn` reference is also one target, so a `layer.setProps` step that named `layers` exports
+/// as one Set per layer, each referenced by Photoshop's layer id: an edit that accepted the
+/// list must not replay on the active layer alone (#7246). The list is split into one-target
+/// params before the step maps, so the keyed check that refuses the keys the `.atn` adapters
+/// cannot write (#7196) sees a mapped one. A step unable to represent the whole list exactly
+/// (an id beyond `Idnt`'s u32; a rename of several layers, which PhotoCraft itself refuses)
+/// comes back as `None`, to refuse or skip the source step.
 fn export_items(id: &str, params: &Value, set: &str) -> Option<Vec<AtnItem>> {
+    if id == "layer.setProps" {
+        if let Some(Value::Array(ids)) = params.get("layers") {
+            return layer_set_items(ids, params, set);
+        }
+        if params.get("layers").map(|v| !v.is_null()) == Some(true) {
+            return None;
+        }
+    }
     let item = export_item(id, params, set)?;
     if id != "layer.setProps" {
         return Some(vec![item]);
     }
+    item_property_split(item)
+}
+
+/// One Set per layer of an explicit `layers` list, by Photoshop's ever-present layer id.
+fn layer_set_items(ids: &[Value], params: &Value, set: &str) -> Option<Vec<AtnItem>> {
+    if ids.is_empty() || (params.get("name").is_some() && ids.len() > 1) {
+        return None;
+    }
+    let mut items = Vec::new();
+    for v in ids {
+        let layer = v.as_u64().filter(|n| *n <= u32::MAX as u64)?;
+        let mut p = params.clone();
+        let obj = p.as_object_mut()?;
+        obj.remove("layers");
+        obj.insert("layer".into(), Value::Number(serde_json::Number::from(layer)));
+        items.extend(item_property_split(export_item("layer.setProps", &p, set)?)?);
+    }
+    Some(items)
+}
+
+/// One item per property of one `Lyr ` target, renaming last so named references resolve
+/// when the whole Set replays (#8304).
+fn item_property_split(item: AtnItem) -> Option<Vec<AtnItem>> {
     let descriptor = item.descriptor.as_ref()?;
     let properties = get_obj(descriptor, "T   ")?;
     if properties.items.len() <= 1 {
         return Some(vec![item]);
     }
-    let target = descriptor.get("null")?;
+    let target = descriptor.get("null")?.clone();
     let mut items = Vec::with_capacity(properties.items.len());
     for (key, value) in properties.items.iter().filter(|(k, _)| !k.is("Nm  ")).chain(properties.items.iter().filter(|(k, _)| k.is("Nm  "))) {
         let mut property = properties.clone();
@@ -264,18 +311,18 @@ pub fn export(
 /// Assigns names not already used, as `name`, `name 2`, `name 3`… A plain linear scan of the
 /// taken list per candidate is cubic when an action file repeats one base name many times, so
 /// membership uses a set and the next suffix to try is cached per base name.
-pub(super) struct UniqueNames {
+pub(crate) struct UniqueNames {
     taken: std::collections::HashSet<String>,
     next_suffix: std::collections::HashMap<String, u32>,
 }
 
 impl UniqueNames {
-    pub(super) fn new<I: IntoIterator<Item = String>>(existing: I) -> Self {
+    pub(crate) fn new<I: IntoIterator<Item = String>>(existing: I) -> Self {
         UniqueNames { taken: existing.into_iter().collect(), next_suffix: std::collections::HashMap::new() }
     }
 
     /// Reserves and returns a unique name derived from `name`, recording it as taken.
-    pub(super) fn claim(&mut self, name: &str) -> String {
+    pub(crate) fn claim(&mut self, name: &str) -> String {
         if self.taken.insert(name.to_string()) {
             return name.to_string();
         }

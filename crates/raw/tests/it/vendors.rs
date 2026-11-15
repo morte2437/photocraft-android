@@ -56,7 +56,8 @@ fn cr2_develops() {
 
 #[test]
 fn cr2_srgb_raw_is_unsupported() {
-    // A subsampled (sRAW-style) frame: patch the first component's sampling factors.
+    // A subsampled frame in a layout Canon sRAW does not use (two components, Y 2×1): patch the
+    // first component's sampling factors. Real sRAW / mRAW decodes (see `sraw.rs`).
     let mut b = cr2_spec(32, 8, 2, vec![]).build();
     let sof = b.windows(2).position(|w| w == [0xFF, 0xC3]).unwrap();
     b[sof + 11] = 0x21;
@@ -126,9 +127,7 @@ fn embedded_preview_is_found() {
     raf[84..88].copy_from_slice(&100u32.to_be_bytes());
     raf[88..92].copy_from_slice(&(jpeg.len() as u32).to_be_bytes());
     raf.extend_from_slice(&jpeg);
-    let p = embedded_preview(&raf).unwrap();
-    assert_eq!((p.width, p.height), (0x30, 0x20));
-    assert_eq!(p.jpeg, &jpeg);
+    assert_eq!(embedded_preview(&raf).unwrap(), jpeg);
     // The lossless-JPEG raw data of a CR2 is not mistaken for a preview.
     assert!(embedded_preview(&cr2_spec(32, 8, 2, vec![]).build()).is_none());
 }

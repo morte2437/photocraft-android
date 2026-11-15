@@ -106,6 +106,12 @@ fn capitalize(s: &str) -> String {
     }
 }
 
+/// The Mixer Brush's commands Keyboard Shortcuts lists together in its Tools section, as the
+/// reference does (#11959): Load and Clean, then the Auto-Load, Auto-Clean and Sample All Layers
+/// switches. None has a default key.
+pub const MIXER_BRUSH_COMMANDS: [&str; 5] =
+    ["brush.mixer.load", "brush.mixer.clean", "brush.mixer.autoLoad", "brush.mixer.autoClean", "brush.mixer.sampleAllLayers"];
+
 /// Hold-and-release gestures (#249): temporary tools that last while their key is held and give
 /// the previous tool back on release. They are bound like shortcuts (Edit › Keyboard Shortcuts ›
 /// Tools › Temporary, `edit.keyboardShortcuts`) but held rather than pressed, so they are not
@@ -124,6 +130,8 @@ pub const TEMPORARY_TOOLS: &[(&str, &str, &str)] = &[
 /// legacy function keys F2 Cut, F3 Copy, F4 Paste and Shift+F7 Inverse; Shift+Backspace
 /// (Shift+Delete on a Mac) for Fill; ⌘+ beside ⌘= for Zoom In; and off the Mac, Ctrl+F4 beside
 /// Ctrl+W for Close (Windows' close-document key; macOS keeps Ctrl+F4 for window focus).
+/// Also Alt+Ctrl+0 beside Ctrl+1 for 100% and F9 beside Alt+F9 for Window > Actions (#11396;
+/// measured on Windows, so the Mac gets the usual Cmd mapping of the first).
 pub const ALTERNATE_SHORTCUTS: &[(&str, &str)] = &[
     ("edit.cut", "F2"),
     ("edit.copy", "F3"),
@@ -131,6 +139,8 @@ pub const ALTERNATE_SHORTCUTS: &[(&str, &str)] = &[
     ("edit.fill", "Shift+Backspace"),
     ("select.inverse", "Shift+F7"),
     ("view.zoomIn", "Cmd++"),
+    ("view.actualPixels", "Cmd+Alt+0"),
+    ("window.panel.actions", "F9"),
     #[cfg(not(target_os = "macos"))]
     ("file.close", "Cmd+F4"),
 ];

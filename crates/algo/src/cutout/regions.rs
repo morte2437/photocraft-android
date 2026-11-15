@@ -44,8 +44,8 @@ pub(super) fn components(labels: &[u8], w: usize, h: usize) -> (Vec<u32>, usize)
     (comp, n as usize)
 }
 
-/// Merges small and sliver components into their neighbours. Returns each pixel's region and
-/// each region's mean colour.
+/// Merges components smaller than the Edge Simplicity area into the neighbour they share the most
+/// border with. Returns each pixel's region and each region's mean colour.
 pub(super) fn merge_regions(comp: &[u32], n: usize, c: &[Px], w: usize, h: usize, s: &Settings) -> (Vec<u32>, Vec<Px>) {
     let mut area = vec![0u32; n];
     let mut sum = vec![[0.0f64; 3]; n];

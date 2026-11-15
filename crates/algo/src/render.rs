@@ -42,9 +42,17 @@ fn clouds_value(x: f32, y: f32, base: f32, seed: u32) -> f32 {
         amp *= 0.5;
         freq *= 2.0;
     }
-    // Stretch the bell-shaped sum so the clouds use the full foreground→background range.
-    ((sum / norm - 0.5) * 2.2 + 0.5).clamp(0.0, 1.0)
+    // Stretch the bell-shaped sum around mid-grey so the clouds use most of the
+    // foreground→background range. A straight stretch clamped at 0 and 1 flattened its tails
+    // into pure foreground and background (#9959); this S-curve, x/√(1+x²) scaled so it meets
+    // 0 and 1 only where the sum does (at ±h it is ±h/CLOUD_CONTRAST), compresses them instead.
+    let h = (CLOUD_CONTRAST * CLOUD_CONTRAST - 1.0).sqrt();
+    let d = (sum / norm - 0.5) * 2.0 * h;
+    (0.5 + 0.5 * CLOUD_CONTRAST / h * d / (1.0 + d * d).sqrt()).clamp(0.0, 1.0)
 }
+
+/// The clouds' contrast at mid-grey: the slope of the octave sum's stretch there.
+const CLOUD_CONTRAST: f32 = 2.2;
 
 /// Clouds between the foreground and background colours; Difference Clouds subtracts them from
 /// the pixels (alpha kept). The cloud size is a quarter of the bounds' longer side, and the
@@ -227,4 +235,102 @@ pub(crate) fn lighting(src: &Image, out: Rect, ctx: &Ctx, spec: &LightingSpec) -
         set_rgba(ctx, px, c);
     }
     res
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::{FilterParams, apply, output_area};
+    use photocraft_color::{ColorMode, PixelFormat, SampleType};
+    use photocraft_geom::Rect;
+    use photocraft_raster::Surface;
+
+    const BLACK: [f32; 4] = [0.0, 0.0, 0.0, 1.0];
+    const WHITE: [f32; 4] = [1.0; 4];
+
+    /// Clouds (or Difference Clouds over `under`) on a `w`×`h` canvas, as the stored pixels.
+    fn render(fmt: PixelFormat, w: i32, h: i32, seed: u32, colours: ([f32; 4], [f32; 4]), under: Option<&[f32]>) -> Vec<f32> {
+        let r = Rect::new(0, 0, w, h);
+        let mut s = Surface::new(fmt);
+        if let Some(px) = under {
+            s.fill_rect(r, px);
+        }
+        let p = FilterParams::Clouds { seed, difference: under.is_some(), foreground: colours.0, background: colours.1 };
+        apply(&s, &p, output_area(&p, s.content_bounds(), r, None), r, None).read_region(r)
+    }
+
+    fn top_level(depth: SampleType) -> f32 {
+        if depth == SampleType::U8 { 255.0 } else { 65535.0 }
+    }
+
+    /// Clouds' histogram is a bell around mid-grey that spans most of the levels without piling
+    /// up at either end: a straight stretch clamped at 0 and 1 put 1–4 % of a 512×512 render on
+    /// each end (#9959).
+    #[test]
+    fn clouds_span_the_levels_without_clipping() {
+        for depth in [SampleType::U8, SampleType::U16] {
+            let top = top_level(depth);
+            for mode in [ColorMode::Rgb, ColorMode::Grayscale] {
+                let fmt = PixelFormat::new(mode, depth, true);
+                for (w, h) in [(512, 512), (900, 240), (2400, 1200)] {
+                    for seed in [0, 3, 7, 18916] {
+                        let px = render(fmt, w, h, seed, (BLACK, WHITE), None);
+                        let v: Vec<f32> = px.chunks_exact(fmt.channels()).map(|p| p[0]).collect();
+                        let n = v.len() as f32;
+                        let at = |level: f32| v.iter().filter(|&&t| (t * top).round() == level).count() as f32 / n;
+                        let case = format!("{mode:?} {depth:?} {w}×{h} seed {seed}");
+                        assert!(at(0.0) < 1e-4 && at(top) < 1e-4, "{case}: clipped {} black, {} white", at(0.0), at(top));
+                        let (lo, hi) = v.iter().fold((1.0f32, 0.0f32), |(a, b), &t| (a.min(t), b.max(t)));
+                        assert!(hi - lo > 0.7, "{case}: spans only {lo}..{hi}");
+                        // Only a few big cells on a long, thin canvas, so its mean wanders more.
+                        let mean = v.iter().sum::<f32>() / n;
+                        assert!((0.35..0.65).contains(&mean), "{case}: mean {mean}");
+                        // A flat histogram would put a quarter of the pixels in the outer eighths.
+                        let outer = v.iter().filter(|t| !(0.125..0.875).contains(*t)).count() as f32 / n;
+                        assert!(outer < 0.12, "{case}: {outer} in the outer eighths");
+                    }
+                }
+            }
+        }
+    }
+
+    /// Clouds blend between any two colours without reaching either: no channel sits on the
+    /// foreground's or background's level, and every channel stays between them.
+    #[test]
+    fn clouds_stay_strictly_between_any_two_colours() {
+        let (fg, bg) = ([0.85, 0.2, 0.1, 1.0], [0.1, 0.55, 0.9, 1.0]);
+        for depth in [SampleType::U8, SampleType::U16] {
+            let top = top_level(depth);
+            let fmt = PixelFormat::new(ColorMode::Rgb, depth, true);
+            for seed in [3, 18916] {
+                let data = render(fmt, 512, 512, seed, (fg, bg), None);
+                let px = data.as_chunks::<4>().0;
+                let n = px.len() as f32;
+                for k in 0..3 {
+                    let ends = [(fg[k] * top).round(), (bg[k] * top).round()];
+                    let on_end = px.iter().filter(|p| ends.contains(&(p[k] * top).round())).count() as f32 / n;
+                    assert!(on_end < 1e-4, "{depth:?} seed {seed} channel {k}: {on_end} on a colour's level");
+                    let (lo, hi) = (fg[k].min(bg[k]) - 0.5 / top, fg[k].max(bg[k]) + 0.5 / top);
+                    assert!(px.iter().all(|p| (lo..=hi).contains(&p[k])), "{depth:?} seed {seed} channel {k} left the colours");
+                }
+            }
+        }
+    }
+
+    /// Difference Clouds shares the clouds: over white with black and white they are the clouds
+    /// inverted, so they don't clip either.
+    #[test]
+    fn difference_clouds_over_white_are_the_clouds_inverted() {
+        for depth in [SampleType::U8, SampleType::U16] {
+            let top = top_level(depth);
+            let fmt = PixelFormat::new(ColorMode::Rgb, depth, true);
+            let clouds = render(fmt, 300, 200, 5, (BLACK, WHITE), None);
+            let diff = render(fmt, 300, 200, 5, (BLACK, WHITE), Some(&WHITE));
+            let (clouds, diff) = (clouds.as_chunks::<4>().0, diff.as_chunks::<4>().0);
+            for (c, d) in clouds.iter().zip(diff) {
+                assert!((c[0] + d[0] - 1.0).abs() <= 1.0 / top, "{depth:?}: {} + {} ≠ 1", c[0], d[0]);
+                assert_eq!(d[3], 1.0);
+            }
+            assert!(diff.iter().all(|p| (p[0] * top).round() != 0.0 && (p[0] * top).round() != top), "{depth:?}: clipped");
+        }
+    }
 }

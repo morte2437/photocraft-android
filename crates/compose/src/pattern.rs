@@ -151,7 +151,8 @@ impl<'a> PreparedPatterns<'a> {
 /// library and in the document), but in a Grayscale or CMYK document it paints that mode's
 /// colours: what Edit › Fill writes into the document's pixels, and what Photoshop shows (the
 /// pattern in colour in its picker, filled in grey). Empty for a pattern that isn't
-/// [paintable](Pattern::is_paintable).
+/// [paintable](Pattern::is_paintable), or whose full RGBA32F copy exceeds the working
+/// budget. Compact paintable patterns can instead be consumed with [`pattern_rgba_bands`].
 pub fn pattern_rgba(p: &Pattern, mode: ColorMode) -> Vec<[f32; 4]> {
     let mut px = Vec::new();
     if p.is_paintable() && pattern_rgba_rows(p, mode, 0, p.height, &mut px).is_none() {
@@ -165,10 +166,42 @@ pub fn pattern_rgba(p: &Pattern, mode: ColorMode) -> Vec<[f32; 4]> {
 /// memory for the rows cannot be had (on the web a failed allocation aborts the tab, so it is
 /// asked for, not assumed).
 pub fn pattern_rgba_rows(p: &Pattern, mode: ColorMode, top: u32, bottom: u32, out: &mut Vec<[f32; 4]>) -> Option<()> {
+    pattern_rgba_rows_in(p, mode, top, bottom, out, photocraft_doc::pattern::MAX_WORKING_BYTES)
+}
+
+/// Stream straight-alpha RGBA rows using at most `max_band_bytes` of pixel scratch.
+/// Paintability and a complete row fitting the budget are checked before the callback runs.
+/// A callback refusal or allocation failure stops consumption; callers must not publish
+/// partially prepared resources as complete.
+pub fn pattern_rgba_bands(p: &Pattern, mode: ColorMode, max_band_bytes: u64, mut consume: impl FnMut(u32, &[[f32; 4]]) -> Option<()>) -> Option<()> {
+    if !p.is_paintable() {
+        return None;
+    }
+    let budget = max_band_bytes.min(photocraft_doc::pattern::MAX_WORKING_BYTES);
+    let row_bytes = u64::from(p.width).checked_mul(std::mem::size_of::<[f32; 4]>() as u64)?;
+    let rows = u32::try_from((budget / row_bytes).min(u64::from(photocraft_doc::pattern::BAND_ROWS))).ok()?;
+    if rows == 0 {
+        return None;
+    }
+    let mut band = Vec::new();
+    for top in (0..p.height).step_by(rows as usize) {
+        pattern_rgba_rows_in(p, mode, top, top.saturating_add(rows), &mut band, budget)?;
+        consume(top, &band)?;
+    }
+    Some(())
+}
+
+fn pattern_rgba_rows_in(p: &Pattern, mode: ColorMode, top: u32, bottom: u32, out: &mut Vec<[f32; 4]>, max_bytes: u64) -> Option<()> {
     let bottom = bottom.min(p.height);
     let top = top.min(bottom);
     out.clear();
+    if !p.is_paintable() {
+        return None;
+    }
     let pixels = (p.width as usize).checked_mul((bottom - top) as usize)?;
+    if pixels.checked_mul(std::mem::size_of::<[f32; 4]>())? as u64 > max_bytes {
+        return None;
+    }
     out.try_reserve_exact(pixels).ok()?;
     out.resize(pixels, [0.0f32; 4]);
     p.surface.read_rgba_into(Rect::new(0, top as i32, p.width as i32, bottom as i32), out);
@@ -344,6 +377,9 @@ impl Tile {
 /// Most taps per axis of the minification filter (the WGSL mirror uses the same cap).
 const MAX_TAPS: usize = 8;
 
+/// The smallest pattern scale a placement draws at (a fraction): keeps tile coordinates finite.
+pub const MIN_PLACEMENT_SCALE: f64 = 1e-6;
+
 /// Taps per axis for a placement whose inverse scale is `inv_scale`: one pixel covers
 /// `inv_scale` tile pixels, so that many taps (capped) box-filter it. 1 at 100 % and above.
 fn pixel_taps(inv_scale: f64) -> usize {
@@ -387,7 +423,9 @@ impl Placement {
         let base = if link { anchor } else { (0.0, 0.0) };
         let origin = (base.0 + f64::from(phase.0), base.1 + f64::from(phase.1));
         let s = f64::from(scale);
-        let inv_scale = if s.is_finite() && s > 1e-3 { 1.0 / s } else { 1.0 };
+        // Any positive scale draws: a preview at a reduced work scale takes a stored 2 % pattern
+        // well below 0.1 %. Only 0, negatives and non-finite values fall back to 100 %.
+        let inv_scale = if s.is_finite() && s > 0.0 { 1.0 / s.max(MIN_PLACEMENT_SCALE) } else { 1.0 };
         let a = f64::from(angle).to_radians();
         Placement { origin, cs: (a.cos(), a.sin()), inv_scale }
     }
@@ -423,6 +461,54 @@ pub fn render(tile: &Tile, place: &Placement, rect: Rect) -> Vec<[f32; 4]> {
 mod tests {
     use super::*;
     use photocraft_doc::{PixelFormat, Surface};
+
+    #[test]
+    fn paintable_patterns_stream_when_full_rgba_exceeds_the_scratch_budget() {
+        for sample in SampleType::ALL {
+            let mut surface = Surface::new(PixelFormat::new(ColorMode::Rgb, sample, true));
+            for y in 0..5 {
+                surface.fill_rect(Rect::new(0, y, 3, y + 1), &[y as f32 / 4., 0.25, 0.75, 0.5]);
+            }
+            let p = Pattern { id: "bands".into(), name: "bands".into(), width: 3, height: 5, surface };
+            let budget = 3 * 2 * 16;
+            let mut oversized = Vec::new();
+            assert!(pattern_rgba_rows_in(&p, ColorMode::Rgb, 0, p.height, &mut oversized, budget).is_none());
+            assert!(oversized.is_empty());
+            let mut streamed = Vec::new();
+            let mut starts = Vec::new();
+            pattern_rgba_bands(&p, ColorMode::Rgb, budget, |top, pixels| {
+                starts.push(top);
+                assert!(pixels.len() * 16 <= budget as usize);
+                streamed.extend_from_slice(pixels);
+                Some(())
+            })
+            .unwrap();
+            assert_eq!(starts, [0, 2, 4]);
+            assert_eq!(streamed, pattern_rgba(&p, ColorMode::Rgb));
+            assert!(pattern_rgba_bands(&p, ColorMode::Rgb, 3 * 16 - 1, |_, _| panic!("a row must fit before consumption")).is_none());
+            let mut calls = 0;
+            assert!(
+                pattern_rgba_bands(&p, ColorMode::Rgb, budget, |_, _| {
+                    calls += 1;
+                    None
+                })
+                .is_none()
+            );
+            assert_eq!(calls, 1);
+        }
+    }
+
+    #[test]
+    /// Reject dense paint expansion of a retained oversized pattern without materializing sparse source tiles.
+    fn stored_900_megapixel_pattern_is_not_expanded_for_painting() {
+        let pattern = Pattern { id: "large".into(), name: "large".into(), width: 30_000, height: 30_000, surface: Surface::new(PixelFormat::RGBA8) };
+        assert!(pattern_rgba(&pattern, ColorMode::Rgb).is_empty());
+        let mut rows = Vec::new();
+        assert!(pattern_rgba_rows(&pattern, ColorMode::Rgb, 0, pattern.height, &mut rows).is_none());
+        assert!(rows.is_empty());
+        assert!(pattern_rgba_bands(&pattern, ColorMode::Rgb, 1024, |_, _| panic!("unpaintable pattern must never expand")).is_none());
+        assert_eq!(pattern.surface.tile_count(), 0);
+    }
 
     fn checker() -> Pattern {
         let mut s = Surface::new(PixelFormat::RGBA8);
@@ -606,6 +692,31 @@ mod tests {
         let one = Placement::new(Rect::EMPTY, false, (0.0, 0.0), 1.0, 0.0);
         let row = render(&t, &one, Rect::new(0, 0, 2, 1));
         assert_eq!((row[0][0], row[1][0]), (0.0, 1.0));
+    }
+
+    /// Review of #9256: a preview at 4 % work scale draws a stored 2 % pattern at 0.08 %, which
+    /// used to fall back to 100 % and show the stripes full size.
+    #[test]
+    fn placement_keeps_scales_below_a_tenth_of_a_percent() {
+        let place = Placement::new(Rect::EMPTY, false, (0.0, 0.0), 0.0008, 0.0);
+        let (u, v) = place.map(1.0, 2.0);
+        assert!((u - 1250.0).abs() < 1e-3 && (v - 2500.0).abs() < 1e-3, "{u},{v}");
+        // 1-px dark / light stripes: at 100 % the pixels alternate 0 / 1; at 0.08 % each pixel
+        // covers 1250 of them, so every pixel is their mean.
+        let mut s = Surface::new(PixelFormat::RGBA8);
+        s.fill_rect(Rect::new(0, 0, 8, 8), &[1.0, 1.0, 1.0, 1.0]);
+        for x in (0..8).step_by(2) {
+            s.fill_rect(Rect::new(x, 0, x + 1, 8), &[0.0, 0.0, 0.0, 1.0]);
+        }
+        let t = Tile::new(&Pattern::new("stripes", s, 8, 8)).unwrap();
+        for p in render(&t, &place, Rect::new(0, 0, 8, 1)) {
+            assert!((p[0] - 0.5).abs() < 0.1, "{p:?}");
+        }
+        // 0, negative and non-finite scales still draw at 100 %.
+        for bad in [0.0, -0.5, f32::NAN, f32::INFINITY] {
+            let p = Placement::new(Rect::EMPTY, false, (0.0, 0.0), bad, 0.0);
+            assert_eq!(p.map(3.0, 0.0).0, 3.0, "{bad}");
+        }
     }
 
     #[test]

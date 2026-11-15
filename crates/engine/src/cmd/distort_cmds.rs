@@ -14,7 +14,7 @@ use std::cell::RefCell;
 
 use photocraft_algo::liquify::{LiquifyField, LiquifyStroke, apply_liquify, auto_cell};
 use photocraft_algo::perspective::{PerspectiveMap, Plane, Straighten, straighten};
-use photocraft_algo::puppet::{PuppetDensity, PuppetMode, PuppetPin, PuppetWarp, puppet_warp, puppet_warp_with_mask};
+use photocraft_algo::puppet::{PuppetDensity, PuppetMesh, PuppetMode, PuppetPin, PuppetWarp, puppet_warp, puppet_warp_with_mask, warp_with_mesh};
 use photocraft_algo::transform::Interp;
 use photocraft_algo::warp::{warp_mesh_gray, warp_mesh_surface};
 use photocraft_color::PixelFormat;
@@ -86,6 +86,51 @@ pub fn puppet_params(cmd: &str, p: &Value) -> Result<PuppetWarp> {
     Ok(PuppetWarp { pins, mode, density, expansion })
 }
 
+/// The most vertices a stored Puppet Warp mesh may have (Photoshop's meshes have hundreds); the
+/// PSD importer reads no more.
+const MAX_STORED_VERTS: usize = 1 << 16;
+
+/// A Puppet Warp's stored mesh, as a Photoshop file keeps it (`mesh`: `{"pins", "verts",
+/// "deformed", "tris"}`, document pixels): the mesh solved for `pins`, drawn as it is instead of
+/// solving again. `None` when there is none, it is malformed, or the filter was edited since: its
+/// pins are no longer the ones it was solved for, or a solver setting is set (imported params
+/// set none).
+pub fn stored_puppet_mesh(p: &Value) -> Option<(PuppetMesh, Vec<[f64; 2]>)> {
+    let m = p.get("mesh")?;
+    if m.get("pins") != p.get("pins") || ["mode", "density", "expansion"].iter().any(|k| p.get(*k).is_some()) {
+        return None;
+    }
+    let points = |k: &str| -> Option<Vec<[f64; 2]>> {
+        let v = m.get(k)?.as_array()?;
+        if v.len() > MAX_STORED_VERTS {
+            return None;
+        }
+        v.iter().map(|q| serde_json::from_value::<[f64; 2]>(q.clone()).ok()).collect()
+    };
+    let (verts, deformed) = (points("verts")?, points("deformed")?);
+    let tris = m.get("tris")?.as_array()?;
+    if tris.len() > 2 * MAX_STORED_VERTS {
+        return None;
+    }
+    let tris: Vec<[usize; 3]> = tris.iter().map(|t| serde_json::from_value(t.clone()).ok()).collect::<Option<_>>()?;
+    Some((PuppetMesh { verts, tris, spacing: 0.0 }, deformed))
+}
+
+/// `params` of smart filter `command` on `sm`, without a stored Puppet Warp mesh made for another
+/// placement than `sm`'s (`mesh.placement`, recorded on import): a mesh in document pixels doesn't
+/// fit a smart object moved, transformed or warped since, so its pins are solved instead.
+pub fn placed_puppet_params<'a>(command: &str, params: &'a Value, sm: &photocraft_doc::SmartObject) -> std::borrow::Cow<'a, Value> {
+    let stale = command == PUPPET_SMART && params.get("mesh").is_some_and(|m| m.get("placement") != Some(&sm.placement_json()));
+    if !stale {
+        return std::borrow::Cow::Borrowed(params);
+    }
+    let mut p = params.clone();
+    if let Some(o) = p.as_object_mut() {
+        o.remove("mesh");
+    }
+    std::borrow::Cow::Owned(p)
+}
+
 /// Perspective Warp params (planes, after the optional straighten).
 pub fn perspective_params(cmd: &str, p: &Value) -> Result<Vec<Plane>> {
     let mut planes: Vec<Plane> = match p.get("planes") {
@@ -115,14 +160,24 @@ fn interp(p: &Value) -> Interp {
 // ---------- pixel operations ----------
 
 /// Mixes `new` over `old` by the selection's coverage (premultiplied when there is alpha).
-fn mix_by_selection(old: &Surface, new: &Surface, sel: &Surface) -> Surface {
-    let area = old.content_bounds().union(&new.content_bounds());
-    let mut out = new.clone();
+///
+/// Where the selection covers nothing the result is `old`, so only the part of the content
+/// bounds the selection reaches is blended into a copy of `old`: a small selection over distant
+/// sparse content no longer expands the empty space between them. Refused, before any dense
+/// buffer, when that part would still pass the working budget.
+fn mix_by_selection(old: &Surface, new: &Surface, sel: &Surface) -> Result<Surface> {
+    let content = old.content_bounds().union(&new.content_bounds());
+    // Outside its tiles the selection's coverage is its default: an empty default lets the
+    // blend keep to the selection's bounds.
+    let sel_default_empty = sel.default_pixel().first().is_none_or(|v| *v <= 0.0);
+    let area = if sel_default_empty { content.intersect(&sel.content_bounds()) } else { content };
+    let mut out = old.clone();
     if area.is_empty() {
-        return out;
+        return Ok(out);
     }
     let fmt = old.format();
     let n = fmt.channels();
+    crate::allocation::check_dense(area, (n as u64).saturating_mul(12), "blending Liquify through the selection")?;
     let (o, w) = (old.read_region(area), new.read_region(area));
     let mut r = vec![0.0f32; o.len()];
     let aw = area.width() as usize;
@@ -144,7 +199,7 @@ fn mix_by_selection(old: &Surface, new: &Surface, sel: &Surface) -> Surface {
     }
     out.write_region(area, &r);
     out.prune();
-    out
+    Ok(out)
 }
 
 /// Liquifies a surface over `canvas` (the field's extent).
@@ -182,7 +237,17 @@ pub fn apply_to_surface(id: &str, params: &Value, surf: &Surface, canvas: Rect) 
             Some(liquify_surface(surf, &strokes, cell, canvas))
         }
         // A stored warp too far to render leaves the smart object as it is (#1019).
-        PUPPET | PUPPET_SMART => Some(puppet_surface(surf, &puppet_params(id, params).ok()?, interp(params)).unwrap_or_else(|| surf.clone())),
+        PUPPET | PUPPET_SMART => {
+            // A mesh stored with the filter (from a Photoshop file) is drawn as it is; one that
+            // can't be drawn leaves the pins to solve.
+            let b = surf.content_bounds();
+            if let Some((mesh, deformed)) = stored_puppet_mesh(params).filter(|_| !b.is_empty())
+                && let Some(out) = warp_with_mesh(surf, b, &mesh, &deformed, interp(params))
+            {
+                return Some(out);
+            }
+            Some(puppet_surface(surf, &puppet_params(id, params).ok()?, interp(params)).unwrap_or_else(|| surf.clone()))
+        }
         PERSPECTIVE | PERSPECTIVE_SMART => Some(perspective_surface(surf, &perspective_params(id, params).ok()?, interp(params))),
         _ => None,
     }
@@ -289,7 +354,7 @@ fn liquify(s: &mut Session, p: &Value) -> Result<Value> {
         &|surf, sel, _| {
             let out = apply_liquify(surf, &field);
             Ok(match sel {
-                Some(sel) => mix_by_selection(surf, &out, sel),
+                Some(sel) => mix_by_selection(surf, &out, sel)?,
                 None => out,
             })
         },
@@ -380,7 +445,7 @@ fn perspective(s: &mut Session, p: &Value, cmd: &str) -> Result<Value> {
 }
 
 pub fn specs() -> Vec<CommandSpec> {
-    const L: &str = r##"{"strokes":[{"tool":"forwardWarp|reconstruct|smooth|twirlCw|twirlCcw|pucker|bloat|pushLeft|freeze|thaw|lassoMask|reconstructAll","size":px=100,"density":0-100=50,"pressure":0-100=100,"rate":0-100=80,"points":[[x,y,pressure?]…],"amount":%? (twirlCcw: twirlCw reversed, what an Alt-drag with Twirl Clockwise records; reconstructAll; lassoMask: 1 freezes the polygon in points, 0 thaws it)}…],"meshSize":px? (field resolution, px per node; default 2, or 4 above 4 MP),"layer":id?} — strokes replay in order on a fresh field; a selection limits the effect; on a smart object it becomes a smart filter"##;
+    const L: &str = r##"{"strokes":[{"tool":"forwardWarp|reconstruct|smooth|twirlCw|twirlCcw|pucker|bloat|pushLeft|freeze|thaw|lassoMask|reconstructAll","size":px=100,"density":0-100=50,"pressure":0-100=100,"rate":0-100=80,"points":[[x,y,pressure?,ms?]…] (ms: milliseconds since the previous point; a point with it follows the pointer exactly and times the stationary tools in real time, as the dialog records them),"amount":%? (twirlCcw: twirlCw reversed, what an Alt-drag with Twirl Clockwise records; reconstructAll; lassoMask: 1 freezes the polygon in points, 0 thaws it)}…],"meshSize":px? (field resolution, px per node; default 2, or 4 above 4 MP),"layer":id?} — strokes replay in order on a fresh field; a selection limits the effect; on a smart object it becomes a smart filter"##;
     const P: &str = r##"{"pins":[{"src":[x,y],"dst":[x,y],"rotate":deg?,"depth":n?}…],"mode":"rigid|normal|distort"="normal","density":"fewer|normal|more"="normal","expansion":px=2,"interpolation":"bicubic|bilinear|nearest","layer":id?} — mesh over the opaque region, as-rigid-as-possible; on a smart object it becomes a smart filter"##;
     const Q: &str = r##"{"planes":[{"src":[[x,y]×4],"dst":[[x,y]×4]}…] (corners clockwise from top-left; corners that coincide in src are linked),"straighten":"horizontal|vertical|auto"?,"interpolation":"bicubic|bilinear|nearest","layer":id?}"##;
     vec![
@@ -407,7 +472,7 @@ pub fn specs() -> Vec<CommandSpec> {
         CommandSpec {
             id: PUPPET_SMART,
             label: "Puppet Warp",
-            menu: &["Layer", "Smart Objects"],
+            menu: &[],
             shortcut: None,
             params: P,
             enabled: smart_layer,
@@ -427,7 +492,7 @@ pub fn specs() -> Vec<CommandSpec> {
         CommandSpec {
             id: PERSPECTIVE_SMART,
             label: "Perspective Warp",
-            menu: &["Layer", "Smart Objects"],
+            menu: &[],
             shortcut: None,
             params: Q,
             enabled: smart_layer,

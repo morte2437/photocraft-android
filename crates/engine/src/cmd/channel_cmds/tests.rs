@@ -898,6 +898,32 @@ fn split_and_merge_channels() {
     assert!(s.execute("channel.merge", json!({"mode": "cmyk"})).is_err());
 }
 
+/// #9236: CMYK channels split into greyscale shown as the Channels panel shows them (white
+/// paper, dark ink), and merge back into the same inks.
+#[test]
+fn split_and_merge_cmyk_keep_ink_dark() {
+    let mut s = Session::new();
+    s.execute("file.new", json!({"width": 40, "height": 20, "mode": "cmyk", "background": "white"})).unwrap();
+    // Rich black (#8359): its inks don't survive a trip through RGB, so the old path fails here.
+    let rgb = photocraft_color::convert::cmyk_to_rgb([1.0, 1.0, 1.0, 0.0]).map(|c| c.clamp(0.0, 1.0));
+    s.execute("tools.setColors", json!({"foreground": rgb, "foregroundCmyk": [1.0, 1.0, 1.0, 0.0]})).unwrap();
+    s.execute("select.rect", json!({"x": 0, "y": 0, "width": 20, "height": 20})).unwrap();
+    s.execute("edit.fillForeground", json!({})).unwrap();
+    s.execute("select.deselect", json!({})).unwrap();
+    let (ink, paper) = (px(&s, 1, 1), px(&s, 30, 1));
+    assert!(ink[..3].iter().all(|v| *v > 0.99) && paper[..4].iter().all(|v| *v < 0.01), "{ink:?} {paper:?}");
+    s.execute("channel.split", json!({})).unwrap();
+    assert_eq!(s.documents().len(), 4);
+    for (i, ink) in ink[..4].iter().enumerate() {
+        let at = |x| s.documents()[i].doc.layers[0].surface().unwrap().pixel(x, 1)[0];
+        assert!((at(1) - (1.0 - ink)).abs() < 0.003, "channel {i}: {} for ink {ink}", at(1));
+        assert!((at(30) - 1.0).abs() < 0.003, "channel {i}: paper is white, got {}", at(30));
+    }
+    s.execute("channel.merge", json!({"mode": "cmyk", "documents": [0, 1, 2, 3]})).unwrap();
+    let back = px(&s, 1, 1);
+    assert!(back[..4].iter().zip(&ink[..4]).all(|(a, b)| (a - b).abs() < 0.003), "{back:?} vs {ink:?}");
+}
+
 #[test]
 fn cmyk_split_and_merge_use_tone() {
     // #5787: Split Channels of a white CMYK image gives white grayscale documents, and merging
@@ -1186,6 +1212,25 @@ fn layers_panel_mask_target_isolates_the_curve_channel() {
     assert_eq!((row.name.as_str(), row.gray), ("Quick Mask", Some(GraySurface::QuickMask)));
 }
 
+/// An opened RGB or CMYK document shows its spot channels (they print over the composite) and
+/// hides its alpha channels; a Multichannel document's inks are its composite, so their eyes stay off.
+#[test]
+fn opened_documents_show_their_spot_channels() {
+    use photocraft_color::{Color, ColorMode, PixelFormat};
+    for mode in [ColorMode::Rgb, ColorMode::Cmyk, ColorMode::Multichannel] {
+        let mut d = Document::new("spots", photocraft_doc::Size::new(4, 4), mode, SampleType::U8);
+        let fmt = PixelFormat::new(ColorMode::Grayscale, SampleType::U8, false);
+        d.channels.push(AlphaChannel::new("Alpha 1", photocraft_raster::Surface::new(fmt)));
+        d.channels.push(AlphaChannel { spot: Some((Color::rgb(0.0, 0.6, 0.65), 0.0)), ..AlphaChannel::new("teal", photocraft_raster::Surface::new(fmt)) });
+        let mut s = Session::new();
+        s.open_document(d, None);
+        let v = &s.active().unwrap().channel_view;
+        let spot_on = mode != ColorMode::Multichannel;
+        assert_eq!((v.alpha_shown(0), v.alpha_shown(1)), (false, spot_on), "{mode:?}");
+        assert_eq!(v.visible_colors(color_count(&s.active().unwrap().doc)), color_count(&s.active().unwrap().doc), "{mode:?}: the composite stays on");
+    }
+}
+
 /// Split Channels closes the original, so as in the reference application it splits only an
 /// image with a single layer: two layers (even with one hidden) or a lone group are refused and
 /// the document stays open with its layers; a flattened image or a lone normal layer still
@@ -1218,4 +1263,22 @@ fn split_refuses_an_image_with_more_than_one_layer() {
     assert!(!s.is_enabled("channel.split"));
     assert!(s.execute("channel.split", json!({})).is_err());
     assert_eq!(s.documents().len(), 1);
+}
+
+/// Merge Channels is offered from three grayscale documents of one size, the fewest a mode
+/// (RGB or Lab) merges; two never merge (#11451).
+#[test]
+fn merge_channels_waits_for_three_grayscale_documents() {
+    let mut s = Session::new();
+    for _ in 0..2 {
+        s.execute("file.new", json!({"width": 8, "height": 8, "mode": "grayscale"})).unwrap();
+    }
+    s.execute("file.new", json!({"width": 9, "height": 8, "mode": "grayscale"})).unwrap();
+    s.set_active(0);
+    let why = s.disabled_reason("channel.merge").expect("two of one size are not enough");
+    assert!(why.contains("three"), "{why}");
+    s.execute("file.new", json!({"width": 8, "height": 8, "mode": "grayscale"})).unwrap();
+    assert!(s.is_enabled("channel.merge"));
+    s.execute("channel.merge", json!({"mode": "lab"})).unwrap();
+    assert_eq!(s.documents().len(), 2, "the three of one size merged; the other is left");
 }

@@ -23,6 +23,10 @@ fn pending_id() -> Id {
     Id::unique("pc-field-tab-pending")
 }
 
+fn reached_id() -> Id {
+    Id::unique("pc-field-tab-reached")
+}
+
 /// Give `id` the focus from the next frame on. Focusing a widget after it was laid out would
 /// never read as "gained focus" to it (egui compares with the focus at the start of the frame),
 /// and that is what selects a field's text; so the move waits for [`take_step`] next frame.
@@ -33,9 +37,14 @@ pub fn focus(ctx: &Context, id: Id) {
 /// Tab (+1) or ⇧Tab (−1) pressed this frame, taken from the input so nothing else acts on it;
 /// 0 when neither was. Also applies a pending [`focus`]. Call before the dialog is laid out.
 pub fn take_step(ctx: &Context) -> i32 {
-    if let Some(id) = ctx.data_mut(|d| d.remove_temp::<Option<Id>>(pending_id())).flatten() {
+    let pending = ctx.data_mut(|d| d.remove_temp::<Option<Id>>(pending_id())).flatten();
+    if let Some(id) = pending {
         ctx.memory_mut(|m| m.request_focus(id));
     }
+    // Tagged with this pass: `take_step` is skipped while a popup is open, and a marker left
+    // over from an earlier pass would make a later click into the field select all its text.
+    let pass = ctx.cumulative_pass_nr();
+    ctx.data_mut(|d| d.insert_temp(reached_id(), pending.map(|id| (id, pass))));
     let step = ctx.input_mut(|i| {
         if i.consume_key(Modifiers::SHIFT, Key::Tab) {
             -1
@@ -50,6 +59,12 @@ pub fn take_step(ctx: &Context) -> i32 {
         ctx.memory_mut(|m| m.move_focus(egui::FocusDirection::None));
     }
     step
+}
+
+/// True in the frame a field gets the focus [`take_step`] handed it (Tab, ⇧Tab or [`focus`]),
+/// whatever the mouse is doing meanwhile.
+pub fn reached(ctx: &Context, id: Id) -> bool {
+    ctx.data(|d| d.get_temp::<Option<(Id, u64)>>(reached_id())).flatten() == Some((id, ctx.cumulative_pass_nr()))
 }
 
 /// Start collecting the fields of a dialog body.
@@ -213,6 +228,27 @@ mod tests {
         h.run_steps(3);
         let d = &h.state().session.active().expect("a new document").doc;
         assert_eq!((d.name.as_str(), d.size.width, d.size.height), ("Flyer", 512, 310));
+    }
+
+    /// The field a Tab reached is "reached" only in the pass that handed it focus: while a popup
+    /// is open `take_step` is skipped, and a later click into the field must place the caret.
+    #[test]
+    fn reached_lasts_only_the_pass_that_applied_the_focus() {
+        let ctx = egui::Context::default();
+        let id = egui::Id::unique("field");
+        let mut seen = Vec::new();
+        for apply in [true, false, false] {
+            ctx.run_ui(Default::default(), |ui| {
+                if apply {
+                    super::focus(ui.ctx(), id);
+                    super::take_step(ui.ctx());
+                }
+                seen.push(super::reached(ui.ctx(), id));
+            })
+            .textures_delta
+            .clear();
+        }
+        assert_eq!(seen, [true, false, false]);
     }
 
     /// Tab is the dialog's: the modal underneath never sees it, and a dialog with no fields swallows it.

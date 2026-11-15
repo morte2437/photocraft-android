@@ -19,8 +19,12 @@ use crate::PhotocraftApp;
 use crate::canvas::{ToolEvent, ViewXform};
 use crate::state::Tool;
 
-/// Screen points of vertical drag that take the hardness from 0 % to 100 %.
-pub const HARDNESS_TRAVEL: f32 = 200.0;
+/// Screen points of vertical drag that take the hardness from 0 % to 100 %: Photoshop's rate,
+/// where 50 points down from 0 % give 13 % (#11891).
+pub const HARDNESS_TRAVEL: f32 = 385.0;
+/// Screen points of vertical drag that take the opacity from 0 % to 100 % when "Vary Round Brush
+/// Hardness on HUD" is off: the rate it had before the hardness rate was measured (#11891).
+pub const OPACITY_TRAVEL: f32 = 200.0;
 /// The brush size range (`tools.setBrush` accepts the same).
 const SIZE: std::ops::RangeInclusive<f32> = 1.0..=MAX_BRUSH_SIZE;
 
@@ -122,10 +126,11 @@ fn update(app: &mut PhotocraftApp, r: Resize, x: f64, y: f64) {
         // No view: document axes, mirrored by View › Flip Horizontal.
         _ => ((x - r.anchor[0]) * if app.ui.view.flip_horizontal { -1.0 } else { 1.0 }, y - r.anchor[1], app.point_zoom()),
     };
-    let (size, v) = resized(r.start, dx, dy, zoom);
     // "Vary Round Brush Hardness on HUD" (Preferences ▸ Tools, on by default): off, the vertical
-    // movement takes the opacity instead of the hardness, as in Photoshop.
+    // movement takes the opacity instead of the hardness, as in Photoshop, at its own rate.
     let vary = app.session.prefs().tools.vary_round_brush_hardness_on_hud;
+    let dy = if vary { dy } else { dy * f64::from(HARDNESS_TRAVEL / OPACITY_TRAVEL) };
+    let (size, v) = resized(r.start, dx, dy, zoom);
     let b = &app.session.tools.brush;
     if b.size == size && if vary { b.hardness == v } else { b.opacity == v } {
         return;
@@ -151,13 +156,20 @@ pub fn draw(app: &PhotocraftApp, painter: &egui::Painter, xf: &ViewXform) -> boo
     // Photoshop hides the pointer while the circle stays put.
     painter.ctx().set_cursor_icon(egui::CursorIcon::None);
     let at = painter.ctx().pointer_latest_pos().unwrap_or(c);
-    let (label, value) = if app.session.prefs().tools.vary_round_brush_hardness_on_hud {
-        (tl!("Hardness:"), format!("{}%", (b.hardness * 100.0).round() as i64))
-    } else {
-        (tl!("Opacity:"), format!("{}%", (b.opacity * 100.0).round() as i64))
-    };
-    crate::canvas::draw_readout(painter.ctx(), "brush-resize-readout", at, [tl!("Diameter:"), label], [format!("{} px", b.size.round() as i64), value]);
+    let percent = |v: f32| format!("{}%", (v * 100.0).round() as i64);
+    let labels = [readout_label(tl!("Diameter:")), readout_label(tl!("Hardness:")), readout_label(tl!("Opacity:"))];
+    let values = [format!("{} px", b.size.round() as i64), percent(b.hardness), percent(b.opacity)];
+    crate::canvas::draw_readout(painter.ctx(), "brush-resize-readout", at, labels.each_ref().map(String::as_str), values);
     true
+}
+
+/// A readout label as Photoshop's HUD shows it, with a space before the colon ("Diameter :",
+/// #11891). A translation that already has one keeps it.
+pub(crate) fn readout_label(label: &str) -> String {
+    match label.strip_suffix(':') {
+        Some(head) if !head.ends_with(char::is_whitespace) => format!("{head} :"),
+        _ => label.to_owned(),
+    }
 }
 
 /// The tip preview's tint: Preferences ▸ Cursors ▸ Brush Preview colour (red by default, as in

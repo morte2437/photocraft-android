@@ -77,11 +77,12 @@ pub(crate) fn offset_at(app: &mut PhotocraftApp, id: LayerId, x: f64, y: f64) ->
     let (tx, ty) = to_text(&aff, x, y);
     // Type on a path: the point's place along the path is the position in the (single) line.
     let shape = app.session.active().and_then(|s| text_layer(&s.doc, id).map(|t| t.shape.clone()));
-    let text_start = l.bounds().map_or(0.0, |bounds| f64::from(bounds[0]));
+    let text_start = l.line_bounds().map_or(0.0, |bounds| f64::from(bounds[0]));
+    let text_end = l.line_bounds().map_or(0.0, |bounds| f64::from(bounds[2]));
     let (tx, ty) = shape
         .as_ref()
-        .and_then(|shape| photocraft_text::warp::Warp::on_path_with_text_start(shape, text_start))
-        .and_then(|warp| warp.path_text_x_near_text(f64::from(tx), f64::from(ty), l.bounds().map_or(0.0, |bounds| f64::from(bounds[2]))))
-        .map_or((tx, ty), |offset| (offset as f32, -1.0));
+        .and_then(|shape| photocraft_text::warp::Warp::on_path_oriented(shape, text_start, l.vertical))
+        .and_then(|warp| warp.path_text_x_near_text(f64::from(tx), f64::from(ty), text_end))
+        .map_or((tx, ty), |offset| l.to_text(offset as f32, -1.0));
     photocraft_text::hit_char(&l, &text, tx, ty).0
 }

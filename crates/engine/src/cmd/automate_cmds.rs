@@ -17,7 +17,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use crate::commands::CommandSpec;
-use crate::file_cmds::{file_name, import, join, list_images, read_file, stem, write_file};
+use crate::file_cmds::{file_name, import, join, list_images, list_images_tree, read_file, stem, write_file};
 use crate::{EngineError, Result, Session};
 
 fn bad(cmd: &str, msg: impl Into<String>) -> EngineError {
@@ -124,11 +124,7 @@ fn check_known(steps: &[(String, Value)], cmd: &str) -> Result<()> {
 const MAX_SCRIPT_DEPTH: u8 = 16;
 pub(crate) const MAX_SCRIPT_STEPS: u64 = crate::actions_cmds::MAX_PLAYBACK_STEPS;
 
-/// A script run from a script reports its own failure inside an `Ok`; it stops the caller too.
-fn nested_script_failure(id: &str, r: &Value) -> Option<String> {
-    (id == "file.scripts.browse" && r.get("ok") == Some(&Value::Bool(false))).then(|| "a script it runs failed".to_string())
-}
-
+/// Direct Batch file errors remain script results; called action failures stop later script steps.
 fn run_steps(s: &mut Session, steps: &[(String, Value)]) -> Vec<Value> {
     let mut results = Vec::new();
     for (id, params) in steps {
@@ -138,14 +134,18 @@ fn run_steps(s: &mut Session, steps: &[(String, Value)]) -> Vec<Value> {
             break;
         }
         match s.execute(id, params.clone()) {
-            // A called action reports a failed step inside an `Ok`; it stops the script too.
-            Ok(r) => match crate::actions_cmds::nested_failure(id, &r).or_else(|| nested_script_failure(id, &r)) {
-                Some(error) => {
-                    results.push(json!({"command": id, "result": r, "error": error}));
-                    break;
+            Ok(r) => {
+                // Direct Batch calls report file errors successfully to scripts, but running out of
+                // script steps, a cancel or a failed error log stops it. Called actions still fail it.
+                let failure = if id == "file.automate.batch" { crate::actions_cmds::batch_stop(&r) } else { crate::actions_cmds::nested_failure(id, &r) };
+                match failure {
+                    Some(error) => {
+                        results.push(json!({"command": id, "result": r, "error": error}));
+                        break;
+                    }
+                    None => results.push(json!({"command": id, "result": r})),
                 }
-                None => results.push(json!({"command": id, "result": r})),
-            },
+            }
             Err(e) => {
                 results.push(json!({"command": id, "error": e.to_string()}));
                 break;
@@ -336,11 +336,33 @@ pub fn document_saved(s: &mut Session, doc: photocraft_doc::DocId) -> Option<Val
 
 // ---------- Create Droplet ----------
 
+/// Resolve the enabled steps of the saved action chosen for a droplet: by name within `set` when
+/// one is given (a loaded library can hold one name in two sets), else by name or index.
+pub(crate) fn named_action_steps(s: &Session, p: &Value, cmd: &str) -> Result<Vec<(String, Value)>> {
+    let index = match p.get("set").filter(|v| !v.is_null()) {
+        Some(set) => {
+            let set = set.as_str().ok_or_else(|| bad(cmd, "\"set\" must be a string"))?;
+            let name = p.get("action").and_then(Value::as_str).ok_or_else(|| bad(cmd, "a set needs a named action"))?;
+            s.actions
+                .list
+                .iter()
+                .position(|a| a.name == name && a.set.as_deref() == Some(set))
+                .ok_or_else(|| bad(cmd, format!("no action named `{name}` in set `{set}`")))?
+        }
+        None => crate::actions_cmds::resolve(&s.actions.list, p, cmd)?,
+    };
+    let action = s.actions.list.get(index).ok_or_else(|| bad(cmd, "the selected action no longer exists"))?;
+    Ok(action.enabled_steps().map(|(_, step)| step.clone()).collect())
+}
+
+/// Save the chosen action's enabled steps and dependencies as a runnable droplet.
 fn create_droplet(s: &mut Session, p: &Value) -> Result<Value> {
     let cmd = "file.automate.createDroplet";
     let path = p.get("path").and_then(Value::as_str).filter(|v| !v.is_empty()).ok_or_else(|| bad(cmd, "missing \"path\" (where to save the droplet)"))?;
-    let steps_v = p.get("steps").or_else(|| p.get("action")).ok_or_else(|| bad(cmd, "missing \"steps\" (the action to run)"))?;
-    let mut steps = parse_steps(steps_v, cmd)?;
+    let mut steps = match p.get("steps").or_else(|| p.get("action").filter(|v| v.is_array())) {
+        Some(steps) => parse_steps(steps, cmd)?,
+        None => named_action_steps(s, p, cmd)?,
+    };
     // As in batch, the droplet's output folder replaces recorded saves, which are kept to mark the
     // result, and view steps don't apply.
     steps.retain(|(id, _)| crate::file_cmds::batch_keeps_step(id));
@@ -411,6 +433,8 @@ fn write_shim(_: &str) -> Result<String> {
 /// Runs a droplet file on inputs (files and/or folders).
 fn run_droplet(s: &mut Session, p: &Value) -> Result<Value> {
     let cmd = "file.automate.runDroplet";
+    // Checked before the droplet file is read, so a droplet that runs itself stops at the limit.
+    crate::file_cmds::check_batch_depth(s, cmd)?;
     let path = p.get("droplet").or_else(|| p.get("path")).and_then(Value::as_str).ok_or_else(|| bad(cmd, "missing \"droplet\""))?;
     let v: Value = serde_json::from_slice(&read_file(path)?).map_err(|e| bad(cmd, format!("{path}: {e}")))?;
     if v.get("photocraftDroplet").is_none() {
@@ -438,8 +462,11 @@ fn run_droplet(s: &mut Session, p: &Value) -> Result<Value> {
     if let Some(name) = v.get("action").and_then(|action| action.get("name")).or_else(|| v.get("name")) {
         bp["action"] = name.clone();
     }
-    if let Some(q) = opts.get("quality") {
-        bp["quality"] = q.clone();
+    // Override Open is saved with the droplet: a recorded Open then reads each dropped input.
+    for key in ["quality", "overrideOpen"] {
+        if let Some(value) = opts.get(key) {
+            bp[key] = value.clone();
+        }
     }
     if let Some(called) = v.get("calledActions") {
         bp["calledActions"] = called.clone();
@@ -478,14 +505,37 @@ fn units_px(v: f64, unit: &str, res: f64) -> f64 {
     }
 }
 
+/// Contact Sheet II's images, one list per run of sheets. A folder `input` lists its own images by
+/// name and, with `includeSubfolders` (default on), then each subfolder's depth first, each level
+/// by name, bounded as Batch's walk is ([`list_images_tree`]: depth and file limits, a folder
+/// reached twice through a link walked once). `groupByFolder` (default off) makes each folder
+/// that has images its own list, so it starts on a new sheet. An array `input` is one list in its
+/// own order, whatever the two flags say.
+fn contact_sheet_sources(p: &Value, cmd: &str) -> Result<Vec<Vec<String>>> {
+    let flag = |key: &str, default: bool| match p.get(key) {
+        None | Some(Value::Null) => Ok(default),
+        Some(Value::Bool(b)) => Ok(*b),
+        Some(_) => Err(bad(cmd, format!("\"{key}\" must be true or false"))),
+    };
+    let subfolders = flag("includeSubfolders", true)?;
+    let by_folder = flag("groupByFolder", false)?;
+    match p.get("input").or_else(|| p.get("files")) {
+        Some(Value::Array(a)) => Ok(vec![a.iter().filter_map(Value::as_str).map(str::to_string).collect()]),
+        Some(Value::String(dir)) if subfolders => {
+            let tree = list_images_tree(dir, "", cmd)?;
+            let paths = |run: &[crate::file_cmds::BatchInput]| run.iter().map(|i| i.path.clone()).collect::<Vec<_>>();
+            // The walk lists each folder's files together, so a folder is one run of `rel_dir`.
+            Ok(if by_folder { tree.chunk_by(|a, b| a.rel_dir == b.rel_dir).map(paths).collect() } else { vec![paths(&tree)] })
+        }
+        Some(Value::String(dir)) => Ok(vec![list_images(dir)?]),
+        _ => Err(bad(cmd, "missing \"input\" (a folder or an array of files)")),
+    }
+}
+
 fn contact_sheet(s: &mut Session, p: &Value) -> Result<Value> {
     let cmd = "file.automate.contactSheetII";
-    let files: Vec<String> = match p.get("input").or_else(|| p.get("files")) {
-        Some(Value::Array(a)) => a.iter().filter_map(Value::as_str).map(str::to_string).collect(),
-        Some(Value::String(dir)) => list_images(dir)?,
-        _ => return Err(bad(cmd, "missing \"input\" (a folder or an array of files)")),
-    };
-    if files.is_empty() {
+    let groups = contact_sheet_sources(p, cmd)?;
+    if groups.iter().all(Vec::is_empty) {
         return Err(bad(cmd, "no images to place"));
     }
     let f = |k: &str, d: f64| p.get(k).and_then(Value::as_f64).filter(|v| v.is_finite() && *v > 0.0).unwrap_or(d);
@@ -515,8 +565,9 @@ fn contact_sheet(s: &mut Session, p: &Value) -> Result<Value> {
     let mut docs = Vec::new();
     let mut placed = 0usize;
     let mut errors = Vec::new();
-    for (page, chunk) in files.chunks(per_page).enumerate() {
-        let name = if files.len() > per_page { format!("ContactSheet-{:03}", page + 1) } else { "ContactSheet-001".into() };
+    // A full sheet continues on the next one; with `groupByFolder` each folder also starts one.
+    for (page, chunk) in groups.iter().flat_map(|g| g.chunks(per_page)).enumerate() {
+        let name = format!("ContactSheet-{:03}", page + 1);
         s.execute("file.new", json!({"width": pw, "height": ph, "mode": mode, "depth": depth, "background": "white", "name": name}))?;
         let idx = s.active_index().ok_or(EngineError::NoDocument)?;
         if let Some(st) = s.active_mut() {
@@ -596,7 +647,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "file.automate.contactSheetII",
             "Contact Sheet II…",
             &["File", "Automate"],
-            r##"{"input":folder|[paths],"units":"inches|cm|mm|pixels"="inches","width":8,"height":10,"resolution":ppi=300,"mode":"rgb|gray|cmyk|lab"="rgb","depth":8|16=8,"columns":5,"rows":6,"placeAcrossFirst":bool=true,"autoSpacing":bool=true,"horizontal":units?,"vertical":units?,"rotateForBestFit":bool=false,"caption":bool=true (file name as caption),"font":family?,"fontSize":pt=12,"flatten":bool=false} → {documents, pages, images}"##,
+            r##"{"input":folder|[paths],"units":"inches|cm|mm|pixels"="inches","width":8,"height":10,"resolution":ppi=300,"mode":"rgb|gray|cmyk|lab"="rgb","depth":8|16=8,"columns":5,"rows":6,"placeAcrossFirst":bool=true,"autoSpacing":bool=true,"horizontal":units?,"vertical":units?,"rotateForBestFit":bool=false,"caption":bool=true (file name as caption),"font":family?,"fontSize":pt=12,"flatten":bool=false,"includeSubfolders":bool=true (a folder input also takes its subfolders' images, depth first after its own),"groupByFolder":bool=false (with includeSubfolders: each folder starts a new sheet)} → {documents, pages, images}"##,
             native,
             contact_sheet
         ),
@@ -604,7 +655,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "file.automate.createDroplet",
             "Create Droplet…",
             &["File", "Automate"],
-            r##"{"path":str (.pcdroplet),"steps":[[id,params]…] (the action),"name":str?,"output":folder?,"format":"same|png|jpg|…"?,"quality":0..12?,"shim":bool=true on Unix (writes <name>.command calling `photocraft-cli droplet`)} → {path, shim} (the actions its Play Action and Conditional steps call are saved in the droplet)"##,
+            r##"{"path":str (.pcdroplet),"steps":[[id,params]…]?,"action":name|index|[steps]? (used only when steps is absent; named actions exclude disabled steps),"set":str? (with a named action: that set's action of the name),"name":str?,"output":folder?,"format":"same|png|jpg|…"?,"quality":0..12?,"shim":bool=true on Unix (writes <name>.command calling `photocraft-cli droplet`)} → {path, shim} (the actions its Play Action and Conditional steps call are saved in the droplet)"##,
             native,
             create_droplet
         ),
@@ -646,3 +697,7 @@ pub fn specs() -> Vec<CommandSpec> {
 #[cfg(test)]
 #[path = "automate_cmds/tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "automate_cmds/contact_sheet_subfolders_tests.rs"]
+mod contact_sheet_subfolders_tests;

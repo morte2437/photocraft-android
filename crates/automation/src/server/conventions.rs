@@ -1,5 +1,5 @@
 //! Catalog metadata, strict tool envelopes and live resources.
-use super::{Arc, Backend, BatchParams, DocIndex, ListParams, McpError, Parameters, PhotocraftMcp, RunParams, ServerHandler, Value, json};
+use super::{Arc, BatchParams, DocIndex, ListParams, McpError, Parameters, PhotocraftMcp, RunParams, ServerHandler, Value, fail, json};
 use rmcp::RoleServer;
 use rmcp::model::{
     CallToolRequestParams, CallToolResponse, Implementation, ListResourcesResult, ListToolsResult, PaginatedRequestParams, ReadResourceRequestParams,
@@ -17,11 +17,14 @@ fn annotated(mut tool: Tool) -> Tool {
     let title = chars.next().map(|c| c.to_uppercase().collect::<String>() + chars.as_str()).unwrap_or_default();
     let read = matches!(
         tool.name.as_ref(),
-        "command_list" | "doc_inspect" | "session_list" | "render_preview" | "doc_render_preview" | "ui_inspect" | "ui_screenshot"
+        "command_list" | "doc_inspect" | "session_list" | "render_preview" | "doc_render_preview" | "ui_inspect" | "ui_screenshot" | "jobs_list"
     );
-    let additive = matches!(tool.name.as_ref(), "doc_new" | "doc_open" | "doc_place");
+    // Changes state without discarding anything: the scoped exports refuse to overwrite a file,
+    // and switching the active document edits nothing.
+    let additive = matches!(tool.name.as_ref(), "doc_new" | "doc_open" | "doc_place" | "doc_select" | "doc_export_layers" | "doc_export_data_sets");
+    let idempotent = read || tool.name == "doc_select";
     tool.title = Some(title.clone());
-    tool.annotations = Some(ToolAnnotations::from_raw(Some(title), Some(read), Some(!read && !additive), Some(read), Some(false)));
+    tool.annotations = Some(ToolAnnotations::from_raw(Some(title), Some(read), Some(!read && !additive), Some(idempotent), Some(false)));
     Arc::make_mut(&mut tool.input_schema).insert("additionalProperties".into(), json!(false));
     tool
 }
@@ -52,7 +55,10 @@ impl ServerHandler for PhotocraftMcp {
             let args = Value::Object(request.arguments.clone().unwrap_or_default());
             let _: BatchParams = serde_json::from_value(args).map_err(|e| McpError::invalid_params(e.to_string(), None))?;
         }
-        if request.name == "command_run" && matches!(&*self.backend, Backend::Headless(_)) {
+        if let Err(error) = self.ready().await {
+            return Ok(fail(error).into());
+        }
+        if request.name == "command_run" && self.headless_session().is_some() {
             let args = Value::Object(request.arguments.clone().unwrap_or_default());
             let params: RunParams = serde_json::from_value(args).map_err(|e| McpError::invalid_params(e.to_string(), None))?;
             if params.id == "file.export.renderVideo" {
@@ -71,6 +77,9 @@ impl ServerHandler for PhotocraftMcp {
     }
 
     async fn read_resource(&self, request: ReadResourceRequestParams, _: RequestContext<RoleServer>) -> Result<ReadResourceResponse, McpError> {
+        if let Err(error) = self.ready().await {
+            return Err(McpError::internal_error(error, None));
+        }
         let result = match request.uri.as_str() {
             DOCUMENT => self.doc_inspect(Parameters(DocIndex::default())).await?,
             COMMANDS => self.command_list(Parameters(ListParams::default())).await?,

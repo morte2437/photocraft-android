@@ -147,9 +147,24 @@ pub fn open(app: &mut PhotocraftApp, target: &str) -> u64 {
     let mut fields = fields_with_web(app, target, label, rgb);
     // A colour that was picked as CMYK shows the inks it was picked as, not what its sRGB stand-in converts to (#4196).
     if let Some(cmyk) = app.session.tools.picked_cmyk(rgb) {
-        fields.insert("__cmyk".into(), json!(cmyk));
+        seed_cmyk(&mut fields, cmyk);
     }
     app.ui.open_dialog(DialogKind::Command, fields)
+}
+
+/// Open picker `f` showing the inks its opening colour was picked as (#4196, #8568). Current and
+/// Reset restore them with the colour, so OK after either keeps them rather than inks recomputed
+/// from the colour's sRGB stand-in.
+pub(crate) fn seed_cmyk(f: &mut Map<String, Value>, cmyk: [f32; 4]) {
+    f.insert("__cmyk".into(), json!(cmyk));
+    f.insert("__origCmyk".into(), json!(cmyk));
+}
+
+/// Current (the swatch) and Reset: the colour from when the picker opened, with its inks.
+fn restore_original(f: &mut Map<String, Value>) {
+    let orig = f.get("__orig").and_then(Value::as_str).and_then(parse_hex).unwrap_or([0.0; 3]);
+    let keep = kept::<4>(f, "__origCmyk", orig, photocraft_color::convert::cmyk_to_rgb).map_or(Keep::Nothing, Keep::Cmyk);
+    set_rgb(f, orig, keep);
 }
 
 /// Shared initial state for every target; the picker layout is independent of its destination.
@@ -271,6 +286,10 @@ fn set_field(f: &mut Map<String, Value>, field: &str, value: Value) -> Result<()
 
 /// Opens the Color Picker dialog `id`'s body asked for ([`request`], [`request_field`]), on its
 /// colour: OK sets that field of the dialog (not the foreground), Cancel leaves it as it was.
+///
+/// A dialog can provide `__pickColorDefault` when its field is a non-colour choice that has not
+/// yet been replaced by the picked colour. The temporary default seeds the picker without
+/// changing the parent field; it is removed before the picker opens.
 pub fn open_requested(app: &mut PhotocraftApp, id: u64) {
     let Some(d) = app.ui.dialog_mut(id) else { return };
     let (title, field) = match d.fields.remove(REQUEST) {
@@ -282,7 +301,11 @@ pub fn open_requested(app: &mut PhotocraftApp, id: u64) {
         }
         _ => return,
     };
-    let rgb = field_value(&d.fields, &field).and_then(parse_hex).unwrap_or([0.0; 3]);
+    let rgb = field_value(&d.fields, &field)
+        .and_then(parse_hex)
+        .or_else(|| d.fields.get("__pickColorDefault").and_then(Value::as_str).and_then(parse_hex))
+        .unwrap_or([0.0; 3]);
+    d.fields.remove("__pickColorDefault");
     open_for_field(app, &title, rgb, id, &field);
 }
 
@@ -295,8 +318,7 @@ pub fn reset(f: &mut Map<String, Value>) {
     if !owns(f) {
         return;
     }
-    let orig = f.get("__orig").and_then(Value::as_str).and_then(parse_hex).unwrap_or([0.0; 3]);
-    set_rgb(f, orig, Keep::Nothing);
+    restore_original(f);
 }
 
 /// The Color Picker, when it is the top dialog (another dialog opened over it takes the input).
@@ -572,15 +594,15 @@ fn swatches(ui: &mut egui::Ui, f: &mut Map<String, Value>) {
     p.rect_filled(cur, 0.0, c32(orig));
     p.rect_stroke(sw, 0.0, Stroke::new(1.0, t.field_border), StrokeKind::Outside);
     let click_cur = ui.interact(cur, ui.scope_id().with("cp-current"), Sense::click());
-    click_cur.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, ui.is_enabled(), tl!("Click to restore the current colour")));
-    if click_cur.on_hover_text(tl!("Click to restore the current colour")).clicked() {
-        set_rgb(f, orig, Keep::Nothing);
+    click_cur.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, ui.is_enabled(), tl!("Click to restore the current color")));
+    if click_cur.on_hover_text(tl!("Click to restore the current color")).clicked() {
+        restore_original(f);
     }
     // Photoshop's warnings beside the swatch, each over a chip of the nearest colour that passes
     // (a click takes it): out of gamut for printing on top, not a web colour below.
     let x = sw.right() + 8.0;
-    let gamut = tl!("Out of gamut for printing: click for the nearest printable colour");
-    let web = tl!("Not a web colour: click for the nearest web colour");
+    let gamut = tl!("Out of gamut for printing: click for the nearest printable color");
+    let web = tl!("Not a web color: click for the nearest web color");
     for (slot, warning, tip) in [(0.0, out_of_gamut(rgb), gamut), (34.0, not_web_safe(rgb), web)] {
         let Some(near) = warning else { continue };
         let icon = Rect::from_min_size(pos2(x, sw.top() + 2.0 + slot), vec2(13.0, 13.0));
@@ -992,6 +1014,10 @@ fn confirm_target(app: &mut PhotocraftApp, f: &Map<String, Value>) -> Result<Val
     if target == "cropShield" {
         crate::crop_shield::set_custom_color(app, color)?;
         return Ok(json!({ "color": color }));
+    }
+    // The Artboard tool's custom background for the boards it draws (#11385).
+    if target == "artboardBackground" {
+        return crate::artboard_tool::bar::set_custom_background_from_picker(app, color, f.get("color") == f.get("__orig"));
     }
     // The Note tool's colour for new notes (#2144).
     if target == "noteColor" {

@@ -9,9 +9,13 @@ use crate::state::{LayerThumbnailContents, LayerThumbnailSize, LayersPanelDialog
 
 const OPTIONS_PREF: &str = "ui.layersPanelOptions";
 
-/// Save independently of Workspace > Remember Workspace Changes, as Photoshop does.
+/// Save independently of Workspace > Remember Workspace Changes, as Photoshop does. A pick of the
+/// current value writes nothing unless the saved entry is missing or stale.
 pub fn persist_options(app: &mut PhotocraftApp) {
     if let Ok(value) = serde_json::to_value(&app.ui.layers_panel_options) {
+        if app.session.prefs().dialogs.get(OPTIONS_PREF) == Some(&value) {
+            return;
+        }
         app.session.prefs.edit(|p| {
             p.dialogs.insert(OPTIONS_PREF.into(), value);
         });
@@ -27,11 +31,17 @@ pub fn restore_options(app: &mut PhotocraftApp) {
     }
 }
 
-/// The real menu command dispatcher handles rename's in-place editor and other shell routing.
-pub fn run_menu_command(app: &mut PhotocraftApp, ui: &mut Ui, label: &str, id: &str) {
-    if ui.add_enabled(app.session.is_enabled(id), egui::Button::new(label)).clicked() {
+/// A panel-menu item running menu command `id` with `params` (`{}` for none) through the real
+/// menu command dispatcher, which handles rename's in-place editor, opens a command's dialog where
+/// it has one and does other shell routing. Greyed when `params` is `None` (nothing to act on) or
+/// where the menu bar greys the command.
+pub fn run_menu_command(app: &mut PhotocraftApp, ui: &mut Ui, label: &str, id: &str, params: Option<serde_json::Value>) {
+    let on = params.is_some() && crate::menus::is_enabled(app, id);
+    if ui.add_enabled(on, egui::Button::new(label)).clicked()
+        && let Some(params) = params
+    {
         let ctx = ui.ctx().clone();
-        if let Err(e) = crate::menus::invoke(app, &ctx, id, json!({})) {
+        if let Err(e) = crate::menus::invoke(app, &ctx, id, params) {
             app.ui.status = e;
             app.ui.status_error = true;
         }

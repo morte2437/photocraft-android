@@ -242,7 +242,15 @@ Why these formats:
   `~/.local/share/applications/ai.storyteller.photocraft.desktop` with `Exec` rewritten to
   the AppImage's path (`TryExec` dropped, the binary isn't on the host PATH) and the
   hicolor icons beside it, rewriting only when the content changed, and any failure leaves
-  the launch untouched. `PHOTOCRAFT_NO_DESKTOP_INTEGRATION=1` opts out; to uninstall, `rm
+  the launch untouched. Launcher refresh uses a hidden generated snapshot to preserve
+  user edits, comments and deleted keys while updating untouched packaged metadata and
+  known executable paths. Missing or damaged snapshots use a conservative fallback.
+  External integration removes a duplicate only when a regular launcher exactly matches
+  a valid regular snapshot. Symlinked launchers or snapshots (including dangling links)
+  and special files are left alone during both refresh and deduplication; icons still
+  install. These checks do not synchronize concurrent changes by other processes.
+  This overlaps the deduplication protection proposed in #5168 without depending on it.
+  `PHOTOCRAFT_NO_DESKTOP_INTEGRATION=1` opts out; to uninstall, `rm
   ~/.local/share/applications/ai.storyteller.photocraft.desktop` and `find
   ~/.local/share/icons/hicolor -name 'ai.storyteller.photocraft*' -delete`. The script is
   covered by `packaging/linux/apprun-test.sh` in the packaging-lint workflow.
@@ -301,6 +309,48 @@ one is missing, prints the package to install and exits with status 1 instead of
 
 Locally (on Linux): install [nfpm](https://nfpm.goreleaser.com/install/), then
 `packaging/linux/package.sh` (or `--formats "deb tar"`).
+
+#### Packaged automation and offline documentation
+
+Both Flatpak manifests install `photocraft-cli`, alongside the GUI. To start the stdio MCP
+server with a project in the sandbox's allowed Documents directory:
+
+```sh
+flatpak run --command=photocraft-cli ai.storyteller.photocraft mcp \
+  --automation-read-root "$HOME/Documents/project" \
+  --automation-write-root "$HOME/Documents/project"
+```
+
+The automation roots restrict PhotoCraft's file access; they do not grant Flatpak access to
+other host directories. For a project elsewhere, also grant that directory with Flatpak's
+`--filesystem=/absolute/project` run option. Stdio MCP needs no network permission.
+
+Linux packages include the original `mcp.md` and `control-protocol.md` for offline use:
+
+| Format | Documentation directory |
+|---|---|
+| `.deb`, `.rpm` | `/usr/share/doc/photocraft/` |
+| Extracted `.tar.gz` | `share/doc/photocraft/` inside the extracted release directory |
+| Flatpak (source or bundle) | `/app/share/doc/photocraft/` inside the sandbox |
+| Extracted AppImage | `squashfs-root/usr/share/doc/photocraft/` |
+
+For example, read the Flatpak's MCP guide without opening the GUI:
+
+```sh
+flatpak run --command=cat ai.storyteller.photocraft /app/share/doc/photocraft/mcp.md
+```
+
+To read an AppImage's guides, run `./PhotoCraft.AppImage --appimage-extract` in a directory
+where you want its `squashfs-root` contents, using the downloaded file's actual name. Then
+open either guide in `squashfs-root/usr/share/doc/photocraft/`. Extraction is an explicit user
+action; launching the app does not extract documentation into the home directory. These two
+Markdown files are included as written; links to other repository documents still need a
+checkout or the online documentation.
+
+`bash packaging/linux/package-docs-test.sh` checks the real Linux staging/tar commands,
+AppDir retention and both Flatpak manifests' install commands with fixture binaries and
+stubbed AppImage tooling. Packaging lint runs it through `extra-checks-script`; it does not
+compile Rust, build a real AppImage, or run a Flatpak sandbox.
 
 ### FreeBSD
 

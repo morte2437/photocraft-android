@@ -25,20 +25,20 @@ fn add_reads_the_composite_pixel_and_lists_it() {
     assert_eq!(r["index"], 0);
     assert_eq!(r["count"], 1);
     assert_eq!(r["point"]["number"], 1);
-    assert_eq!(r["point"]["position"], json!([5.0, 6.0]));
+    assert_eq!(r["point"]["position"], json!([5.5, 6.5]));
     assert_eq!(r["point"]["rgb"], json!([255, 255, 255]));
     assert_eq!(r["point"]["cmyk"], json!([0, 0, 0, 0]));
     let l = list(&mut s);
     assert_eq!(l["max"], 10);
     assert_eq!(l["samplers"].as_array().unwrap().len(), 1);
-    assert_eq!(l["samplers"][0]["position"], json!([5.0, 6.0]));
+    assert_eq!(l["samplers"][0]["position"], json!([5.5, 6.5]));
 }
 
 #[test]
-fn fractional_clicks_floor_to_the_pixel() {
+fn fractional_clicks_snap_to_the_pixel_centre() {
     let mut s = session();
     let r = s.execute("view.colorSamplers.add", json!({"x": 5.9, "y": 6.1})).unwrap();
-    assert_eq!(r["point"]["position"], json!([5.0, 6.0]));
+    assert_eq!(r["point"]["position"], json!([5.5, 6.5]));
 }
 
 #[test]
@@ -84,12 +84,12 @@ fn move_delete_and_clear() {
     s.execute("view.colorSamplers.add", json!({"x": 5, "y": 5})).unwrap();
     s.execute("view.colorSamplers.add", json!({"x": 50, "y": 50})).unwrap();
     let r = s.execute("view.colorSamplers.move", json!({"index": 0, "x": 10, "y": 20})).unwrap();
-    assert_eq!(r["point"]["position"], json!([10.0, 20.0]));
-    assert_eq!(points(&mut s)[0]["position"], json!([10.0, 20.0]));
+    assert_eq!(r["point"]["position"], json!([10.5, 20.5]));
+    assert_eq!(points(&mut s)[0]["position"], json!([10.5, 20.5]));
     s.execute("view.colorSamplers.delete", json!({"index": 1})).unwrap();
     assert_eq!(points(&mut s).len(), 1);
     // The remaining point is the moved #1.
-    assert_eq!(points(&mut s)[0]["position"], json!([10.0, 20.0]));
+    assert_eq!(points(&mut s)[0]["position"], json!([10.5, 20.5]));
     let r = s.execute("view.colorSamplers.clear", json!({})).unwrap();
     assert_eq!(r["deleted"], 1);
     assert!(points(&mut s).is_empty());
@@ -132,7 +132,7 @@ fn a_crop_drops_points_outside_the_new_canvas() {
     s.execute("image.crop", json!({"x": 0, "y": 0, "width": 10, "height": 10})).unwrap();
     let p = points(&mut s);
     assert_eq!(p.len(), 1, "the outside point was removed");
-    assert_eq!(p[0]["position"], json!([5.0, 5.0]));
+    assert_eq!(p[0]["position"], json!([5.5, 5.5]));
     assert_eq!(s.take_samplers_removed(), 1, "one removed point reported");
     assert_eq!(s.take_samplers_removed(), 0, "reported once");
 }
@@ -145,7 +145,7 @@ fn a_crop_moves_points_with_their_pixels() {
     s.execute("image.crop", json!({"x": 40, "y": 30, "width": 20, "height": 20})).unwrap();
     let p = points(&mut s);
     assert_eq!(p.len(), 1);
-    assert_eq!(p[0]["position"], json!([10.0, 10.0]), "moved by (-40, -30)");
+    assert_eq!(p[0]["position"], json!([10.5, 10.5]), "moved by (-40, -30)");
     assert_eq!(s.take_samplers_removed(), 0, "nothing removed");
 }
 
@@ -157,12 +157,13 @@ fn a_canvas_size_shift_moves_points() {
     s.execute("image.canvasSize", json!({"width": 120, "height": 100, "anchor": "bottomRight"})).unwrap();
     let p = points(&mut s);
     assert_eq!(p.len(), 1);
-    assert_eq!(p[0]["position"], json!([50.0, 50.0]), "moved by the canvas shift");
+    assert_eq!(p[0]["position"], json!([50.5, 50.5]), "moved by the canvas shift");
 }
 
 #[test]
 fn a_right_angle_rotation_moves_points() {
-    // 90° clockwise about the centre: pixel (x, y) of the 100×80 canvas goes to (79 - y, x).
+    // 90° clockwise about the centre: pixel (x, y) of the 100×80 canvas goes to (79 - y, x), and
+    // the point stays on that pixel's centre.
     let mut s = session();
     s.execute("view.colorSamplers.add", json!({"x": 50, "y": 40})).unwrap();
     s.execute("image.rotation.arbitrary", json!({"angle": 90, "direction": "cw"})).unwrap();
@@ -170,7 +171,7 @@ fn a_right_angle_rotation_moves_points() {
     assert_eq!(p.len(), 1);
     let pos = p[0]["position"].as_array().unwrap();
     let (x, y) = (pos[0].as_f64().unwrap(), pos[1].as_f64().unwrap());
-    assert!((x - 39.0).abs() < 1e-6 && (y - 50.0).abs() < 1e-6, "{pos:?}");
+    assert!((x - 39.5).abs() < 1e-6 && (y - 50.5).abs() < 1e-6, "{pos:?}");
 }
 
 #[test]
@@ -197,7 +198,7 @@ fn flips_and_right_angle_turns_keep_points_on_their_pixel() {
         let (x, y) = turn.pixel_map(100, 80)(3, 3);
         let p = points(&mut s);
         assert_eq!(p.len(), 1, "{id}");
-        assert_eq!(p[0]["position"], json!([f64::from(x), f64::from(y)]), "{id}");
+        assert_eq!(p[0]["position"], json!([f64::from(x) + 0.5, f64::from(y) + 0.5]), "{id}");
         assert_eq!(p[0]["rgb"], json!([0, 0, 0]), "{id}");
     }
 }
@@ -205,7 +206,7 @@ fn flips_and_right_angle_turns_keep_points_on_their_pixel() {
 #[test]
 fn an_arbitrary_rotation_keeps_points_on_their_pixel() {
     // The pixel at (3, 3) of the 100×80 document, and where each turn moves it.
-    for (angle, direction, at) in [(90, "cw", [76.0, 3.0]), (90, "ccw", [3.0, 96.0]), (180, "cw", [96.0, 76.0])] {
+    for (angle, direction, at) in [(90, "cw", [76.5, 3.5]), (90, "ccw", [3.5, 96.5]), (180, "cw", [96.5, 76.5])] {
         let mut s = session();
         s.edit("paint", |doc, _| {
             let surf = doc.layers[0].surface_mut().unwrap();
@@ -240,15 +241,15 @@ fn a_rotated_crop_moves_points() {
     s.execute("image.crop", json!({"x": 40, "y": 30, "width": 20, "height": 20, "angle": 90})).unwrap();
     let p = points(&mut s);
     assert_eq!(p.len(), 1);
-    assert_eq!(p[0]["position"], json!([10.0, 9.0]));
+    assert_eq!(p[0]["position"], json!([10.5, 9.5]));
     assert_eq!(p[0]["rgb"], json!([0, 0, 0]));
 }
 
 #[test]
 fn a_crop_to_a_target_size_scales_points() {
-    // The crop resamples the 20 x 20 area to 40 x 40: the point (10, 10 after the shift; 10, 9
-    // turned 90°, as in `a_rotated_crop_moves_points`) doubles.
-    for (angle, at) in [(None, [20.0, 20.0]), (Some(90), [20.0, 18.0])] {
+    // The crop resamples the 20 x 20 area to 40 x 40: the point (10.5, 10.5 after the shift;
+    // 10.5, 9.5 turned 90°, as in `a_rotated_crop_moves_points`) doubles, as Image Size scales it.
+    for (angle, at) in [(None, [21.0, 21.0]), (Some(90), [21.0, 19.0])] {
         let mut s = session();
         s.execute("view.colorSamplers.add", json!({"x": 50, "y": 40})).unwrap();
         let mut p = json!({"x": 40, "y": 30, "width": 20, "height": 20, "targetWidth": 40, "targetHeight": 40});
@@ -347,7 +348,7 @@ fn points_work_at_every_depth_and_mode() {
 fn document_helpers_are_not_disturbed() {
     let mut d = Document::new("t", Size::new(4, 4), ColorMode::Rgb, SampleType::U8);
     d.layers.push(Layer::raster("Background", d.pixel_format()));
-    assert_eq!(pixel(&d, 0.0, 0.0), Some([0.0, 0.0]));
-    assert_eq!(pixel(&d, 3.9, 3.9), Some([3.0, 3.0]));
+    assert_eq!(pixel(&d, 0.0, 0.0), Some([0.5, 0.5]));
+    assert_eq!(pixel(&d, 3.9, 3.9), Some([3.5, 3.5]));
     assert_eq!(pixel(&d, 4.0, 0.0), None);
 }

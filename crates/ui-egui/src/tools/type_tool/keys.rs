@@ -255,7 +255,11 @@ fn handle_pressed_key(
             insert(app, "\t");
         }
         Key::Escape if crate::type_transform::active(app) => crate::type_transform::cancel_drag(app),
-        Key::Escape if edit.edit.mask => cancel(app),
+        // A Type Mask commits on Escape as on ⌘↩, whatever "Use ESC to commit" says; the options bar's
+        // Cancel still throws it away (#12070). Escape on an empty mask text, or while an input
+        // method is composing, was not measured and still cancels.
+        Key::Escape if edit.edit.mask && (edit.text.is_empty() || edit.edit.preedit.is_some()) => cancel(app),
+        Key::Escape if edit.edit.mask => commit(app),
         Key::Escape if app.session.prefs().type_.use_esc_to_commit => commit(app),
         Key::Escape => cancel(app),
         Key::A if modifiers.command => {
@@ -267,6 +271,20 @@ fn handle_pressed_key(
         }
         Key::T if modifiers.command && !modifiers.shift && !modifiers.alt => {
             let _ = crate::menus::invoke(app, ctx, "window.panel.character", json!({}));
+        }
+        // ⌘. throws the session away as the options bar's Cancel does (#12076); ⇧⌘. stays
+        // Increase Type Size. Mid-composition (until its text commits or its reset completes) or
+        // mid ⌘-drag it was not measured and goes on to the ⌘ fallback below, as before.
+        Key::Period
+            if modifiers.command
+                && !modifiers.shift
+                && !modifiers.alt
+                && edit.edit.preedit.is_none()
+                && app.type_ime.incoming.is_none()
+                && !reset_guarded(app, ctx.viewport_id())
+                && !crate::type_transform::active(app) =>
+        {
+            cancel(app)
         }
         _ if modifiers.command => {
             if key == Key::Z {

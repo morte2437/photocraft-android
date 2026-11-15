@@ -355,3 +355,38 @@ fn a_clipped_layer_with_nothing_below_is_released() {
     assert!(d.layer(g).unwrap().children().unwrap().iter().any(|c| c.id == l));
     assert!(!d.layer(l).unwrap().clipped);
 }
+
+/// A copied clipped layer pasted off the board, beside a layer on it, goes above the board
+/// unclipped (#11441 review): clipped to the board, the board's composite would hide it.
+#[test]
+fn a_clipped_paste_off_the_board_lands_above_it_unclipped() {
+    let (mut s, _, _) = session();
+    let board = id(s.execute("layer.new.artboard", json!({"rect": [0, 0, 8, 8]})).unwrap());
+    let mut d = doc(&s).clone();
+    let mut on = Layer::raster("on", d.pixel_format());
+    on.surface_mut().unwrap().fill_rect(photocraft_geom::Rect::new(1, 1, 5, 5), &[1.0, 0.0, 0.0, 1.0]);
+    let on = insert_new(&mut d, Some(board), on, Place::Auto);
+    let mut off = Layer::raster("was clipped", d.pixel_format());
+    off.surface_mut().unwrap().fill_rect(photocraft_geom::Rect::new(10, 10, 16, 16), &[1.0, 0.0, 0.0, 1.0]);
+    off.clipped = true;
+    let off = insert_new(&mut d, Some(on), off, Place::AutoEditable);
+    assert_eq!(d.artboard_of(off), None);
+    let root: Vec<LayerId> = d.layers.iter().map(|l| l.id).collect();
+    assert_eq!(root.iter().position(|x| *x == off), root.iter().position(|x| *x == board).map(|i| i + 1));
+    assert!(!d.layer(off).unwrap().clipped, "not clipped to the board");
+}
+
+/// A clipped layer put directly above an artboard with [`Place::Above`] keeps its flag
+/// (#11441 review): it is the layer after a pasted board, stacked as it was copied.
+#[test]
+fn a_clipped_layer_placed_above_an_artboard_stays_clipped() {
+    let (mut s, _, _) = session();
+    let board = id(s.execute("layer.new.artboard", json!({"rect": [0, 0, 8, 8]})).unwrap());
+    let mut d = doc(&s).clone();
+    let mut l = Layer::raster("clipped", d.pixel_format());
+    l.clipped = true;
+    let l = insert_new(&mut d, Some(board), l, Place::Above);
+    let root: Vec<LayerId> = d.layers.iter().map(|x| x.id).collect();
+    assert_eq!(root.iter().position(|x| *x == l), root.iter().position(|x| *x == board).map(|i| i + 1));
+    assert!(d.layer(l).unwrap().clipped);
+}

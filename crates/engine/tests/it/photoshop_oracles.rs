@@ -15,8 +15,8 @@
 
 use std::path::{Path, PathBuf};
 
+use craft_psd::PsdFile;
 use photocraft_doc::{Document, LayerContent};
-use photocraft_psd::PsdFile;
 
 /// Within two 8-bit steps of Photoshop (same tolerance as the io corpus).
 const PASS_TOL: f32 = 2.0 / 255.0;

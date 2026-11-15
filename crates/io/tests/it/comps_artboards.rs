@@ -4,13 +4,13 @@
 #[cfg(feature = "corpus")]
 use std::path::PathBuf;
 
+use craft_psd::PsdFile;
 use photocraft_color::{BlendMode, Color, ColorMode, PixelFormat, SampleType};
 use photocraft_doc::comps::capture_states;
 use photocraft_doc::{Artboard, ArtboardBackground, Document, Layer, LayerComp, LayerContent};
 use photocraft_geom::{Rect, Size};
 use photocraft_io::comps_map::LAYER_COMPS;
 use photocraft_io::{ExportOptions, export, import};
-use photocraft_psd::PsdFile;
 
 #[cfg(feature = "corpus")]
 fn corpus(rel: &str) -> Vec<u8> {
@@ -71,7 +71,7 @@ fn corpus_layer_comps_import_and_verbatim_export() {
     assert_eq!(back.last_applied_comp, edited.last_applied_comp);
     // Other metadata items in shmd (`cust`) survive regeneration.
     let r = out2.layers().iter().find(|r| r.block(b"shmd").is_some()).unwrap();
-    let items = photocraft_psd::metadata::parse_shmd(&r.block(b"shmd").unwrap().data).unwrap();
+    let items = craft_psd::metadata::parse_shmd(&r.block(b"shmd").unwrap().data).unwrap();
     assert!(items.iter().any(|i| &i.key == b"cust"));
     assert!(items.iter().any(|i| &i.key == b"cmls"));
 
@@ -84,7 +84,7 @@ fn corpus_layer_comps_import_and_verbatim_export() {
     assert!(out3.resource(LAYER_COMPS).is_none());
     for r in out3.layers() {
         if let Some(b) = r.block(b"shmd") {
-            assert!(photocraft_psd::metadata::parse_shmd(&b.data).unwrap().iter().all(|i| &i.key != b"cmls"));
+            assert!(craft_psd::metadata::parse_shmd(&b.data).unwrap().iter().all(|i| &i.key != b"cmls"));
         }
     }
 }
@@ -251,8 +251,8 @@ fn synthetic_pcraft_roundtrip_keeps_everything() {
 /// A layer at (4, 4) whose preserved `shmd` block offsets it by `(dx, 0)` in comp 1, plus the
 /// matching resource 1065: what a PSD with that comp data imports to before decoding comps.
 fn doc_with_raw_comp_offset(dx: i32) -> Document {
-    use photocraft_psd::descriptor::{Descriptor, UnicodeString, Value, VersionedDescriptor};
-    use photocraft_psd::metadata::{MetadataItem, write_shmd};
+    use craft_psd::descriptor::{Descriptor, UnicodeString, Value, VersionedDescriptor};
+    use craft_psd::metadata::{MetadataItem, write_shmd};
     let obj = |class: &str| Descriptor { name: UnicodeString(vec![0]), ..Descriptor::new(class) };
     let mut d = Document::new("s", Size::new(32, 32), ColorMode::Rgb, SampleType::U8);
     let mut l = Layer::raster("A", PixelFormat::RGBA8);

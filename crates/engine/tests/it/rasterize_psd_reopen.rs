@@ -33,7 +33,7 @@ fn reopen(doc: &Document) -> Document {
 /// Whether the PSD written for `doc` gives the layer `name` any of `keys`.
 fn has_block(doc: &Document, name: &str, keys: &[&[u8; 4]]) -> bool {
     let out = photocraft_io::export(doc, "psd", &Default::default()).unwrap();
-    let f = photocraft_psd::PsdFile::from_bytes(&out.bytes).unwrap();
+    let f = craft_psd::PsdFile::from_bytes(&out.bytes).unwrap();
     let rec = f.layers().iter().find(|r| r.name() == name).unwrap();
     keys.iter().any(|k| rec.block(k).is_some())
 }

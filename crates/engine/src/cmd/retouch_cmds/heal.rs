@@ -1,4 +1,5 @@
-use super::clone::{blend_param, clamp_samples, clone_mapping, clone_result, clone_sample};
+use super::clone::{apply_clone_coverage, blend_param, clamp_samples, clone_mapping, clone_result, clone_sample};
+use super::periodic;
 use super::sampling::{SampleLayers, composite_region, sample_all_layers, sample_layers};
 use super::{
     BlendMode, CompleteParams, Document, EngineError, LayerId, PixelFormat, Rect, Region, Result, Session, Stroke, Surface, Value, apply_coverage, bad,
@@ -43,41 +44,112 @@ pub(super) fn heal_region(fmt: &PixelFormat, src: &Region, dst: &Region, mask: &
     out
 }
 
+/// The reference's alert for the Healing Brush in an Indexed Color document (#12112). Bitmap,
+/// Duotone and Multichannel weren't measured and heal as before.
+const INDEXED_REFUSAL: &str = "Could not set the clone source because it does not work with Indexed Color images (convert image to RGB Color mode to edit).";
+
 pub(super) fn healing_brush(s: &mut Session, p: &Value) -> Result<Value> {
     const CMD: &str = "paint.healingBrush";
+    if s.active().is_some_and(|st| st.doc.mode == photocraft_color::ColorMode::Indexed) {
+        return Err(EngineError::Other(INDEXED_REFUSAL.into()));
+    }
     let (stroke, id) = parse_brush(s, p, CMD)?;
     reject_huge_stroke(CMD, &stroke)?;
     let which = sample_layers(p, CMD)?;
+    let source = super::clone_sampling::resolve(s, p, CMD)?;
     let mode = blend_param(p, CMD)?;
     let aligned = flag(p, "aligned", true);
     let map = clone_mapping(s, p, &stroke, CMD)?;
     let off = map.offset();
     let dmg = run_stroke(s, "Healing Brush", id, p, |pre, surf, sel, lock| {
+        // Pattern Preview: source and destination repeat across the canvas edges, so a stroke over
+        // a seam heals as one patch and goes on wherever it repeats.
+        let wrap = flag(p, "wrap", false);
         let (bounds, cov) = coverage(CMD, &stroke)?;
         let (g, cov) = pad_coverage(bounds, &cov, 2);
-        let fmt = surf.format();
-        let src = clone_sample(pre, id, surf, which, g, &map, false, CMD)?;
+        let fmt = source.sample_format(surf);
+        let src = clone_sample(pre, id, surf, which, &source, g, &map, wrap, CMD)?;
         // The destination the texture is fitted to: the layer itself, or what the user sees when
         // sampling several layers (so healing onto an empty layer matches the composite).
-        let dst = if which == SampleLayers::Current { Region::read(surf, g) } else { composite_region(pre, id, which, g, fmt) };
-        let mask: Vec<bool> = cov.iter().map(|c| *c > 0.0).collect();
-        let healed = heal_region(&fmt, &src, &dst, &mask);
-        Ok(apply_coverage(surf, g, &cov, stroke.brush.opacity, sel, lock, &healed, mode))
+        let dst = if wrap {
+            periodic::sample(pre, id, surf, which, g, CMD)?
+        } else if which == SampleLayers::Current {
+            Region::read(surf, g)
+        } else {
+            composite_region(pre, id, which, g, surf.format())
+        };
+        let dst = if fmt.alpha && !surf.format().alpha { super::clone_sampling::opaque_alpha(dst, surf.format()) } else { dst };
+        // The solver can reconstruct positive alpha from the destination boundary even where
+        // no source pixel exists. Keep source availability separate from the solved channels.
+        let alpha = super::alpha_index(&fmt);
+        let has_source = |pixel: &[f32]| alpha.is_none_or(|a| pixel.get(a).is_some_and(|value| *value > 0.0));
+        let mask: Vec<bool> = cov.iter().zip(src.data.chunks_exact(fmt.channels())).map(|(c, pixel)| *c > 0.0 && has_source(pixel)).collect();
+        let mut healed = heal_region(&fmt, &src, &dst, &mask);
+        for (pixel, sample) in healed.data.chunks_exact_mut(fmt.channels()).zip(src.data.chunks_exact(fmt.channels())) {
+            if !has_source(sample) {
+                pixel.fill(0.0);
+            }
+        }
+        if wrap {
+            return periodic::stroke(pre, surf, &stroke, sel, lock, mode, CMD, fmt, |_, r| {
+                let part = healed.crop(r);
+                if part.rect == r { Ok(part) } else { Err(bad(CMD, "the healed patch does not cover the stroke")) }
+            });
+        }
+        Ok(apply_clone_coverage(surf, g, &cov, stroke.brush.opacity, sel, lock, &healed, mode))
     })?;
+    crate::presets::clone_source::remember_mapping(s, p, &map);
     Ok(clone_result(dmg, off, aligned, p, &stroke))
 }
 
 /// The History Brush's source: the targeted surface (pixels, mask, channel) as it was in History
 /// panel row `state` or snapshot `snapshot` (default: the source set in the History panel,
 /// `history.setSource`, else the oldest state still held, the "Open" state unless trimmed).
+/// A layer that did not exist in that state has no pixels there, and the History Brush refuses it
+/// as Photoshop's does. `eraseToHistory` (the Eraser's Erase to History option) paints such a layer
+/// with that layer's own pixels (its opacity not applied) from a state holding a single layer,
+/// Background or not, or past its path with a shape's solid colour, else white, and refuses it
+/// from any other state: observed in Photoshop 27.11.0, where a state with a second layer, even an
+/// empty one, gives an error.
 pub(super) fn history_source(s: &Session, id: Option<LayerId>, p: &Value, cmd: &str) -> Result<Surface> {
     let st = s.active().ok_or(EngineError::NoDocument)?;
     let source_doc = crate::history_source_cmds::paint_source(st, p, cmd)?;
-    crate::channel_cmds::read_target_surface(source_doc.as_ref(), id, p)
-        .cloned()
-        .map_err(|_| EngineError::Other("the target did not exist (as pixels, a mask or a channel) in that history state".into()))
+    // Here, so the live preview refuses too. Only the History Brush: the Art History Brush and
+    // Erase to History were not measured and keep converting.
+    if cmd == "paint.historyBrush" && !flag(p, "eraseToHistory", false) {
+        crate::history_source_cmds::refuse_other_format(st, &source_doc)?;
+    }
+    let missing = || EngineError::Other("the target did not exist (as pixels, a mask or a channel) in that history state".into());
+    match crate::channel_cmds::read_target_surface(source_doc.as_ref(), id, p) {
+        Ok(surf) => Ok(surf.clone()),
+        Err(_)
+            if flag(p, "eraseToHistory", false) && crate::channel_cmds::target_of(p) == crate::channel_cmds::Target::Pixels && source_doc.layers.len() == 1 =>
+        {
+            let fmt = id.and_then(|id| st.doc.layer(id)).and_then(|l| l.surface()).map(Surface::format).ok_or_else(missing)?;
+            let only = source_doc.layers.first().ok_or_else(missing)?;
+            // A shape paints past its path, as in Photoshop: a solid fill its colour, and a gradient,
+            // a pattern or no fill plain white, whatever its outline.
+            if let photocraft_doc::LayerContent::Shape(shape) = &only.content {
+                let color = match &shape.fill {
+                    Some(photocraft_doc::Fill::Solid(color)) => *color,
+                    _ => photocraft_color::Color::WHITE,
+                };
+                let c = color.in_mode(fmt.mode);
+                let mut pixel = c.c.get(..fmt.mode.color_channels()).unwrap_or_default().to_vec();
+                if fmt.alpha {
+                    pixel.push(c.alpha);
+                }
+                return Ok(Surface::with_default(fmt, &pixel));
+            }
+            let only = only.surface().ok_or_else(missing)?;
+            Ok(if only.format() == fmt { only.clone() } else { only.convert(fmt) })
+        }
+        Err(_) => Err(missing()),
+    }
 }
 
+/// `paint.historyBrush`: paints the stroke from the `history_source` surface. With `eraseToHistory`
+/// it is the Eraser's Erase to History, and its History row says History Eraser.
 pub(super) fn history_brush(s: &mut Session, p: &Value) -> Result<Value> {
     const CMD: &str = "paint.historyBrush";
     let (stroke, id) = parse_brush(s, p, CMD)?;
@@ -88,8 +160,10 @@ pub(super) fn history_brush(s: &mut Session, p: &Value) -> Result<Value> {
     reject_huge_stroke(CMD, &stroke)?;
     let live = s.live_commit.take().filter(|l| l.matches(s, CMD, p, &stroke.points));
     let from_live = live.is_some();
+    let erase = flag(p, "eraseToHistory", false);
     let src_surface = history_source(s, id, p, CMD)?;
-    let dmg = run_stroke(s, "History Brush", id, p, |_, surf, sel, lock| {
+    let label = if erase { "History Eraser" } else { "History Brush" };
+    let dmg = run_stroke(s, label, id, p, |_, surf, sel, lock| {
         if let Some(l) = live {
             *surf = l.surface;
             return Ok(l.bounds);
@@ -236,3 +310,7 @@ pub(super) fn spot_healing(s: &mut Session, p: &Value) -> Result<Value> {
     let dmg = run_stroke(s, "Spot Healing Brush", id, p, |pre, surf, sel, lock| spot_heal_surface(surf, pre, &stroke, kind, all, sel, lock))?;
     Ok(json!({ "damage": damage_json(dmg) }))
 }
+
+#[cfg(test)]
+#[path = "heal_indexed_tests.rs"]
+mod heal_indexed_tests;

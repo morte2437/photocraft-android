@@ -29,6 +29,7 @@ fn run(fmt: PixelFormat, label: &str, brush: &BrushSettings) {
     let start = Instant::now();
     let mut r = StrokeRenderer::new(brush, Some(fmt), 1.0);
     let mut worst = 0.0f64;
+    let (mut worst_push, mut worst_comp) = (0.0f64, 0.0f64);
     let mut chunks = 0;
     let (mut t_push, mut t_comp) = (0.0f64, 0.0f64);
     for ch in pts.chunks(16) {
@@ -40,13 +41,15 @@ fn run(fmt: PixelFormat, label: &str, brush: &BrushSettings) {
         t_push += tp;
         t_comp += tt - tp;
         worst = worst.max(tt);
+        worst_push = worst_push.max(tp);
+        worst_comp = worst_comp.max(tt - tp);
         chunks += 1;
     }
     r.finish();
     r.composite(&pre, &mut s, None, false, false);
     let total = start.elapsed().as_secs_f64() * 1000.0;
     println!(
-        "{label:<34} dabs {:>5}  total {total:>7.1} ms (dabs {t_push:>6.1}, composite {t_comp:>6.1})  mean/chunk {:>6.2} ms  worst/chunk {worst:>6.2} ms",
+        "{label:<34} dabs {:>5}  total {total:>7.1} ms (dabs {t_push:>6.1}, composite {t_comp:>6.1})  mean/chunk {:>6.2} ms  worst/chunk {worst:>6.2} ms  worst push/chunk {worst_push:>6.2} ms  worst composite/chunk {worst_comp:>6.2} ms",
         r.dab_count(),
         total / chunks as f64
     );

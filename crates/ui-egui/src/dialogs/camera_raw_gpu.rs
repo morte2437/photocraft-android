@@ -1,11 +1,12 @@
-//! Camera Raw's preview develop on the GPU (#6916). When every stage the settings use reads
-//! only its own pixel, the proxy develops in one wgpu pass (`photocraft_gpu::CameraRawDevelop`)
-//! on the canvas's device and is read back for the histogram, scopes and display conversion.
-//! Spatial stages, Rendering Mode CPU, `PHOTOCRAFT_CPU_CAMERA_RAW`, no GPU canvas, a software
-//! adapter, a device fault or a failed develop all keep the CPU develop on the worker.
+//! Camera Raw's preview develop on the GPU (#6916). When the settings don't use Detail
+//! (sharpening, noise reduction), the proxy develops in wgpu passes
+//! (`photocraft_gpu::CameraRawDevelop`) on the canvas's device and is read back once for the
+//! histogram, scopes and display conversion. Detail, Rendering Mode CPU,
+//! `PHOTOCRAFT_CPU_CAMERA_RAW`, no GPU canvas, a software adapter, a device fault or a failed
+//! develop all keep the CPU develop on the worker.
 //!
-//! The pipeline builds on a thread the first time a dialog opens (DX12's shader compiler takes
-//! about 0.35 s, #6419); frames develop on the CPU until it is ready.
+//! The pipelines build on a thread the first time a dialog opens (DX12's shader compiler takes
+//! about a second, #6419); frames develop on the CPU until they are ready.
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -32,11 +33,11 @@ impl Pass {
             return false;
         }
         if adapter.get_info().device_type == wgpu::DeviceType::Cpu {
-            log::info!("Camera Raw develops on the CPU: software graphics adapter");
+            log::info!("RAW Develop develops on the CPU: software graphics adapter");
             return false;
         }
         if !CameraRawDevelop::supported(adapter) {
-            log::info!("Camera Raw develops on the CPU: the adapter can't render Rgba32Float");
+            log::info!("RAW Develop develops on the CPU: the adapter can't render Rgba32Float");
             return false;
         }
         true
@@ -53,7 +54,7 @@ impl Pass {
             let (on, out) = (device.clone(), slot.clone());
             let spawned = std::thread::Builder::new().name("camera-raw-pipeline".into()).spawn(move || {
                 let pass = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| Self::build_on(&on))).unwrap_or_else(|_| {
-                    log::warn!("building the Camera Raw pipeline panicked; Camera Raw develops on the CPU");
+                    log::warn!("building the RAW Develop pipeline panicked; RAW Develop develops on the CPU");
                     None
                 });
                 let _ = out.set(pass);
@@ -70,7 +71,7 @@ impl Pass {
         match CameraRawDevelop::new(device) {
             Ok(pass) => Some(Pass(Arc::new(Mutex::new(pass)))),
             Err(e) => {
-                log::warn!("{e}; Camera Raw develops on the CPU");
+                log::warn!("{e}; RAW Develop develops on the CPU");
                 None
             }
         }
@@ -117,17 +118,18 @@ impl CameraRawGpu {
         CameraRawGpu { device, queue, health, pass, failed: Arc::default(), points: Arc::default() }
     }
 
-    /// Develops `px` (`w × h`) with `p`, or `None` when the CPU must: a spatial stage, the pass
-    /// still building, a fault, or a GPU error (logged; the dialog then stays on the CPU). `key` names the pixels when they
-    /// are the dialog's unchanged proxy ([`source_key`]), so they upload once. Neutral settings
-    /// are `None` too: the CPU develop returns them at once, a GPU round trip would only cost.
+    /// Develops `px` (`w × h`) with `p`, or `None` when the CPU must: Detail or Calibration, the
+    /// pass still building, a fault, or a GPU error (logged; the dialog then stays on the CPU).
+    /// `key` names the pixels when they are the dialog's unchanged proxy ([`source_key`]), so they
+    /// upload once. Neutral settings are `None` too: the CPU develop returns them at once, a GPU
+    /// round trip would only cost.
     pub(crate) fn develop(&self, px: &[[f32; 4]], key: Option<u64>, w: usize, h: usize, p: &CameraRaw, float: bool) -> Option<Vec<[f32; 4]>> {
-        if p.spatial() || p.is_identity() || self.failed.load(Ordering::Relaxed) || !self.health.is_ok() {
+        if p.is_identity() || self.failed.load(Ordering::Relaxed) || !self.health.is_ok() {
             return None;
         }
         #[cfg(target_arch = "wasm32")]
         {
-            let _ = (px, key, w, h, float);
+            let _ = (px, key, w, h, p, float);
             None
         }
         #[cfg(not(target_arch = "wasm32"))]
@@ -140,7 +142,7 @@ impl CameraRawGpu {
             match pass.develop(&self.device, &self.queue, Some(&self.health), px, key, size, &stages) {
                 Ok(out) => Some(out),
                 Err(e) => {
-                    log::warn!("{}; Camera Raw develops on the CPU", e.0);
+                    log::warn!("{}; RAW Develop develops on the CPU", e.0);
                     self.failed.store(true, Ordering::Relaxed);
                     None
                 }
@@ -148,9 +150,11 @@ impl CameraRawGpu {
         }
     }
 
+    /// The image's black and white points for Whites and Blacks, measured on the CPU. With a
+    /// spatial stage the GPU measures them after it instead.
     #[cfg(not(target_arch = "wasm32"))]
     fn points(&self, px: &[[f32; 4]], key: Option<u64>, w: usize, h: usize, p: &CameraRaw) -> Option<(f32, f32)> {
-        if p.whites == 0.0 && p.blacks == 0.0 {
+        if (p.whites == 0.0 && p.blacks == 0.0) || p.spatial() {
             return None;
         }
         let Some(key) = key else { return photocraft_algo::camera_raw::white_black_points(px, w, h, p) };
@@ -215,7 +219,7 @@ mod tests {
         let _gpu = photocraft_testkit::gpu_lock();
         let Some((mut app, ctx)) = gpu_app(8) else { return };
         let canvas = app.gpu.clone().expect("GPU canvas");
-        assert!(!canvas.camera_raw_started(), "no Camera Raw pipeline at launch (#6419)");
+        assert!(!canvas.camera_raw_started(), "no RAW Develop pipeline at launch (#6419)");
         crate::camera_raw_ui::open(&mut app, &ctx).unwrap();
         assert!(canvas.camera_raw_started(), "built (or refused) from the first open");
         assert_eq!(app.camera_raw.as_ref().map(|d| d.develop_backend), Some("cpu"), "the first frame doesn't wait for the pipeline");
@@ -233,7 +237,7 @@ mod tests {
             force_pass(&app);
             crate::camera_raw_ui::open(&mut app, &ctx).unwrap();
             if app.camera_raw.as_ref().is_some_and(|d| d.gpu.is_none()) {
-                eprintln!("skipping: the device can't run the Camera Raw pass");
+                eprintln!("skipping: the device can't run the RAW Develop pass");
                 return;
             }
             let per_pixel = CameraRaw {
@@ -255,9 +259,28 @@ mod tests {
             assert!(worst <= TOL, "{depth}-bit: off by {worst}");
             let described = app.camera_raw.as_ref().map(|d| d.describe(&app.ui.camera_raw_scope, &app.ui.camera_raw_preview)).unwrap();
             assert_eq!(described["developBackend"], "gpu");
-            // A spatial stage develops the whole frame on the CPU.
-            let (backend, shown, cpu) = developed(&mut app, &ctx, CameraRaw { shadows: 40.0, ..per_pixel.clone() });
-            assert_eq!((backend, shown == cpu), ("cpu", true), "{depth}-bit");
+            // Shadows and Highlights develop on the GPU too, Whites and Blacks measured after them.
+            let toned = CameraRaw { shadows: 40.0, highlights: -35.0, ..per_pixel.clone() };
+            let (backend, gpu, cpu) = developed(&mut app, &ctx, toned.clone());
+            assert_eq!(backend, "gpu", "{depth}-bit, Shadows and Highlights");
+            let worst = gpu.iter().zip(&cpu).flat_map(|(a, b)| (0..4).map(move |c| (a[c] - b[c]).abs())).fold(0.0f32, f32::max);
+            assert!(worst <= TOL, "{depth}-bit, Shadows and Highlights: off by {worst}");
+            // So do Dehaze, Clarity and Texture, with Whites and Blacks measured after them.
+            for spatial in [
+                CameraRaw { clarity: 30.0, texture: 25.0, dehaze: 20.0, ..toned.clone() },
+                CameraRaw { dehaze: -25.0, ..per_pixel.clone() },
+                CameraRaw { clarity: -40.0, texture: 35.0, ..per_pixel.clone() },
+            ] {
+                let (backend, gpu, cpu) = developed(&mut app, &ctx, spatial.clone());
+                assert_eq!(backend, "gpu", "{depth}-bit, {spatial:?}");
+                let worst = gpu.iter().zip(&cpu).flat_map(|(a, b)| (0..4).map(move |c| (a[c] - b[c]).abs())).fold(0.0f32, f32::max);
+                assert!(worst <= TOL, "{depth}-bit, {spatial:?}: off by {worst}");
+            }
+            // Detail develops the whole frame on the CPU.
+            for detail in [CameraRaw { sharpen_amount: 40.0, ..toned.clone() }, CameraRaw { noise_luminance: 30.0, dehaze: 20.0, ..per_pixel.clone() }] {
+                let (backend, shown, cpu) = developed(&mut app, &ctx, detail);
+                assert_eq!((backend, shown == cpu), ("cpu", true), "{depth}-bit");
+            }
             // A device fault: the CPU, from the next frame on.
             app.gpu.as_ref().unwrap().health().mark(photocraft_gpu::Fault::Lost("test".into()));
             let (backend, shown, cpu) = developed(&mut app, &ctx, per_pixel);
@@ -272,13 +295,31 @@ mod tests {
         force_pass(&app);
         crate::camera_raw_ui::open(&mut app, &ctx).unwrap();
         if app.camera_raw.as_ref().is_some_and(|d| d.gpu.is_none()) {
-            eprintln!("skipping: the device can't run the Camera Raw pass");
+            eprintln!("skipping: the device can't run the RAW Develop pass");
             return;
         }
         let (backend, _, _) = developed(&mut app, &ctx, CameraRaw { exposure: 0.5, ..Default::default() });
         assert_eq!(backend, "gpu", "a per-pixel setting develops on the GPU");
         let (backend, shown, cpu) = developed(&mut app, &ctx, CameraRaw::default());
         assert_eq!((backend, shown == cpu), ("cpu", true), "default settings: the CPU returns them unchanged");
+    }
+
+    #[test]
+    fn shadows_on_a_two_pixel_proxy_develop_on_the_cpu_and_keep_the_gpu() {
+        let _gpu = photocraft_testkit::gpu_lock();
+        let Some((mut app, ctx)) = gpu_app(8) else { return };
+        force_pass(&app);
+        crate::camera_raw_ui::open(&mut app, &ctx).unwrap();
+        app.gpu.as_ref().expect("GPU canvas").wait_camera_raw_pass();
+        let Some(gpu) = app.camera_raw.as_ref().and_then(|d| d.gpu.as_ref()) else {
+            eprintln!("skipping: the device can't run the RAW Develop pass");
+            return;
+        };
+        // A layer about 450 times wider than tall has a 2 px tall proxy: its pyramid has one level.
+        let thin = vec![[0.4, 0.3, 0.2, 1.0]; 40 * 2];
+        assert!(gpu.develop(&thin, None, 40, 2, &CameraRaw { shadows: 50.0, ..Default::default() }, false).is_none());
+        let px = vec![[0.4, 0.3, 0.2, 1.0]; 64 * 48];
+        assert!(gpu.develop(&px, None, 64, 48, &CameraRaw { exposure: 0.5, ..Default::default() }, false).is_some(), "the GPU develop stays on");
     }
 
     #[test]

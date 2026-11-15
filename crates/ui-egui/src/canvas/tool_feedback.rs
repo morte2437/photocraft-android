@@ -19,6 +19,8 @@ pub enum Badge {
     Intersect,
     /// Four arrows: a press drags the point under the pointer (the Curvature Pen over an anchor).
     Move,
+    /// One right-pointing arrow: a press drags the patch (the Patch tool over the selection).
+    Arrow,
 }
 
 impl Badge {
@@ -62,16 +64,8 @@ pub fn selection_mode(tool: Tool, bar: u8, m: egui::Modifiers) -> &'static str {
                 "add"
             }
         }
-        // Object Selection: ⌥ subtracts, ⇧ adds (see `retouch_ui::finish_object_selection`).
-        Tool::ObjectSelection => {
-            if m.alt {
-                "subtract"
-            } else if m.shift {
-                "add"
-            } else {
-                "replace"
-            }
-        }
+        // Every other selection tool, Object Selection included: ⇧⌥ intersects, ⇧ adds, ⌥
+        // subtracts, otherwise the options-bar mode (`retouch_ui::finish_object_selection`).
         _ => {
             if m.shift && m.alt {
                 "intersect"
@@ -91,8 +85,10 @@ pub fn selection_mode(tool: Tool, bar: u8, m: egui::Modifiers) -> &'static str {
 /// only draws a marquee from its centre). An options-bar Subtract or Intersect is kept (#1106).
 pub fn document_selection_mode(app: &PhotocraftApp, tool: Tool, m: egui::Modifiers) -> &'static str {
     let mode = selection_mode(tool, app.ui.selection_mode, m);
-    let selected = app.session.active().and_then(|st| st.doc.selection.as_ref()).is_some_and(|s| !s.content_bounds().is_empty());
-    if m.alt && !selected && matches!(mode, "subtract" | "intersect") && selection_mode(tool, app.ui.selection_mode, egui::Modifiers::NONE) == "replace" {
+    // Asked last, and from the bounds the selection outline caches (same key): the canvas asks
+    // every frame while a Patch lasso is drawn or hovered with ⌥.
+    let selected = || app.session.active().is_some_and(|st| st.doc.selection.as_ref().is_some_and(|s| !app.known_bounds(u64::MAX - st.doc.id.0, s).is_empty()));
+    if m.alt && matches!(mode, "subtract" | "intersect") && selection_mode(tool, app.ui.selection_mode, egui::Modifiers::NONE) == "replace" && !selected() {
         "replace"
     } else {
         mode
@@ -105,7 +101,14 @@ pub fn badge(app: &PhotocraftApp, tool: Tool, m: egui::Modifiers) -> Option<Badg
     // Add / Delete Anchor Point: + or − beside the crosshair, as on Photoshop's pen cursors (⌥
     // swaps them; ⌘ is Direct Selection, which shows none).
     if let Some(t) = crate::anchor_tools::effective(tool, m) {
-        return (!m.command).then_some(if t == Tool::AddAnchorPoint { Badge::Add } else { Badge::Subtract });
+        // Add Anchor Point shows its "+" only over a segment a click would split (#12729); ⌥'s
+        // swapped tools keep theirs everywhere.
+        let over_segment = || app.hover_doc.is_some_and(|p| crate::anchor_tools::adds_anchor_at(app, tool, p));
+        return (!m.command && (m.alt || tool != Tool::AddAnchorPoint || over_segment())).then_some(if t == Tool::AddAnchorPoint {
+            Badge::Add
+        } else {
+            Badge::Subtract
+        });
     }
     // The Curvature Pen over a point: + on the active path's segments (a click adds an anchor
     // there), four arrows on an anchor (a press drags it).
@@ -116,6 +119,18 @@ pub fn badge(app: &PhotocraftApp, tool: Tool, m: egui::Modifiers) -> Option<Badg
     // The Pen over the active path with Auto Add/Delete on: what a click would do (#4144).
     if let Some(p) = app.hover_doc.filter(|_| tool == Tool::Pen) {
         return crate::anchor_tools::pen_auto(app, tool, m, p).map(|(t, ..)| if t == Tool::AddAnchorPoint { Badge::Add } else { Badge::Subtract });
+    }
+    // Patch and Content-Aware Move lasso their area in the Lasso's mode (⇧ adds, ⌥ subtracts,
+    // #11024). Over the selection without them a press drags the patch, which combines nothing.
+    if matches!(tool, Tool::Patch | Tool::ContentAwareMove) {
+        // A drag in progress keeps what its press decided (the release reads `drag.modifiers`).
+        let drag = app.drag.as_ref().filter(|d| d.tool == tool);
+        let at = drag.map(|d| d.start).or(app.hover_doc);
+        let m = drag.map_or(m, |d| d.modifiers);
+        if at.is_some_and(|p| crate::retouch_ui::patch_drags_selection(app, p, m)) {
+            return (tool == Tool::Patch).then_some(Badge::Arrow);
+        }
+        return Badge::from_mode(document_selection_mode(app, Tool::Lasso, m));
     }
     if !is_selection_tool(tool) {
         return None;
@@ -147,6 +162,10 @@ pub fn badge_glyph(b: Badge, c: Pos2, h: f32) -> Vec<[Pos2; 2]> {
                 v.push([tip, tip - d * a - side]);
             }
             v
+        }
+        Badge::Arrow => {
+            let a = h * 0.6;
+            vec![[c - vec2(h, 0.0), c + vec2(h, 0.0)], [c + vec2(h, 0.0), c + vec2(h - a, a)], [c + vec2(h, 0.0), c + vec2(h - a, -a)]]
         }
         Badge::Intersect => {
             let d = h * 0.8;
@@ -225,6 +244,24 @@ mod tests {
             .collect()
     }
 
+    /// ⌥'s "is anything selected" reads the bounds the selection outline caches, as the canvas
+    /// asks every frame, and scans only a selection that changed since.
+    #[test]
+    fn alt_reads_the_cached_selection_bounds() {
+        let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), Default::default());
+        let alt = egui::Modifiers::ALT;
+        app.run("file.new", serde_json::json!({"width": 40, "height": 30})).unwrap();
+        app.run("select.rect", serde_json::json!({"x": 5, "y": 5, "width": 10, "height": 10})).unwrap();
+        assert_eq!(document_selection_mode(&app, Tool::Lasso, alt), "subtract", "nothing cached: scanned");
+        let st = app.session.active().unwrap();
+        let (key, fingerprint) = (u64::MAX - st.doc.id.0, crate::surface_fingerprint(st.doc.selection.as_ref().unwrap()));
+        // An empty box cached for this very selection is believed, so nothing is scanned.
+        app.bounds_cache.insert(key, (fingerprint, photocraft_geom::Rect::EMPTY));
+        assert_eq!(document_selection_mode(&app, Tool::Lasso, alt), "replace", "the cached bounds are used");
+        app.run("select.rect", serde_json::json!({"x": 20, "y": 5, "width": 10, "height": 10})).unwrap();
+        assert_eq!(document_selection_mode(&app, Tool::Lasso, alt), "subtract", "a new selection is scanned again");
+    }
+
     #[test]
     fn badge_follows_modifiers_and_the_options_bar() {
         let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), Default::default());
@@ -252,8 +289,12 @@ mod tests {
         // Smart selection tools.
         assert_eq!(badge(&app, Tool::QuickSelection, none), Some(Badge::Add));
         assert_eq!(badge(&app, Tool::QuickSelection, alt), Some(Badge::Subtract));
+        // Object Selection follows the options bar like the other selection tools (#12853).
+        assert_eq!(badge(&app, Tool::ObjectSelection, none), Some(Badge::Intersect));
+        app.ui.selection_mode = 0;
         assert_eq!(badge(&app, Tool::ObjectSelection, none), None);
         assert_eq!(badge(&app, Tool::ObjectSelection, shift), Some(Badge::Add));
+        assert_eq!(badge(&app, Tool::ObjectSelection, both), Some(Badge::Intersect));
         // Other tools never show one.
         for t in [Tool::Brush, Tool::Move, Tool::Zoom, Tool::Crop] {
             assert_eq!(badge(&app, t, shift), None);
@@ -290,3 +331,7 @@ mod tests {
         assert!(e.len() >= 16 && e.iter().all(|p| p.x >= -0.01 && p.x <= 100.01 && p.y >= -0.01 && p.y <= 50.01));
     }
 }
+
+#[cfg(test)]
+#[path = "../patch_cursor_badge_tests.rs"]
+mod patch_cursor_badge_tests;

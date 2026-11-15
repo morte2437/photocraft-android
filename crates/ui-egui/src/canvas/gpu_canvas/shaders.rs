@@ -175,11 +175,16 @@ fn fs_tile(in: VOut) -> @location(0) vec4<f32> {
     } else if (mode < 1.5) {
         col = textureSampleLevel(tex, samp, t / size, 0.0);
     } else {
-        // Crisp texels with a one-device-pixel anti-aliased edge ("sharp bilinear").
-        let tt = t - 0.5;
+        // Crisp texels with a one-device-pixel anti-aliased edge ("sharp bilinear"), worked out
+        // in stored texels: a reduced viewport page's texel covers several document pixels, so
+        // the edge must not depend on the reduction, only on where and how large it is drawn
+        // (#11122). `per` is texels per document pixel (1 for a full-resolution texture).
+        let texels = vec2<f32>(textureDimensions(tex, 0));
+        let per = texels / size;
+        let tt = t * per - 0.5;
         let i = floor(tt);
-        let f = clamp((tt - i - 0.5) * scale + 0.5, vec2(0.0), vec2(1.0));
-        col = textureSampleLevel(tex, samp, (i + 0.5 + f) / size, 0.0);
+        let f = clamp((tt - i - 0.5) * (scale / per) + 0.5, vec2(0.0), vec2(1.0));
+        col = textureSampleLevel(tex, samp, (i + 0.5 + f) / texels, 0.0);
     }
     if (view.f.w > 0.0 && col.a > 0.0) {
         // View › 32-bit Preview Options: exposure and gamma in linear light on the sRGB-encoded

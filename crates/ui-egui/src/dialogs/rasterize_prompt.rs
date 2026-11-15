@@ -4,9 +4,9 @@
 //! with a status-bar message.
 //!
 //! The prompt is an ordinary dialog in the UI state (`ui.inspect` shows it, `ui.dialog.confirm`
-//! and `ui.dialog.cancel` answer it). OK runs the matching `layer.rasterize.*` command, then paints
-//! where the click was, so rasterizing and painting are two history states, as in Photoshop.
-//! Cancel does nothing.
+//! and `ui.dialog.cancel` answer it). OK runs the matching `layer.rasterize.*` command and nothing
+//! else: the click that opened the prompt is not replayed, as in Photoshop (#8806), so the next
+//! click paints. Cancel does nothing.
 //!
 //! A filter on a type layer asks the same question (#4303), with Photoshop's Convert to Smart
 //! Object / Rasterize / Cancel: the layer is converted or rasterized, then the filter is chosen
@@ -16,7 +16,6 @@
 use serde_json::{Map, Value, json};
 
 use crate::PhotocraftApp;
-use crate::canvas::ToolEvent;
 use crate::state::{DialogKind, Tool};
 
 const MARK: &str = "__rasterize";
@@ -57,8 +56,11 @@ impl Kind {
         match self {
             Kind::Type => "This type layer must be rasterized before proceeding. Its text will no longer be editable. Rasterize the type?",
             Kind::Shape => "This shape layer must be rasterized before proceeding. It will no longer be editable as a shape. Rasterize the shape?",
-            Kind::SmartObject => "This Smart Object must be rasterized before proceeding. Its contents will no longer be editable. Rasterize the Smart Object?",
-            Kind::Fill => "This fill layer must be rasterized before proceeding. Its fill content will no longer be editable. Rasterize the layer?",
+            // As measured in the reference application (#11899): lower-case "smart object".
+            Kind::SmartObject => {
+                "This smart object must be rasterized before proceeding. Edit Contents will no longer be available. Rasterize the smart object?"
+            }
+            Kind::Fill => "The fill for this layer must be rasterized before proceeding. It will no longer be editable as a fill. Rasterize the fill?",
         }
     }
 
@@ -100,19 +102,24 @@ pub fn needed(app: &PhotocraftApp) -> Option<(Kind, photocraft_doc::LayerId)> {
 }
 
 /// A tool's pointer press: when it would paint a layer that must be rasterized first, park it
-/// behind the prompt and return true (the tool must not see the press).
+/// behind the prompt, or drop it (the Remove tool on a type layer), and return true (the tool
+/// must not see the press).
 pub fn intercept(app: &mut PhotocraftApp, tool: Tool, x: f64, y: f64, pressure: f32) -> bool {
     if !paints_pixels(app, tool) {
         return false;
     }
     let Some((kind, layer)) = needed(app) else { return false };
+    // The reference's Remove tool ignores a type layer: no prompt and no stroke (#12553).
+    if tool == Tool::Remove && kind == Kind::Type {
+        return true;
+    }
     if !app.ui.dialogs.iter().any(|d| owns(&d.fields)) {
         open(app, kind, layer, tool, [x, y, f64::from(pressure)]);
     }
     true
 }
 
-/// Open the prompt for `layer`; OK rasterizes it, then `tool` paints at `at` (x, y, pressure).
+/// Open the prompt for `layer`; OK rasterizes it. `tool` and `at` (x, y, pressure) only record the press that opened it.
 pub fn open(app: &mut PhotocraftApp, kind: Kind, layer: photocraft_doc::LayerId, tool: Tool, at: [f64; 3]) -> u64 {
     let mut f = Map::new();
     f.insert(MARK.into(), json!(kind.key()));
@@ -198,29 +205,25 @@ pub fn body(ui: &mut egui::Ui, f: &Map<String, Value>) {
     });
 }
 
-/// OK: rasterize, then paint at the click (two history states).
+/// OK: rasterize the layer. The click that opened the prompt does not paint.
 pub fn confirm(app: &mut PhotocraftApp, f: &Map<String, Value>) -> Result<Value, String> {
     let kind = f.get(MARK).and_then(Value::as_str).and_then(Kind::from_key).ok_or("not a rasterize prompt")?;
     let layer = f.get("layer").and_then(Value::as_u64).ok_or("the prompt has no layer")?;
     if let Some(filter) = f.get("filter").and_then(Value::as_str) {
         return confirm_filter(app, f, filter, layer);
     }
+    let revision = app.session.active().map(|st| st.revision);
     let r = app.run(kind.command(), json!({ "layer": layer }))?;
-    let tool = f.get("tool").and_then(Value::as_str).and_then(Tool::from_name);
-    let at: Vec<f64> = f.get("at").and_then(Value::as_array).map(|a| a.iter().filter_map(Value::as_f64).collect()).unwrap_or_default();
-    let (Some(tool), Some(&x), Some(&y)) = (tool, at.first(), at.get(1)) else {
-        return Ok(json!({ "rasterized": r, "painted": false }));
-    };
-    let pressure = at.get(2).copied().unwrap_or(1.0) as f32;
-    // The same tool, layer and point as when the prompt opened.
-    app.ui.tool = tool;
-    let before = app.session.active().map(|st| st.history.past_len());
-    if app.session.active().and_then(|st| st.active_layer) == Some(photocraft_doc::LayerId(layer)) && x.is_finite() && y.is_finite() {
-        crate::canvas::tool_event(app, ToolEvent::Down { x, y, pressure: pressure.clamp(0.0, 1.0) }, egui::Modifiers::NONE);
-        crate::canvas::tool_event(app, ToolEvent::Up { x, y }, egui::Modifiers::NONE);
+    // A painting tool's type prompt names its step as the reference does (#12888); Layer ›
+    // Rasterize › Type keeps "Rasterize Type". Only a step this run added is renamed.
+    if kind == Kind::Type
+        && let Some(st) = app.session.active_mut().filter(|st| Some(st.revision) != revision)
+    {
+        st.history.set_current_label("Rasterize Layer");
     }
-    let painted = app.session.active().map(|st| st.history.past_len()) != before;
-    Ok(json!({ "rasterized": r, "painted": painted }))
+    // The press that opened the prompt is not replayed: Photoshop only converts the layer, the
+    // next click paints (#8806).
+    Ok(json!({ "rasterized": r }))
 }
 
 /// The filter prompt's answer: convert or rasterize the layer, then queue the filter for
@@ -249,3 +252,19 @@ pub fn run_pending(app: &mut PhotocraftApp, ctx: &egui::Context) {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+#[path = "../rasterize_prompt_text_tests.rs"]
+mod rasterize_prompt_text_tests;
+
+#[cfg(test)]
+#[path = "rasterize_prompt_fill_text_tests.rs"]
+mod rasterize_prompt_fill_text_tests;
+
+#[cfg(test)]
+#[path = "../rasterize_prompt_history_name_tests.rs"]
+mod rasterize_prompt_history_name_tests;
+
+#[cfg(test)]
+#[path = "../tools/remove_type_layer_tests.rs"]
+mod remove_type_layer_tests;

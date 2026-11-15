@@ -1,4 +1,4 @@
-//! Selected tool and tool options remembered between launches, as in Photoshop (#2814).
+//! Selected tool, colours and tool options remembered between launches, as in Photoshop (#2814).
 //!
 //! `Preferences::tool_options` holds the [`ToolOptions`] fields that differ from their defaults,
 //! so a default changed in a later release still reaches users who never touched that option.
@@ -11,6 +11,10 @@
 //! `paint_mouse::sync_tool_brush`) is kept the same way in `Preferences::tool_brushes` (#6212),
 //! with the tool that owns the session brush (that brush itself is `Preferences::last_brush`).
 //! Reset Tool and Reset All Tools change both, so the next save forgets what they reset.
+//!
+//! The tools used last (`UiState::group_tools`) are kept the same way in
+//! `Preferences::group_tools` (#3569), so a tool picked from a flyout stays on its toolbar slot
+//! and its key after a restart. A name this version doesn't know is skipped, as with the options.
 
 use photocraft_engine::BrushSettings;
 use serde_json::{Map, Value, json};
@@ -21,17 +25,35 @@ use crate::state::{Tool, ToolOptions};
 /// The tool whose brush the session brush is, and the other painting tools' brushes.
 pub(crate) type ToolBrushes = (Tool, Vec<(Tool, BrushSettings)>);
 
+/// The sRGB stand-ins and exact inks of recently picked CMYK colours, oldest first.
+pub(crate) type CmykPicks = Vec<([f32; 3], [f32; 4])>;
+
 /// Explicit choices override temporary pen and held-key tools, even when selecting the same tool.
 pub(crate) fn select(app: &mut PhotocraftApp, tool: Tool) {
     app.stylus.tool_before_eraser = None;
     app.ui.spring = None;
+    if app.ui.tool == Tool::Frame && tool != Tool::Frame {
+        crate::frame_tool::cancel(app);
+    }
+    if app.ui.tool != tool {
+        crate::type_path_placement::cancel(app);
+    }
     app.ui.tool = tool;
+    ended_by_tool(app);
+}
+
+/// Add New Artboard's placing mode ends with the Artboard tool (#11386): every place that sets
+/// `ui.tool` calls this right after, so there is one rule.
+pub(crate) fn ended_by_tool(app: &mut PhotocraftApp) {
+    if app.ui.tool != Tool::Artboard {
+        app.ui.artboard_tool.adding = false;
+    }
 }
 
 /// Temporary canvas overrides do not change `ui.tool`. Spring-loaded letters and the pen's
 /// eraser end do, so remember the tool they will return to instead. A different explicit choice
 /// (or beginning a type edit) owns the tool and stands, just as in `spring_tools::tick`.
-fn selected(app: &PhotocraftApp) -> Tool {
+pub(crate) fn selected(app: &PhotocraftApp) -> Tool {
     let tool = if app.ui.tool == Tool::Eraser { app.stylus.tool_before_eraser.unwrap_or(app.ui.tool) } else { app.ui.tool };
     if let Some(s) = &app.ui.spring
         && tool == s.tool
@@ -51,8 +73,9 @@ fn changed(o: &ToolOptions) -> Value {
     if diff.is_empty() { Value::Null } else { Value::Object(diff) }
 }
 
-/// Remember the selected tool and its options once the user lets go of the pointer. Run every
-/// frame, so choices made through the control channel or a tool preset are remembered too.
+/// Remember the selected tool, the tools used last and the options once the user lets go of the
+/// pointer. Run every frame, so choices made through the control channel or a tool preset are
+/// remembered too.
 pub fn persist(app: &mut PhotocraftApp, ctx: &egui::Context) {
     if ctx.input(|i| i.pointer.any_down()) {
         return;
@@ -68,6 +91,8 @@ pub fn persist(app: &mut PhotocraftApp, ctx: &egui::Context) {
             ctx.request_repaint();
         }
     }
+    persist_colors(app, ctx);
+    persist_group_tools(app, ctx, tool);
     persist_brushes(app);
     if app.prefs_rt.tool_options.as_ref() == Some(&app.ui.tool_options) {
         return;
@@ -76,6 +101,101 @@ pub fn persist(app: &mut PhotocraftApp, ctx: &egui::Context) {
     let now = changed(&app.ui.tool_options);
     if app.session.prefs().tool_options != now {
         app.session.prefs.edit(|p| p.tool_options = now);
+    }
+}
+
+/// Keep pixel and mask swatches separately, even when the app exits with a mask targeted.
+fn colors(app: &PhotocraftApp) -> [[[f32; 4]; 2]; 2] {
+    let t = &app.session.tools;
+    let current = [t.foreground, t.background];
+    if t.mask_targeted { [t.other_colors, current] } else { [current, t.other_colors] }
+}
+
+fn persist_colors(app: &mut PhotocraftApp, ctx: &egui::Context) {
+    let now = colors(app);
+    if app.prefs_rt.tool_colors == Some(now) && app.prefs_rt.tool_cmyk_picks == app.session.tools.cmyk_picks {
+        return;
+    }
+    app.prefs_rt.tool_colors = Some(now);
+    app.prefs_rt.tool_cmyk_picks = app.session.tools.cmyk_picks.clone();
+    let saved = color_value(now, &app.prefs_rt.tool_cmyk_picks);
+    app.session.prefs.edit(|p| p.tool_colors = saved);
+    // Panels and shortcuts can change colours after prefs_ui::tick already ran this frame.
+    ctx.request_repaint();
+}
+
+fn color_value(pairs: [[[f32; 4]; 2]; 2], cmyk_picks: &CmykPicks) -> Value {
+    let [[foreground, background], [mask_foreground, mask_background]] = pairs;
+    json!({
+        "foreground": foreground, "background": background,
+        "maskForeground": mask_foreground, "maskBackground": mask_background,
+        "cmykPicks": cmyk_picks,
+    })
+}
+
+/// A missing legacy value represents these defaults, not an indivisible null leaf.
+pub(crate) fn default_colors() -> Value {
+    let tools = photocraft_engine::ToolState::default();
+    color_value([[tools.foreground, tools.background], tools.other_colors], &tools.cmyk_picks)
+}
+
+fn restore_colors(app: &mut PhotocraftApp) {
+    let saved = &app.session.prefs().tool_colors;
+    let mut pairs = colors(app);
+    let [[foreground, background], [mask_foreground, mask_background]] = &mut pairs;
+    for (key, color) in [("foreground", foreground), ("background", background), ("maskForeground", mask_foreground), ("maskBackground", mask_background)] {
+        if let Some(v) = saved.get(key) {
+            match serde_json::from_value::<[f32; 4]>(v.clone()) {
+                Ok(c) if c.iter().all(|x| x.is_finite()) => *color = c,
+                _ => log::warn!("Preferences: ignoring the remembered `{key}` colour"),
+            }
+        }
+    }
+    // Parse only a bounded number of valid entries, newest first, before mutating the session.
+    // `remember_cmyk` deduplicates entries and enforces the same bound as during a live session.
+    let picks: Option<CmykPicks> = saved.get("cmykPicks").and_then(Value::as_array).map(|entries| {
+        entries
+            .iter()
+            .rev()
+            .filter_map(|v| match serde_json::from_value::<([f32; 3], [f32; 4])>(v.clone()) {
+                Ok((rgb, inks)) if rgb.iter().all(|x| x.is_finite()) && inks.iter().all(|x| x.is_finite() && (0.0..=1.0).contains(x)) => Some((rgb, inks)),
+                _ => {
+                    log::warn!("Preferences: ignoring a malformed remembered CMYK colour");
+                    None
+                }
+            })
+            .take(photocraft_engine::ToolState::CMYK_PICKS)
+            .collect()
+    });
+    let [pixels, mask] = pairs;
+    let (current, other) = if app.session.tools.mask_targeted { (mask, pixels) } else { (pixels, mask) };
+    [app.session.tools.foreground, app.session.tools.background] = current;
+    app.session.tools.other_colors = other;
+    if let Some(picks) = picks {
+        app.session.tools.cmyk_picks.clear();
+        for (rgb, inks) in picks.into_iter().rev() {
+            app.session.tools.remember_cmyk(rgb, inks);
+        }
+    }
+    app.prefs_rt.tool_cmyk_picks = app.session.tools.cmyk_picks.clone();
+    app.prefs_rt.tool_colors = Some(pairs);
+}
+
+/// Remember the tools used last when the list changes, whether or not the selected tool did: a
+/// tool picked during a drag that ends on the tool it began with changes only the list.
+fn persist_group_tools(app: &mut PhotocraftApp, ctx: &egui::Context, tool: Tool) {
+    // Noted here as well: no frame follows a tool picked right before quitting.
+    app.ui.remember_group_tool(tool);
+    if app.prefs_rt.group_tools.as_ref() == Some(&app.ui.group_tools) {
+        return;
+    }
+    app.prefs_rt.group_tools = Some(app.ui.group_tools.clone());
+    if let Ok(now) = serde_json::to_value(&app.ui.group_tools)
+        && app.session.prefs().group_tools != now
+    {
+        app.session.prefs.edit(|p| p.group_tools = now);
+        // As for the selected tool: prefs_ui::tick ran before the panels.
+        ctx.request_repaint();
     }
 }
 
@@ -153,7 +273,7 @@ fn restore_brushes(app: &mut PhotocraftApp) {
     app.prefs_rt.tool_brushes = Some((owner, app.ui.tool_brushes.clone()));
 }
 
-/// Flush the final choice on normal exit, even if no further frame ran after the tool changed.
+/// Flush the final tool state on normal exit, even if no further frame ran after a change.
 /// The brush first, as in a frame, so the saved brush owner matches the saved brush.
 pub(crate) fn save_on_exit(app: &mut PhotocraftApp) -> Result<(), String> {
     let ctx = egui::Context::default();
@@ -162,19 +282,35 @@ pub(crate) fn save_on_exit(app: &mut PhotocraftApp) -> Result<(), String> {
     crate::prefs_ui::save_preferences(app)
 }
 
+/// Restore the tools used last, keeping their order. Anything that isn't a tool is skipped with a
+/// warning: the rest of the list still holds.
+fn restore_group_tools(app: &mut PhotocraftApp) {
+    let saved = app.session.prefs().group_tools.clone();
+    if !saved.is_null() && !saved.is_array() {
+        log::warn!("Preferences: the remembered group tools are not a list; using the defaults");
+    }
+    for v in saved.as_array().into_iter().flatten().rev() {
+        match serde_json::from_value::<Tool>(v.clone()) {
+            Ok(tool) => app.ui.remember_group_tool(tool),
+            Err(_) => log::warn!("Preferences: ignoring the remembered group tool {v}"),
+        }
+    }
+}
+
 /// Restore the selected tool before the first frame and its options field by field.
 pub fn restore(app: &mut PhotocraftApp) {
+    restore_group_tools(app);
     let saved = app.session.prefs().selected_tool.clone();
     if !saved.is_null() {
         match serde_json::from_value::<Tool>(saved) {
-            Ok(tool) => {
-                app.ui.tool = tool;
-                app.ui.remember_group_tool();
-            }
+            Ok(tool) => app.ui.tool = tool,
             Err(err) => log::warn!("Preferences: ignoring the remembered selected tool: {err}"),
         }
     }
+    // Here rather than on the first frame, so a launch alone has nothing to save.
+    app.ui.remember_group_tool(app.ui.tool);
     app.prefs_rt.selected_tool = Some(app.ui.tool);
+    app.prefs_rt.group_tools = Some(app.ui.group_tools.clone());
     let saved = app.session.prefs().tool_options.clone();
     if let Some(saved) = saved.as_object()
         && let Ok(Value::Object(mut cur)) = serde_json::to_value(&app.ui.tool_options)
@@ -195,6 +331,7 @@ pub fn restore(app: &mut PhotocraftApp) {
         log::warn!("Preferences: the remembered tool options are not an object; using the defaults");
     }
     app.prefs_rt.tool_options = Some(app.ui.tool_options.clone());
+    restore_colors(app);
     restore_brushes(app);
 }
 
@@ -224,7 +361,7 @@ pub(crate) fn sanitize(o: &mut ToolOptions) {
     fit(&mut o.exposure, 1.0, 100.0, d.exposure);
     fit(&mut o.strength, 1.0, 100.0, d.strength);
     fit(&mut o.stroke_width, 0.0, 288.0, d.stroke_width);
-    fit(&mut o.corner_radius, 0.0, 10000.0, d.corner_radius);
+    fit(&mut o.corner_radius, *crate::shape_options::RADIUS_RANGE.start(), *crate::shape_options::RADIUS_RANGE.end(), d.corner_radius);
     fit(&mut o.line_weight, 1.0, 1000.0, d.line_weight);
     fit(&mut o.curve_fit, 0.5, 10.0, d.curve_fit);
     // The marquee's and the Slice tool's Width and Height are a ratio or a size in px, as their

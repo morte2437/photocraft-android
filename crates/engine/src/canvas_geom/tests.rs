@@ -221,6 +221,32 @@ fn gradient_fill_offset_stays_a_fraction_of_the_frame() {
     assert!((offset.0 - 0.1).abs() < 1e-6 && (offset.1 - 0.25).abs() < 1e-6, "{offset:?}");
 }
 
+#[test]
+fn turns_carry_an_angle_gradient_fill_with_its_pixels() {
+    // An Angle gradient sweeps clockwise: a mirror must reverse it, a turn must not.
+    for t in TURNS {
+        let mut s = Session::new();
+        s.execute("file.new", json!({"width": W, "height": H})).unwrap();
+        let p = json!({"from": [20, 14], "to": [50, 4], "style": "angle", "dither": false});
+        s.execute("gradient.fill.create", p).unwrap();
+        let before = photocraft_compose::flatten(doc(&s));
+        s.execute(command(t), json!({})).unwrap();
+        let want = expected(&before, t, doc(&s).size.width);
+        let (mean, big) = diff(&photocraft_compose::flatten(doc(&s)).px, &want);
+        assert!(mean < 2.0 / 255.0 && big < 0.02, "{t:?}: mean {mean} big {big}");
+        let flip = matches!(t, Turn::FlipHorizontal | Turn::FlipVertical);
+        assert_eq!(s.execute("gradient.fill.get", json!({})).unwrap()["reverse"], json!(flip), "{t:?}");
+        // Turning back restores the fill model (Reverse toggled twice for flips).
+        s.execute(command(t), json!({})).unwrap();
+        if matches!(t, Turn::Cw90 | Turn::Ccw90) {
+            s.execute(command(t), json!({})).unwrap();
+            s.execute(command(t), json!({})).unwrap();
+        }
+        let g = s.execute("gradient.fill.get", json!({})).unwrap();
+        assert_eq!(g["reverse"], json!(false), "{t:?}: {g}");
+    }
+}
+
 /// The shape's (fill, stroke) gradient angles after `cmd` on a shape whose fill and stroke both
 /// start as a 0° (left to right) gradient.
 fn shape_gradient_angles_after(cmd: &str, p: serde_json::Value) -> (f32, f32) {

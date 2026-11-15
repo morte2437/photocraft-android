@@ -20,19 +20,31 @@
 //! mean error against Photoshop is 2.8–9.4 levels (of 255) where the previous heuristic's was
 //! 3.7–14.3.
 
-use super::{Encoding, luma};
+use super::{Encoding, luma, quantile_rank};
 use crate::photo_util::par_rows;
 
 /// Spacing of the fast filter's reference values in stops. Its remapping changes within about
 /// half a stop, and coefficients interpolated across wider gaps show as contour lines on smooth
 /// gradients (12 references over a whole raw's range left visible steps; at an eighth of a stop a
 /// ramp's slope varies by under a third, as the remapping itself makes it).
-const REF_STEP: f32 = 0.125;
+pub const REF_STEP: f32 = 0.125;
+/// Most reference values one filter uses.
+pub const MAX_REFS: usize = 96;
+/// The lowest reference sits at this quantile of the log luminance: the deepest 0.1 % (noise down
+/// to the floor) share it instead of stretching the spacing.
+pub const REF_LOW_QUANTILE: f32 = 0.001;
+/// The filter works on `log2(luminance + LOG_FLOOR)`.
+pub const LOG_FLOOR: f32 = 1.0 / 65536.0;
 /// The filter runs on a copy at most this many pixels across; the change it makes is brought back
 /// to full size by a guided upsampling, so a preview and the full image agree.
-const WORK_SIDE: usize = 1600;
+pub const WORK_SIDE: usize = 1600;
+/// The image range the strengths are placed in: these quantiles of the log luminance averaged
+/// over cells of a copy at most [`RANGE_SIDE`] pixels across.
+pub const RANGE_QUANTILES: [f32; 2] = [0.01, 0.99];
+/// See [`RANGE_QUANTILES`].
+pub const RANGE_SIDE: usize = 256;
 /// Knots of the strength curves over the surroundings' place in the image range (0 … 1).
-const KNOTS: usize = 5;
+pub const KNOTS: usize = 5;
 
 /// Shadows: how far a pixel darker than its surroundings rises, in stops per unit slider, as
 /// a function of its own place in the image range (`own`) times a factor of its surroundings'
@@ -59,6 +71,86 @@ struct Side {
     sigma: f32,
 }
 
+/// Which remapping a [`TonePass`] uses.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ToneKind {
+    /// Pixels brighter than their surroundings move toward them (or away, for positive values)
+    /// by the part of the difference past `sigma`.
+    Highlights,
+    /// Pixels darker than their surroundings rise (or sink) by an amount set by their own and
+    /// their surroundings' place in the image range.
+    Shadows,
+}
+
+/// One pass of the filter resolved for a slider value: everything its remapping reads.
+#[derive(Clone, Debug, PartialEq)]
+pub struct TonePass {
+    pub kind: ToneKind,
+    /// Highlights: the slider / 100. Shadows: its strength (the slider / 100, times `down` when
+    /// negative).
+    pub amount: f32,
+    /// Highlights: the strengths for the slider's direction, then an unused row. Shadows: the
+    /// curves over the pixel's own (`own`) and its surroundings' (`around`) place.
+    pub knots: [[f32; KNOTS]; 2],
+    /// The detail threshold in stops.
+    pub sigma: f32,
+    /// The quantile of the log luminance the pass puts back where it was.
+    pub keep: f32,
+}
+
+/// Shadows and Highlights resolved: Highlights runs first, then Shadows on its result.
+#[derive(Clone, Debug, PartialEq)]
+pub struct LocalTone {
+    pub passes: Vec<TonePass>,
+}
+
+impl LocalTone {
+    /// The passes for the sliders (−100 … 100); `None` when both are 0.
+    pub fn new(shadows: f32, highlights: f32) -> Option<Self> {
+        let mut passes = Vec::new();
+        if highlights != 0.0 {
+            let amount = highlights.clamp(-100.0, 100.0) / 100.0;
+            let strengths = if amount < 0.0 { HIGHLIGHTS.pull } else { HIGHLIGHTS.push };
+            // Then the darkest content is put back where it was.
+            passes.push(TonePass { kind: ToneKind::Highlights, amount, knots: [strengths, [0.0; KNOTS]], sigma: HIGHLIGHTS.sigma, keep: 0.01 });
+        }
+        if shadows != 0.0 {
+            let amount = shadows.clamp(-100.0, 100.0) / 100.0;
+            let k = if amount > 0.0 { amount } else { amount * SHADOWS.down };
+            // Keep the brightest content.
+            passes.push(TonePass { kind: ToneKind::Shadows, amount: k, knots: [SHADOWS.own, SHADOWS.around], sigma: SHADOWS.sigma, keep: 0.99 });
+        }
+        (!passes.is_empty()).then_some(LocalTone { passes })
+    }
+}
+
+impl TonePass {
+    /// The remapping of log luminance `x` around the reference `g`, in an image range that
+    /// starts at `lo` and is `span` stops wide.
+    pub fn remap(&self, x: f32, g: f32, lo: f32, span: f32) -> f32 {
+        match self.kind {
+            ToneKind::Highlights => x + knot((g - lo) / span, &self.knots[0]) * self.amount * excess((x - g).max(0.0), self.sigma),
+            ToneKind::Shadows => {
+                let below = ((g - x) / self.sigma).clamp(0.0, 1.0);
+                if below == 0.0 {
+                    return x;
+                }
+                let w = below * below * (3.0 - 2.0 * below);
+                x + self.amount * knot((x - lo) / span, &self.knots[0]) * knot((g - lo) / span, &self.knots[1]) * w
+            }
+        }
+    }
+
+    /// The pass on the log luminance `u`: the filter, then the kept quantile put back.
+    fn run(&self, u: &Plane) -> Plane {
+        let (lo, hi) = range(u);
+        let span = (hi - lo).max(1.0);
+        let o = llf(u, |x, g| self.remap(x, g, lo, span));
+        let shift = quantile(&u.v, self.keep) - quantile(&o.v, self.keep);
+        Plane { w: o.w, h: o.h, v: o.v.iter().map(|v| v + shift).collect() }
+    }
+}
+
 /// One channel, `w × h`.
 struct Plane {
     w: usize,
@@ -77,7 +169,8 @@ fn mirror(i: isize, n: usize) -> usize {
     (if m >= n { p - m } else { m }) as usize
 }
 
-const TAPS: [f32; 5] = [1.0 / 16.0, 4.0 / 16.0, 6.0 / 16.0, 4.0 / 16.0, 1.0 / 16.0];
+/// The pyramid's binomial kernel.
+pub const TAPS: [f32; 5] = [1.0 / 16.0, 4.0 / 16.0, 6.0 / 16.0, 4.0 / 16.0, 1.0 / 16.0];
 
 /// Planes smaller than this run their rows on one thread: the filter builds a whole pyramid per
 /// reference (up to 96), and splitting its small levels into one-row tasks cost more in rayon's
@@ -230,14 +323,13 @@ fn gaussian(p: Plane, n: usize) -> Vec<Plane> {
 fn llf(u: &Plane, remap: impl Fn(f32, f32) -> f32 + Sync) -> Plane {
     let n = depth(u.w, u.h);
     let g = gaussian(Plane { w: u.w, h: u.h, v: u.v.clone() }, n);
-    // References span the image's tones; the deepest 0.1 % (noise down to the floor) share the
-    // lowest reference instead of stretching the spacing.
+    // References span the image's tones (see `REF_LOW_QUANTILE`).
     let hi = u.v.iter().fold(f32::NEG_INFINITY, |a, &v| a.max(v));
-    let lo = quantile(&u.v, 0.001).min(hi);
+    let lo = quantile(&u.v, REF_LOW_QUANTILE).min(hi);
     if hi - lo <= 1e-6 || (hi - lo).is_nan() {
         return Plane { w: u.w, h: u.h, v: u.v.clone() };
     }
-    let refs = (((hi - lo) / REF_STEP).ceil() as usize + 1).clamp(2, 96);
+    let refs = (((hi - lo) / REF_STEP).ceil() as usize + 1).clamp(2, MAX_REFS);
     let step = (hi - lo) / (refs - 1) as f32;
     let mut lap: Vec<Vec<f32>> = g[..n - 1].iter().map(|p| vec![0.0; p.v.len()]).collect();
     for k in 0..refs {
@@ -279,13 +371,14 @@ fn quantile(v: &[f32], q: f32) -> f32 {
     let mut s = v.to_vec();
     // Selecting the one element is linear, a full sort is not (5 sorts of the work copy were a
     // fifteenth of a render). `total_cmp` ties are bit-identical, so it is the sorted element.
-    let i = ((s.len() - 1) as f32 * q).round() as usize;
+    let i = quantile_rank(s.len(), q);
     *s.select_nth_unstable_by(i, f32::total_cmp).1
 }
 
-/// 1st and 99th percentiles of the log luminance on a copy at most 256 pixels across.
+/// The image range: [`RANGE_QUANTILES`] of the log luminance on a copy at most [`RANGE_SIDE`]
+/// pixels across.
 fn range(u: &Plane) -> (f32, f32) {
-    let f = u.w.max(u.h).div_ceil(256).max(1);
+    let f = u.w.max(u.h).div_ceil(RANGE_SIDE).max(1);
     let (sw, sh) = (u.w.div_ceil(f), u.h.div_ceil(f));
     let mut sum = vec![(0.0f64, 0u32); sw * sh];
     for y in 0..u.h {
@@ -296,7 +389,7 @@ fn range(u: &Plane) -> (f32, f32) {
         }
     }
     let cells: Vec<f32> = sum.iter().filter(|c| c.1 > 0).map(|c| (c.0 / f64::from(c.1)) as f32).collect();
-    (quantile(&cells, 0.01), quantile(&cells, 0.99))
+    (quantile(&cells, RANGE_QUANTILES[0]), quantile(&cells, RANGE_QUANTILES[1]))
 }
 
 /// `d` past the detail threshold: about 0 below `sigma`, `d − sigma` well above it.
@@ -310,52 +403,19 @@ fn knot(t: f32, k: &[f32; KNOTS]) -> f32 {
     k[i] + (k[i + 1] - k[i]) * (x - i as f32)
 }
 
-/// The Highlights pass on the log luminance `u` (`amount` −1 … 1): pixels brighter than their
-/// surroundings move toward them (or away, for positive values) by the part of the difference
-/// past `sigma`, then the darkest content is put back where it was.
-fn highlights_pass(u: &Plane, amount: f32, side: &Side) -> Plane {
-    let (lo, hi) = range(u);
-    let span = (hi - lo).max(1.0);
-    let strengths = if amount < 0.0 { &side.pull } else { &side.push };
-    let o = llf(u, |x, g| x + knot((g - lo) / span, strengths) * amount * excess((x - g).max(0.0), side.sigma));
-    let shift = quantile(&u.v, 0.01) - quantile(&o.v, 0.01);
-    Plane { w: o.w, h: o.h, v: o.v.iter().map(|v| v + shift).collect() }
-}
-
-/// The Shadows pass on the log luminance `u` (`amount` −1 … 1).
-fn shadows_pass(u: &Plane, amount: f32) -> Plane {
-    let (lo, hi) = range(u);
-    let span = (hi - lo).max(1.0);
-    let k = if amount > 0.0 { amount } else { amount * SHADOWS.down };
-    let o = llf(u, |x, g| {
-        let below = ((g - x) / SHADOWS.sigma).clamp(0.0, 1.0);
-        if below == 0.0 {
-            return x;
-        }
-        let w = below * below * (3.0 - 2.0 * below);
-        x + k * knot((x - lo) / span, &SHADOWS.own) * knot((g - lo) / span, &SHADOWS.around) * w
-    });
-    // Keep the brightest content.
-    let shift = quantile(&u.v, 0.99) - quantile(&o.v, 0.99);
-    Plane { w: o.w, h: o.h, v: o.v.iter().map(|v| v + shift).collect() }
-}
-
 /// Applies Shadows and Highlights (−100 … 100) to straight RGBA pixels encoded with `enc`.
 pub(crate) fn apply(px: &mut [[f32; 4]], w: usize, h: usize, shadows: f32, highlights: f32, enc: Encoding) {
-    if (shadows == 0.0 && highlights == 0.0) || w < 2 || h < 2 {
+    let Some(tone) = LocalTone::new(shadows, highlights) else { return };
+    if w < 2 || h < 2 {
         return;
     }
-    const FLOOR: f32 = 1.0 / 65536.0;
-    let u = Plane { w, h, v: px.iter().map(|q| (luma([0, 1, 2].map(|c| enc.decode(q[c]))).max(0.0) + FLOOR).log2()).collect() };
+    let u = Plane { w, h, v: px.iter().map(|q| (luma([0, 1, 2].map(|c| enc.decode(q[c]))).max(0.0) + LOG_FLOOR).log2()).collect() };
     // The filter on a copy at most WORK_SIDE across (box-averaged in log).
     let f = w.max(h).div_ceil(WORK_SIDE).max(1);
     let small = if f == 1 { Plane { w, h, v: u.v.clone() } } else { shrink(&u, f) };
     let mut o = Plane { w: small.w, h: small.h, v: small.v.clone() };
-    if highlights != 0.0 {
-        o = highlights_pass(&o, highlights.clamp(-100.0, 100.0) / 100.0, &HIGHLIGHTS);
-    }
-    if shadows != 0.0 {
-        o = shadows_pass(&o, shadows.clamp(-100.0, 100.0) / 100.0);
+    for pass in &tone.passes {
+        o = pass.run(&o);
     }
     // The change in log luminance, at full size.
     let change: Vec<f32> = if f == 1 {

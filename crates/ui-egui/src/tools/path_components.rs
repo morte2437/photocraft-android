@@ -32,24 +32,42 @@ fn target(app: &PhotocraftApp) -> Option<(PathRef, Path)> {
     active_paths(app).into_iter().next()
 }
 
-/// The selected components: their path and the first subpath of each, in order. `None` with
-/// nothing selected, a selection on a path that is not an active one any more, or a tool other
-/// than Path Selection (the only one that shows it, so the only one that acts on it).
+/// A Path Selection press on a shape layer, off every component of the targeted saved path:
+/// the saved path is no longer the target, so the press and drag act on the shape (#13270).
+/// A press on one of the saved path's components keeps it targeted.
+pub(crate) fn untarget_saved_path_off(app: &mut PhotocraftApp, at: [f64; 2], tol: f64) {
+    if let Some((PathRef::Saved(_), path)) = target(app)
+        && component_at(&path, at, tol).is_none()
+    {
+        app.ui.selected_path = None;
+    }
+}
+
+/// The selected components: their path and the first subpath of each, in order. With Direct
+/// Selection, the components that have a selected anchor (#13219), on whichever path its marquee
+/// reached. `None` with nothing selected, a selection on a path that is gone or locked, or another
+/// tool (they show no selection, so they act on none).
 pub(crate) fn selected(app: &PhotocraftApp) -> Option<(PathRef, Path, Vec<usize>)> {
-    if app.ui.tool != Tool::PathSelection {
+    if !matches!(app.ui.tool, Tool::PathSelection | Tool::DirectSelection) {
         return None;
     }
     let sel = &app.ui.direct_selection;
     if !crate::direct_select::still_valid(app, sel) {
         return None;
     }
-    let r = sel.target.filter(|r| *r != PathRef::Pen)?;
-    let (_, path) = active_paths(app).into_iter().find(|(p, _)| *p == r)?;
+    let r = sel.target.filter(|r| *r != PathRef::Pen && crate::direct_select::writable(app, r))?;
+    let (_, path) = crate::direct_select::candidates(app).into_iter().find(|(p, _)| *p == r)?;
     let components = path.components();
     let mut heads: Vec<usize> = sel.anchors.iter().filter_map(|[s, _]| components.iter().find(|c| c.contains(s)).map(|c| c.start)).collect();
     heads.sort_unstable();
     heads.dedup();
     (!heads.is_empty()).then_some((r, path, heads))
+}
+
+/// Deselects every component (and anchor), leaving the path itself as it is. Shared with Direct
+/// Selection's Enter (#13208).
+pub(crate) fn deselect_components(app: &mut PhotocraftApp) {
+    app.ui.direct_selection = DirectSelection::default();
 }
 
 /// The operation every selected component has, for the menu's icon; `None` when they differ.
@@ -64,7 +82,7 @@ pub(crate) fn selected_op(app: &PhotocraftApp) -> Option<&'static str> {
 /// for the next path. New Layer is not an operation a component can have: it only sets the tool.
 /// The first component always combines (it is what the others act on), so it keeps its operation.
 pub(crate) fn set_op(app: &mut PhotocraftApp, op: &str) -> Result<(), String> {
-    app.ui.tool_options.pen_path_op = op.into();
+    *crate::vector_ui::path_op_field(app) = op.into();
     if op == "newLayer" {
         return Ok(());
     }
@@ -125,11 +143,59 @@ fn crossings(pts: &[(f64, f64)], at: [f64; 2]) -> usize {
         .count()
 }
 
+/// The structure a component selection's indices address: per-subpath identity (knot count and
+/// geometry, in order — a reorder or a same-count swap is a structural change) plus the component
+/// partition ([`photocraft_doc::Path::components`] ranges), so a same-count edit that merges
+/// components with `PathOp::Join` clears the selection too. Operation-only edits that leave both
+/// untouched (e.g. `path.setOperation` with subtract) keep it.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct SelectionSignature {
+    /// Per-subpath identity: knot count and geometry, in order.
+    subpaths: Vec<u64>,
+    /// The component partition as `(start, end)` subpath ranges.
+    components: Vec<(usize, usize)>,
+}
+
+/// The signature of `path` that a component selection binds to.
+pub(crate) fn selection_signature(path: &photocraft_doc::Path) -> SelectionSignature {
+    SelectionSignature {
+        subpaths: path.subpaths.iter().map(subpath_id).collect(),
+        components: path.components().into_iter().map(|c| (c.start, c.end)).collect(),
+    }
+}
+
+/// A subpath's identity: its knot count and the knot geometry (anchors and handles). Deliberately
+/// excludes the operation: `path.setOperation` on a whole component leaves the partition and the
+/// geometry alone, and the selection stays meaningful.
+fn subpath_id(sp: &photocraft_doc::vector::Subpath) -> u64 {
+    let mut h = (sp.knots.len() as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15);
+    for k in &sp.knots {
+        for v in [k.anchor.x, k.anchor.y, k.in_ctrl.x, k.in_ctrl.y, k.out_ctrl.x, k.out_ctrl.y] {
+            h = (h ^ v.to_bits()).wrapping_mul(0x9E37_79B9_7F4A_7C15);
+        }
+    }
+    h
+}
+
+/// How far off a component's outline a press still lands on it, in document pixels: 6 screen points.
+pub(crate) fn press_tolerance(app: &PhotocraftApp) -> f64 {
+    6.0 / f64::from(app.point_zoom().max(0.01))
+}
+
+/// Whether a Path Selection press at `at` would land on a component: of a shape layer there (the
+/// press selects that layer first) or of the path it selects in. Where its cursor shows ⌥'s solid
+/// arrow (#13295).
+pub(crate) fn over_component(app: &PhotocraftApp, at: [f64; 2]) -> bool {
+    let tol = press_tolerance(app);
+    app.session.active().is_some_and(|st| crate::vector_ui::pick_shape_at(&st.doc, at, tol).is_some())
+        || target(app).is_some_and(|(_, path)| component_at(&path, at, tol).is_some())
+}
+
 /// Path Selection's press at `at`: selects the component there (⇧ adds or removes it). Pressing a
 /// selected component keeps the selection, so the drag moves all of it; pressing off every
 /// component deselects, unless ⇧ is held.
 pub(crate) fn press(app: &mut PhotocraftApp, at: [f64; 2], shift: bool) {
-    let tol = 6.0 / f64::from(app.point_zoom().max(0.01));
+    let tol = press_tolerance(app);
     let Some((r, path)) = target(app) else {
         app.ui.direct_selection = DirectSelection::default();
         return;
@@ -158,7 +224,13 @@ pub(crate) fn press(app: &mut PhotocraftApp, at: [f64; 2], shift: bool) {
     app.ui.direct_selection = if anchors.is_empty() {
         DirectSelection::default()
     } else {
-        DirectSelection { target: Some(r), anchors, owner: crate::direct_select::Owner::current(app), ..Default::default() }
+        DirectSelection {
+            target: Some(r),
+            anchors,
+            owner: crate::direct_select::Owner::current(app),
+            signature: Some(selection_signature(&path)),
+            ..Default::default()
+        }
     };
 }
 
@@ -166,14 +238,31 @@ pub(crate) fn press(app: &mut PhotocraftApp, at: [f64; 2], shift: bool) {
 /// components, one History step. `None` with none or all of them selected: the whole path moves
 /// instead, which keeps a live rectangle or ellipse live.
 pub(crate) fn move_selected(app: &mut PhotocraftApp, d: [f64; 2]) -> Option<Result<(), String>> {
-    let (r, path, heads) = selected(app)?;
-    if target(app).map(|(t, _)| t) != Some(r) || heads.len() >= path.components().len() {
-        return None;
-    }
+    let (r, _) = moving_selected(app)?;
     let mut params = r.params(app);
     params["anchors"] = json!(app.ui.direct_selection.anchors);
     params["move"] = json!(d);
-    Some(run_selected_command(app, "path.moveAnchors", params))
+    let moved = run_selected_command(app, "path.moveAnchors", params);
+    if moved.is_ok() {
+        // The geometry changed: re-sign the selection, so later unrelated edits keep it (the
+        // signature must hash the moved path, not the press-time one).
+        app.ui.direct_selection.signature = crate::direct_select::path_of(app, &r).map(|p| selection_signature(&p));
+    }
+    Some(moved)
+}
+
+/// The path [`move_selected`] moves components of, with some but not all of them selected.
+fn moving_selected(app: &PhotocraftApp) -> Option<(PathRef, Path)> {
+    let (r, path, heads) = selected(app)?;
+    (target(app).map(|(t, _)| t) == Some(r) && heads.len() < path.components().len()).then_some((r, path))
+}
+
+/// The path [`move_selected`] leaves after a drag by `d`, for the drag's live preview: the
+/// selected components moved with their handles, as `path.moveAnchors` moves them.
+pub(crate) fn moved_selected(app: &PhotocraftApp, d: [f64; 2]) -> Option<(PathRef, Path)> {
+    let (r, mut path) = moving_selected(app)?;
+    photocraft_vector::edit::move_anchors(&mut path, &app.ui.direct_selection.anchors, d).ok()?;
+    Some((r, path))
 }
 
 /// Do `+` and `-` pick a Path Operation with `tool`? The tools whose options bar has the menu.
@@ -215,3 +304,7 @@ pub fn handle_keys(app: &mut PhotocraftApp, ctx: &egui::Context) {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+#[path = "path_selection_enter_escape_tests.rs"]
+mod path_selection_enter_escape_tests;

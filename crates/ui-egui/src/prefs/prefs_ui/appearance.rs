@@ -185,21 +185,6 @@ pub(super) fn sync_tooltips(app: &PhotocraftApp, ctx: &egui::Context) {
     }
 }
 
-/// Interface › Enable Animations: off, egui's fades and slides take no time and scroll areas jump
-/// straight to their target (#3273). Re-checked every frame because a theme change rebuilds the
-/// style; both the dark and light styles are set, so a system appearance switch keeps it.
-pub(super) fn sync_animations(app: &PhotocraftApp, ctx: &egui::Context) {
-    let on = app.session.prefs().interface.enable_animations;
-    let time = if on { egui::Style::default().animation_time } else { 0.0 };
-    if ctx.global_style().animation_time != time {
-        let scroll = if on { egui::style::ScrollAnimation::default() } else { egui::style::ScrollAnimation::none() };
-        ctx.all_styles_mut(|s| {
-            s.animation_time = time;
-            s.scroll_animation = scroll;
-        });
-    }
-}
-
 /// Resolve the saved appearance mode without changing it or either theme slot.
 pub(crate) fn sync_appearance(app: &mut PhotocraftApp, ctx: &egui::Context) {
     // A restored or embedding-supplied pin must not suppress native appearance events.

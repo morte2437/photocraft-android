@@ -1,0 +1,67 @@
+{
+  "schema": 1,
+  "name": "another-document",
+  "steps": [
+    {
+      "event": {
+        "op": "begin"
+      },
+      "expect": {
+        "editing": true,
+        "vertical": [
+          10,
+          20
+        ],
+        "history": 2,
+        "editCommands": 0,
+        "preview": {
+          "vertical": [
+            10,
+            20
+          ]
+        }
+      }
+    },
+    {
+      "event": {
+        "op": "set",
+        "field": "position",
+        "value": "30 px"
+      },
+      "expect": {
+        "preview": {
+          "vertical": [
+            30,
+            20
+          ]
+        }
+      }
+    },
+    {
+      "event": {
+        "op": "other_document"
+      },
+      "expect": {
+        "vertical": [
+          10
+        ],
+        "preview": null,
+        "invalid": true
+      }
+    },
+    {
+      "event": {
+        "op": "confirm"
+      },
+      "expect": {
+        "rejected": true,
+        "vertical": [
+          10
+        ],
+        "history": 1,
+        "editCommands": 0,
+        "editing": false
+      }
+    }
+  ]
+}

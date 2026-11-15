@@ -519,13 +519,16 @@ fn a_curvature_pen_double_click_through_the_canvas_rounds_a_corner() {
 }
 
 /// #9114: with type on a path selected, Direct Selection reshapes the type's own path (in front of
-/// the work path it was made from) and the type follows, in one undoable step.
+/// the work path it was made from) and the type follows, in one undoable step. The text's range
+/// ends short of the last anchor: a marker on an anchor takes the drag instead (see
+/// `type_path_placement`).
 #[test]
 fn dragging_an_anchor_of_type_on_a_path_moves_the_type() {
     let mut app = app(Tool::DirectSelection);
     app.run("path.set", json!({"name": "work", "path": {"subpaths": [{"closed": false, "knots": [[100, 20], [100, 180]]}]}})).unwrap();
     let id = app.run("type.create", json!({"x": 20, "y": 70, "text": "On a path", "size": 24})).unwrap()["layer"].as_u64().unwrap();
     app.run("type.attachToPath", json!({})).unwrap();
+    app.run("type.setPathPlacement", json!({"end": 120})).unwrap();
     let type_path = |app: &PhotocraftApp| match &app.session.active().unwrap().doc.layer(photocraft_doc::LayerId(id)).unwrap().content {
         photocraft_doc::LayerContent::Text(t) => photocraft_engine::type_extra_cmds::type_path(t).unwrap(),
         _ => panic!("not a type layer"),
@@ -549,6 +552,8 @@ fn a_targeted_vector_mask_on_type_on_a_path_is_edited_not_the_type_path() {
     app.run("path.set", json!({"name": "work", "path": {"subpaths": [{"closed": false, "knots": [[100, 20], [100, 180]]}]}})).unwrap();
     let id = app.run("type.create", json!({"x": 20, "y": 70, "text": "On a path", "size": 24})).unwrap()["layer"].as_u64().unwrap();
     app.run("type.attachToPath", json!({})).unwrap();
+    // The range ends short of the last anchor, so the second drag reaches the anchor.
+    app.run("type.setPathPlacement", json!({"end": 120})).unwrap();
     let rect = json!({"subpaths": [{"closed": true, "knots": [[20, 20], [180, 20], [180, 160], [20, 160]]}]});
     app.run("layer.vectorMask.add", json!({"layer": id, "path": rect})).unwrap();
     app.ui.vector_mask_target = true;

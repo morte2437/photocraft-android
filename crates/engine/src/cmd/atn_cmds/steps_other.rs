@@ -104,29 +104,53 @@ fn within(range: &RangeInclusive<f64>) -> impl Fn(&D) -> Option<f64> + '_ {
 /// 3 × 3 list makes it fail), so any other matrix keeps the Photoshop step, as does a `Scl `,
 /// `Ofst` or cell that is not a number, one that is not a whole number (export writes integers,
 /// so Save Actions would refuse it), or one outside the command's range (it would play clamped).
-pub(super) fn custom_from(d: &Descriptor) -> Mapped {
-    let unsupported = Mapped::Unsupported { harmless: false };
-    if !only_keys(d, &["Scl", "Ofst", "Mtrx"]) {
-        return unsupported;
+/// Retain the measured mapping adapted from #10631 by @hectorviov.
+fn custom_params(d: &Descriptor) -> Option<Value> {
+    if !only_keys(d, &["Scl", "Ofst", "Mtrx"]) || d.items.iter().filter(|(key, _)| trimmed(key) == "Mtrx").count() != 1 {
+        return None;
     }
-    let Some(cells) = get_list(d, "Mtrx").filter(|c| c.len() == 25) else { return unsupported };
-    let Some(kernel) = cells.iter().map(within(&CUSTOM_CELL)).collect::<Option<Vec<f64>>>() else { return unsupported };
-    let (Some(scale), Some(offset)) = (setting(d, "Scl ", within(&CUSTOM_SCALE), 1.0), setting(d, "Ofst", within(&CUSTOM_OFFSET), 0.0)) else {
-        return unsupported;
-    };
+    let cells = get_list(d, "Mtrx").filter(|c| c.len() == 25)?;
+    let kernel = cells.iter().map(within(&CUSTOM_CELL)).collect::<Option<Vec<f64>>>()?;
+    let scale = setting(d, "Scl ", within(&CUSTOM_SCALE), 1.0)?;
+    let offset = setting(d, "Ofst", within(&CUSTOM_OFFSET), 0.0)?;
     let mut p = Map::new();
     p.insert("kernel".into(), json!(kernel));
     p.insert("scale".into(), scale.into());
     p.insert("offset".into(), offset.into());
-    step("filter.other.custom", Value::Object(p))
+    Some(Value::Object(p))
 }
 
-/// `Scl `, `Ofst` and the 25 cells as integers; a kernel left out is the command's identity
+/// Map supported settings while retaining noncanonical key padding, defaults and numeric kinds
+/// for an unchanged Save Actions, as Batch retains its original descriptor.
+pub(super) fn custom_from(d: &Descriptor) -> Mapped {
+    let Some(mut p) = custom_params(d) else { return Mapped::Unsupported { harmless: false } };
+    if custom_to("filter.other.custom", &p).as_ref() != Some(d) {
+        p["__atnCustom"] = json!(photocraft_paint::tile::b64_encode(&d.to_bytes()));
+    }
+    step("filter.other.custom", p)
+}
+
+/// New or edited settings write `Scl `, `Ofst` and the 25 cells as integers; unchanged imports
+/// retain their descriptor representation. A kernel left out is the command's identity
 /// (1 in the middle). A fraction anywhere refuses the step: it would replay rounded; so does a
 /// value outside the command's range, which it doesn't play.
 pub(super) fn custom_to(_: &str, p: &Value) -> Option<Descriptor> {
-    if !pixel_target(p) || !sets_only(p, &["target", "kernel", "scale", "offset"]) {
+    if !p.is_object() || !pixel_target(p) || !sets_only(p, &["target", "kernel", "scale", "offset", "__atnCustom"]) {
         return None;
+    }
+    if let Some(original) =
+        p.get("__atnCustom").and_then(Value::as_str).and_then(photocraft_paint::tile::b64_decode).and_then(|bytes| Descriptor::from_bytes(&bytes).ok())
+    {
+        let mut core = p.clone();
+        core.as_object_mut()?.remove("__atnCustom");
+        core.as_object_mut()?.remove("target");
+        if let Some(mut represented) = custom_params(&original) {
+            super::convert::normalise(&mut represented);
+            super::convert::normalise(&mut core);
+            if represented == core {
+                return Some(original);
+            }
+        }
     }
     let int = |range: &RangeInclusive<f64>, v: &Value| {
         let n = v.as_f64()?;

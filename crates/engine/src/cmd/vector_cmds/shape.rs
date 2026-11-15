@@ -80,6 +80,7 @@ fn live_kind(l: &LiveShape) -> &'static str {
         LiveShape::Ellipse { .. } => "ellipse",
         LiveShape::Polygon { star_ratio, .. } if *star_ratio < 1.0 => "star",
         LiveShape::Polygon { .. } => "polygon",
+        LiveShape::Triangle { .. } => "triangle",
         LiveShape::Line { .. } | LiveShape::ArrowLine { .. } => "line",
     }
 }
@@ -106,17 +107,35 @@ pub fn preview_shape_stroke(doc: &Document, id: LayerId, params: &Value) -> Resu
 /// Moves a layer's vector content by `(dx, dy)`: shape paths (re-rendered) and linked vector
 /// masks, recursing into groups. For the Move tool / `layer.move`.
 pub fn translate_vectors(doc: &Document, l: &mut Layer, dx: f64, dy: f64) {
+    translate_vectors_wrapped(doc, l, dx, dy, None);
+}
+
+/// [`translate_vectors`]. `wrap` is the canvas when View › Pattern Preview is on: a linked vector
+/// mask on a wrapping layer folds with the raster pixels. Shape paths keep the raw delta.
+pub(crate) fn translate_vectors_wrapped(doc: &Document, l: &mut Layer, dx: f64, dy: f64, wrap: Option<photocraft_geom::Rect>) {
     let a = Affine::translate(dx, dy);
+    if let Some(f) = &mut l.frame {
+        f.transform = a.mul(&f.transform);
+        // Past `Frame::valid`'s bounds it would no longer load; the vector mask, moved below,
+        // keeps the clip as a plain masked group.
+        if !f.valid() {
+            l.frame = None;
+        }
+    }
+    let mask_wrap = wrap.filter(|_| crate::layer_multi_cmds::wraps_linked_masks(&l.content));
     if let Some(vm) = l.vector_mask.as_mut()
         && vm.linked
     {
-        vm.path = vm.path.transform(&a);
+        vm.path = match mask_wrap {
+            Some(tile) => crate::layer_multi_cmds::wrap_path(&vm.path, dx as i32, dy as i32, tile),
+            None => vm.path.transform(&a),
+        };
     }
     match &mut l.content {
         LayerContent::Shape(sh) => shift_shape(doc, sh, dx, dy),
         LayerContent::Group(g) => {
             for c in &mut g.children {
-                translate_vectors(doc, c, dx, dy);
+                translate_vectors_wrapped(doc, c, dx, dy, wrap);
             }
         }
         _ => {}
@@ -216,6 +235,7 @@ pub fn transform_shape(sh: &mut ShapeLayer, a: &Affine) {
                 LiveShape::Polygon { rect, sides, star_ratio, corner_radius } => {
                     LiveShape::Polygon { rect: r(rect), sides, star_ratio, corner_radius: corner_radius * m0.min(m3) }
                 }
+                LiveShape::Triangle { rect, corner_radius } => LiveShape::Triangle { rect: r(rect), corner_radius: corner_radius * m0.min(m3) },
                 LiveShape::ArrowLine { from, to, weight, start, end, width, length, concavity } => {
                     let (dx, dy) = (to[0] - from[0], to[1] - from[1]);
                     let old_len = dx.hypot(dy);
@@ -408,14 +428,19 @@ fn default_name(kind: &str) -> &'static str {
         "roundedRect" | "roundRect" => "Rounded Rectangle",
         "ellipse" => "Ellipse",
         "polygon" => "Polygon",
+        "triangle" => "Triangle",
         "star" => "Star",
         "line" => "Line",
         _ => "Shape",
     }
 }
 
+/// Creates a shape layer, or adds path components to the shape identified by `addTo`.
+/// The Freeform Pen or Line Tool history override labels new layers; additions retain the Add
+/// Shape label.
 pub(super) fn shape_create(s: &mut Session, p: &Value) -> Result<Value> {
     const CMD: &str = "shape.create";
+    let label = super::paths::pen_history_name(p, CMD, "New Shape Layer")?;
     let kind = p.get("kind").and_then(Value::as_str).unwrap_or("rect");
     let (path, live) = if kind == "path" {
         let v = p.get("path").ok_or_else(|| bad(CMD, "kind \"path\" needs `path`"))?;
@@ -424,16 +449,7 @@ pub(super) fn shape_create(s: &mut Session, p: &Value) -> Result<Value> {
         let l = live_from_params(CMD, kind, p, None)?;
         (vector::shapes::live_path(&l), Some(l))
     };
-    let fg = s.tools.foreground;
-    let fgc = Color::rgba(fg[0], fg[1], fg[2], fg[3]);
-    let fill = match p.get("fill") {
-        Some(v) => parse_fill(v).map_err(|e| bad(CMD, e))?,
-        None => Some(Fill::Solid(fgc)),
-    };
-    let stroke = match p.get("stroke") {
-        Some(v) => parse_stroke(v, None, fgc).map_err(|e| bad(CMD, e))?,
-        None => None,
-    };
+    let (fill, stroke) = new_fill_stroke(s, CMD, p)?;
     vector::flatten::validate_shape(&path, stroke.as_ref()).map_err(|e| bad(CMD, e))?;
     // Add to an existing shape layer with a path operation (Shape tool in combine/subtract… mode).
     if let Some(target) = p.get("addTo").and_then(Value::as_u64) {
@@ -441,7 +457,10 @@ pub(super) fn shape_create(s: &mut Session, p: &Value) -> Result<Value> {
         let id = LayerId(target);
         with_shape(s, id, "Add Shape", |sh, _| {
             for mut sp in path.subpaths {
-                sp.op = op;
+                // A joined subpath (a hole) belongs to the component before it, which takes `op`.
+                if sp.op != PathOp::Join {
+                    sp.op = op;
+                }
                 sh.path.subpaths.push(sp);
             }
             sh.live = None;
@@ -453,7 +472,7 @@ pub(super) fn shape_create(s: &mut Session, p: &Value) -> Result<Value> {
     }
     let name = p.get("name").and_then(Value::as_str).map(str::to_string);
     let mut sh = ShapeLayer { path, fill, stroke, live, ..Default::default() };
-    let id = s.edit("New Shape Layer", |doc, active| {
+    let id = s.edit(label, |doc, active| {
         refresh_shape(doc, &mut sh);
         let name = name.unwrap_or_else(|| doc.next_layer_name(default_name(kind)));
         let id = crate::layer_place::insert_new(doc, *active, Layer::new(name, LayerContent::Shape(sh)), crate::layer_place::Place::AutoEditable);
@@ -463,13 +482,102 @@ pub(super) fn shape_create(s: &mut Session, p: &Value) -> Result<Value> {
     shape_info(s, id)
 }
 
+/// A new shape layer's `fill` (default the foreground colour) and `stroke` (default none).
+fn new_fill_stroke(s: &Session, cmd: &str, p: &Value) -> Result<(Option<Fill>, Option<photocraft_doc::ShapeStroke>)> {
+    let fg = s.tools.foreground;
+    let fgc = Color::rgba(fg[0], fg[1], fg[2], fg[3]);
+    let fill = match p.get("fill") {
+        Some(v) => parse_fill(v).map_err(|e| bad(cmd, e))?,
+        None => Some(Fill::Solid(fgc)),
+    };
+    let stroke = match p.get("stroke") {
+        Some(v) => parse_stroke(v, None, fgc).map_err(|e| bad(cmd, e))?,
+        None => None,
+    };
+    Ok((fill, stroke))
+}
+
+/// The Pen options bar's Make: Shape: a new shape layer, as one History step, from the work path
+/// or a saved path (`name`), or from an inline `path` (a Pen path still being drawn). The Work
+/// Path becomes the shape's path, so it is gone afterwards; a saved path stays. An inline `path`
+/// leaves the document's paths alone unless `consumeWorkPath` says it was drawn into the Work
+/// Path. Unlike the other path commands, `"work"` never falls back to the active layer's path:
+/// that would duplicate the selected shape or vector mask.
+pub(super) fn path_to_shape(s: &mut Session, p: &Value) -> Result<Value> {
+    const CMD: &str = "path.toShape";
+    let name = match p.get("name") {
+        None | Some(Value::Null) => None,
+        Some(Value::String(n)) => Some(n.as_str()),
+        Some(_) => return Err(bad(CMD, "`name` must be a path name: \"work\", \"layer\" or a saved path's name")),
+    };
+    let consume_flag = match p.get("consumeWorkPath") {
+        None | Some(Value::Null) => false,
+        Some(Value::Bool(b)) => *b,
+        Some(_) => return Err(bad(CMD, "`consumeWorkPath` must be true or false")),
+    };
+    let (path, consume_work) = match p.get("path").filter(|v| !v.is_null()) {
+        Some(_) if name.is_some() => return Err(bad(CMD, "give `name` or `path`, not both")),
+        Some(v) => (parse_path(v).map_err(|e| bad(CMD, e))?, consume_flag),
+        None if super::is_work(name) => {
+            let d = s.active().ok_or(EngineError::NoDocument)?;
+            (d.doc.work_path.clone().ok_or_else(|| bad(CMD, "there is no Work Path"))?, true)
+        }
+        None => (super::resolve_path(s, name)?, false),
+    };
+    if !path.subpaths.iter().any(|sp| sp.knots.len() >= 2) {
+        return Err(bad(CMD, "the path has no segment to make a shape from"));
+    }
+    let (fill, stroke) = new_fill_stroke(s, CMD, p)?;
+    vector::flatten::validate_shape(&path, stroke.as_ref()).map_err(|e| bad(CMD, e))?;
+    let layer_name = match p.get("layerName") {
+        None | Some(Value::Null) => None,
+        Some(Value::String(n)) if !n.trim().is_empty() => Some(n.clone()),
+        Some(_) => return Err(bad(CMD, "`layerName` must be a name that isn't empty")),
+    };
+    let mut sh = ShapeLayer { path, fill, stroke, ..Default::default() };
+    let id = s.edit("New Shape Layer", |doc, active| {
+        refresh_shape(doc, &mut sh);
+        let name = layer_name.unwrap_or_else(|| doc.next_layer_name(default_name("path")));
+        let id = crate::layer_place::insert_new(doc, *active, Layer::new(name, LayerContent::Shape(sh)), crate::layer_place::Place::AutoEditable);
+        if consume_work {
+            doc.work_path = None;
+        }
+        *active = Some(id);
+        Ok(id)
+    })?;
+    shape_info(s, id)
+}
+
+/// The History name of a `shape.edit` of layer `id`: an edit of one arrowhead setting of a line
+/// is named after it, "Change Arrowhead End" (#13267). The reference application was measured for
+/// End and Width; Start, Length and Concavity follow the same pattern. Any other edit, several
+/// keys at once, or arrowhead keys sent to a shape that isn't a line stay "Edit Shape".
+fn edit_history_name(s: &Session, id: LayerId, p: &Value) -> &'static str {
+    const EDIT: &str = "Edit Shape";
+    let is_line = s
+        .active()
+        .and_then(|st| st.doc.layer(id))
+        .is_some_and(|l| matches!(&l.content, LayerContent::Shape(sh) if matches!(sh.live, Some(LiveShape::Line { .. } | LiveShape::ArrowLine { .. }))));
+    let Some(o) = p.as_object().filter(|_| is_line) else { return EDIT };
+    let mut changed = o.keys().map(String::as_str).filter(|k| !matches!(*k, "layer" | "coalesce") && !k.starts_with("__"));
+    match (changed.next(), changed.next()) {
+        (Some("arrowStart"), None) => "Change Arrowhead Start",
+        (Some("arrowEnd"), None) => "Change Arrowhead End",
+        (Some("arrowWidth"), None) => "Change Arrowhead Width",
+        (Some("arrowLength"), None) => "Change Arrowhead Length",
+        (Some("arrowConcavity"), None) => "Change Arrowhead Concavity",
+        _ => EDIT,
+    }
+}
+
 pub(super) fn shape_edit(s: &mut Session, p: &Value) -> Result<Value> {
     const CMD: &str = "shape.edit";
     let id = layer_id(s, p)?;
     let fg = s.tools.foreground;
     let fgc = Color::rgba(fg[0], fg[1], fg[2], fg[3]);
     let name = p.get("name").and_then(Value::as_str).map(str::to_string);
-    with_shape(s, id, "Edit Shape", |sh, layer| {
+    let label = edit_history_name(s, id, p);
+    with_shape(s, id, label, |sh, layer| {
         if let Some(v) = p.get("path") {
             sh.path = parse_path(v).map_err(|e| bad(CMD, e))?;
             sh.live = None;
@@ -703,6 +811,14 @@ pub(super) fn selection_to_shape(s: &mut Session, p: &Value) -> Result<Value> {
     }
     shape_create(s, &q)
 }
+
+#[cfg(test)]
+#[path = "triangle_layer_name_tests.rs"]
+mod triangle_layer_name_tests;
+
+#[cfg(test)]
+#[path = "triangle_box_geometry_tests.rs"]
+mod triangle_box_geometry_tests;
 
 #[cfg(test)]
 mod arrow_affine_regression_tests {

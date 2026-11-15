@@ -218,7 +218,9 @@ fn open_filters_keep_literal_extensions_on_windows_and_macos() {
 
 #[test]
 fn native_services_provide_update_transport() {
-    assert!(native(None).check_updates.is_some());
+    let services = native(None);
+    assert!(services.check_updates.is_some());
+    assert!(services.last_update.is_some());
 }
 
 #[test]
@@ -966,4 +968,41 @@ fn tiff_options_reach_the_written_file() {
     let info = photocraft_codecs::tiff_info(&bytes).unwrap();
     assert_eq!(info.pages.iter().map(|p| (p.width, p.compression)).collect::<Vec<_>>(), [(200, 5), (100, 5), (50, 5)]);
     assert!(!photocraft_codecs::decode(&bytes).unwrap().layout().has_alpha());
+}
+
+/// PSB is a save type of its own: it shows in the list, and the type gives a typed name its
+/// extension. As an extension of the PSD type it was hidden, and KDE's dialog, which adds the
+/// type's first extension, turned `art.psb` into `art.psb.psd`.
+#[test]
+fn psb_is_its_own_save_type() {
+    let filters = save_filters("Untitled-1.psd");
+    let (psd, psb) = (&filters[0], &filters[1]);
+    // The PSD type takes a typed .psb too, so Windows doesn't add .psd after it.
+    assert_eq!(psd.1, vec!["psd".to_string(), "psb".to_string()], "{psd:?}");
+    assert_eq!(psb.1, vec!["psb".to_string()], "{psb:?}");
+    let big = save_filters("big.psb");
+    assert_eq!((big[0].0.as_str(), big[0].1.clone()), ("PSB Large Document", vec!["psb".to_string()]), "a .psb starts on its own type");
+    let chosen = |f: &(String, Vec<String>)| with_chosen_type(Path::new("/pics/art"), Some("art.psd"), &f.1);
+    assert_eq!(chosen(psd), PathBuf::from("/pics/art.psd"));
+    assert_eq!(chosen(psb), PathBuf::from("/pics/art.psb"));
+    let opened = Some("Untitled-1");
+    assert_eq!(with_chosen_type(Path::new("/pics/art.psb"), opened, &psd.1), PathBuf::from("/pics/art.psb"), "a typed .psb stays");
+    // KDE adds the type's first extension after a typed one of its own: that one is taken back,
+    // also from an `art.psb.psd` typed in full (the dialog's answer is the same string).
+    assert_eq!(with_chosen_type(Path::new("/pics/art.psb.psd"), opened, &psd.1), PathBuf::from("/pics/art.psb"), "KDE's art.psb.psd");
+    // A dot that's part of the name stays (.jpg isn't one of the PSD type's).
+    assert_eq!(with_chosen_type(Path::new("/pics/scan.jpg.psd"), opened, &psd.1), PathBuf::from("/pics/scan.jpg.psd"));
+}
+
+/// The document formats, then the rest by name, so a long list stays easy to search.
+#[test]
+fn save_types_list_the_document_formats_then_the_rest_by_name() {
+    let names: Vec<&str> = SAVE_FILTERS.iter().map(|(name, _)| *name).collect();
+    assert_eq!(names[..3], ["PSD Document", "PSB Large Document", "PhotoCraft"]);
+    let key = |name: &&str| name.to_ascii_lowercase();
+    assert!(names[3..].is_sorted_by_key(key), "{:?}", &names[3..]);
+    let names: Vec<&str> = OPEN_FILTERS.iter().map(|(name, _)| *name).collect();
+    assert_eq!(names[..2], ["Photoshop", "PhotoCraft"]);
+    let formats = names.iter().position(|name| *name == "Brushes").expect("the app's own resources");
+    assert!(names[2..formats].is_sorted_by_key(key), "{:?}", &names[2..formats]);
 }

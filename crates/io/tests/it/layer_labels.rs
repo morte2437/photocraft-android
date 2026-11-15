@@ -48,6 +48,6 @@ fn layer_labels_psd_roundtrip_all_colors_and_depths() {
 
 #[test]
 fn layer_labels_truncated_sheet_color_is_not_a_label() {
-    let block = photocraft_psd::TaggedBlock::new(*b"lclr", vec![0]);
+    let block = craft_psd::TaggedBlock::new(*b"lclr", vec![0]);
     assert!(matches!(block.parsed(), Some(Err(_))));
 }

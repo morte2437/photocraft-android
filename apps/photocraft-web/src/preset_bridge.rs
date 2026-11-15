@@ -181,7 +181,7 @@ impl PresetBackend for Bridge {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use photocraft_psd::abr::{AbrSample, LegacyBrush, LegacyTip, write_v12};
+    use craft_psd::abr::{AbrSample, LegacyBrush, LegacyTip, write_v12};
     use serde_json::json;
 
     fn import(s: &mut Session) {
@@ -367,7 +367,7 @@ mod tests {
     }
     #[test]
     fn indexed_brush_store_coexists_with_imported_gradient_preferences() {
-        use photocraft_psd::grd::{GrdColor, GrdGradient, GrdStop, write};
+        use craft_psd::grd::{GrdColor, GrdGradient, GrdStop, write};
         let b = Bridge::default();
         let (mut s, _) = session(b.clone());
         import(&mut s);

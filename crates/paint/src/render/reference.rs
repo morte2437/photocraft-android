@@ -322,6 +322,153 @@ fn cached_profiles_match_scalar_for_small_and_transformed_dabs() {
     }
 }
 
+/// Dabs that take the general loop, each with the context and flags that select a feature.
+#[cfg(not(target_arch = "wasm32"))]
+fn general_loop_cases() -> Vec<(&'static str, BrushContext, Dab, bool, bool)> {
+    let tip = GrayTile::from_fn(16, 12, |x, y| ((x + 2 * y) % 7) as f32 / 6.0 + 0.1);
+    let base = || BrushSettings { hardness: 0.25, ..Default::default() };
+    let dab = |angle: f32, roundness: f32, proj_scale: f32| {
+        let mut d = Dab::round(Point::new(50.3, 60.7), 40.0, 0.8);
+        d.angle = angle;
+        d.roundness = roundness;
+        d.proj_scale = proj_scale;
+        d.proj_angle = 0.3;
+        d
+    };
+    let ctx = |b: BrushSettings| BrushContext::new(&b);
+    vec![
+        ("sampled", ctx(BrushSettings { tip: TipShape::Sampled(tip.clone()), ..base() }), dab(0.4, 1.0, 1.0), false, false),
+        (
+            "per-tip texture",
+            ctx({
+                let mut b = base();
+                b.texture.enabled = true;
+                b.texture.each_tip = true;
+                b.texture.pattern = Pattern::Tile(tip.clone());
+                b
+            }),
+            dab(0.0, 1.0, 1.0),
+            false,
+            false,
+        ),
+        ("noise", ctx(BrushSettings { noise: true, ..base() }), dab(0.0, 1.0, 1.0), false, false),
+        ("wet edges", ctx(BrushSettings { wet_edges: true, ..base() }), dab(0.0, 1.0, 1.0), false, false),
+        ("wet edges with depth", ctx(BrushSettings { wet_edges: true, ..base() }), dab(0.0, 1.0, 1.0), false, true),
+        ("rotated ellipse", ctx(base()), dab(0.7, 0.4, 1.0), false, false),
+        ("projection", ctx(base()), dab(0.0, 1.0, 0.6), false, false),
+        (
+            "dual tip",
+            ctx({
+                let mut b = base();
+                b.dual_brush.enabled = true;
+                b.dual_brush.tip = TipShape::Sampled(tip.clone());
+                b
+            }),
+            dab(0.2, 1.0, 1.0),
+            true,
+            false,
+        ),
+    ]
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+struct RestoreThreshold;
+
+#[cfg(not(target_arch = "wasm32"))]
+impl Drop for RestoreThreshold {
+    fn drop(&mut self) {
+        set_parallel_min_pixels(DEFAULT_PARALLEL_MIN_PIXELS);
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn bits(v: &[f32]) -> Vec<u32> {
+    v.iter().map(|x| x.to_bits()).collect()
+}
+
+/// Rows of the general loop run on the thread pool from a quarter of the pixels the round path
+/// needs, and give the bits the serial loop gives.
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn general_loop_rows_match_serially_and_in_parallel() {
+    let _restore = RestoreThreshold;
+    for (label, ctx, d, dual, with_depth) in general_loop_cases() {
+        let rect = ctx.dab_rect(&d, dual);
+        assert!(rect.height() > 8, "{label}: many rows");
+        let run = |threshold: usize| {
+            set_parallel_min_pixels(threshold);
+            let (mut out, mut depth) = (vec![0.75; 7], vec![0.25; 5]);
+            ctx.rasterize_into(&d, dual, rect, &mut out, with_depth.then_some(&mut depth));
+            if !with_depth {
+                depth.clear();
+            }
+            (out, depth)
+        };
+        let (par, par_depth) = run(0);
+        let (ser, ser_depth) = run(usize::MAX);
+        assert_eq!(bits(&par), bits(&ser), "{label}: coverage differs between parallel and serial");
+        assert_eq!(bits(&par_depth), bits(&ser_depth), "{label}: depth differs between parallel and serial");
+        assert!(par.iter().any(|v| *v != 0.0), "{label}: painted something");
+        if with_depth {
+            assert!(par_depth.iter().any(|v| *v != 0.0), "{label}: depth written");
+        }
+    }
+}
+
+/// The parallel general loop gives the bits of the frozen serial loop.
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn parallel_general_loop_matches_the_frozen_reference() {
+    let _restore = RestoreThreshold;
+    set_parallel_min_pixels(0);
+    for (label, ctx, d, dual, with_depth) in general_loop_cases() {
+        let rect = ctx.dab_rect(&d, dual);
+        let (mut actual, mut expected) = (Vec::new(), Vec::new());
+        let (mut actual_depth, mut expected_depth) = (Vec::new(), Vec::new());
+        ctx.rasterize_into(&d, dual, rect, &mut actual, with_depth.then_some(&mut actual_depth));
+        ctx.rasterize_reference(&d, dual, rect, &mut expected, with_depth.then_some(&mut expected_depth));
+        assert_eq!(bits(&actual), bits(&expected), "{label}: coverage differs from the reference");
+        assert_eq!(bits(&actual_depth), bits(&expected_depth), "{label}: depth differs from the reference");
+        assert!(actual.iter().any(|v| *v != 0.0), "{label}: painted something");
+    }
+}
+
+/// Empty rects and non-finite dabs return normally from the general loop at either threshold.
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn general_loop_survives_empty_rects_and_nan_dabs() {
+    let _restore = RestoreThreshold;
+    let tip = GrayTile::from_fn(8, 5, |x, y| ((x + y) % 7) as f32 / 6.0);
+    let sampled = BrushContext::new(&BrushSettings { tip: TipShape::Sampled(tip), ..Default::default() });
+    let plain = BrushContext::new(&BrushSettings::default());
+    for threshold in [0, usize::MAX] {
+        set_parallel_min_pixels(threshold);
+        for ctx in [&sampled, &plain] {
+            for rect in [Rect::new(0, 0, 0, 5), Rect::new(0, 0, 5, 0), Rect::new(0, 0, 0, 0)] {
+                for with_depth in [false, true] {
+                    let (mut out, mut depth) = (vec![0.5; 9], vec![0.5; 9]);
+                    ctx.rasterize_into(&Dab::round(Point::new(2.0, 2.0), 6.0, 1.0), false, rect, &mut out, with_depth.then_some(&mut depth));
+                    assert!(out.is_empty());
+                    if with_depth {
+                        assert!(depth.is_empty());
+                    }
+                }
+            }
+        }
+        for field in 0..2 {
+            let mut d = Dab::round(Point::new(0.0, 0.0), 6.0, 1.0);
+            if field == 0 {
+                d.radius = f32::NAN;
+            } else {
+                d.angle = f32::NAN;
+            }
+            let mut out = Vec::new();
+            sampled.rasterize_into(&d, false, Rect::new(-4, -4, 4, 4), &mut out, None);
+            assert_eq!(out.len(), 64);
+        }
+    }
+}
+
 // Keep the pre-cache scalar coverage equations independent of TipProfile.
 fn tip_falloff(d: f32, radius: f32, hardness: f32) -> f32 {
     let (r0, s) = tip_shape(radius, hardness);

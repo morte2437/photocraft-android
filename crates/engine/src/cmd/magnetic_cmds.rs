@@ -10,7 +10,7 @@ use std::sync::Arc;
 
 use photocraft_algo::magnetic::{self, Settings, Tracer};
 use photocraft_algo::selection as sel;
-use photocraft_doc::{DocId, Document, LayerId};
+use photocraft_doc::{ColorMode, DocId, Document, LayerId};
 use photocraft_geom::Rect;
 use serde_json::{Value, json};
 
@@ -23,9 +23,12 @@ const MAX_POINTS: usize = 100_000;
 /// Longest border one command traces (px, measured along the fastening points).
 const MAX_LENGTH: f64 = 200_000.0;
 
-/// The pixels the Magnetic Lasso follows: the active layer's when it is a pixel layer (Photoshop's
-/// tool sees only the current layer), else the composite. A snapshot of one document revision,
-/// read lazily and cached while a border is drawn.
+/// The pixels the Magnetic Lasso follows: the visible composite of an RGB document, whichever layer
+/// is active (hidden layers add no edges). Documents in other modes (CMYK, Grayscale, Indexed, ...)
+/// keep the older rule: the active layer's own pixels when it is a pixel layer, else the composite.
+/// A snapshot of one document revision, read lazily (only the tiles near the border) and cached by
+/// the tracer while a border is drawn; [`EdgeSource::is_current`] drops it when the document changes,
+/// so the composite is rendered once per revision and tile, not once per pointer event.
 pub struct EdgeSource {
     doc: Arc<Document>,
     layer: Option<LayerId>,
@@ -33,8 +36,12 @@ pub struct EdgeSource {
     tracer: Tracer,
 }
 
-/// The active layer when it has pixels of its own.
+/// The one layer whose pixels the border follows, or `None` for the composite: always the composite
+/// in an RGB document; in other modes the active layer when it has pixels of its own.
 fn pixel_layer(d: &DocState) -> Option<LayerId> {
+    if d.doc.mode == ColorMode::Rgb {
+        return None;
+    }
     d.active_layer.filter(|id| d.doc.layer(*id).is_some_and(|l| l.surface().is_some()))
 }
 
@@ -45,7 +52,13 @@ impl EdgeSource {
         Some(EdgeSource { doc: d.doc.clone(), layer: pixel_layer(d), revision: d.revision, tracer: Tracer::new(d.doc.bounds()) })
     }
 
-    /// Whether this still shows the session's active document, layer and revision.
+    /// Whether this still shows the session's active document and revision (and, outside RGB
+    /// documents, active layer).
+    ///
+    /// When this returns `false` the caller must drop the `EdgeSource` and build a new one with
+    /// [`EdgeSource::new`]: [`EdgeSource::snap`] and [`EdgeSource::trace`] keep reading the old
+    /// snapshot and its cached pixels otherwise. The Magnetic Lasso tool does so in `source()`
+    /// (`crates/ui-egui/src/tools/magnetic_lasso_ui.rs`) before every snap and trace.
     pub fn is_current(&self, s: &Session) -> bool {
         s.active().is_some_and(|d| d.doc.id == self.doc.id && d.revision == self.revision && pixel_layer(d) == self.layer)
     }
@@ -70,7 +83,7 @@ impl EdgeSource {
     }
 }
 
-/// Straight RGBA8 pixels of `r` from the layer, or the composite without one.
+/// Straight RGBA8 pixels of `r` from the layer, or the visible composite without one.
 fn read(doc: &Document, layer: Option<LayerId>, r: Rect) -> Vec<[u8; 4]> {
     match layer.and_then(|id| doc.layer(id)).and_then(|l| l.surface()) {
         Some(surface) => sel::rgba8_image(surface, r),

@@ -1,9 +1,9 @@
 //! Large PSB files (#375): planes past 2 GiB decode, and a channel that can't be decoded leaves
 //! its layer empty instead of painting it opaque black.
 
+use craft_psd::testgen;
+use craft_psd::{ColorMode, Compression, LayerSpec, PixelData, PsdBuilder, Version};
 use photocraft_io::psd_to_document;
-use photocraft_psd::testgen;
-use photocraft_psd::{ColorMode, Compression, LayerSpec, PixelData, PsdBuilder, Version};
 
 /// A layer whose red channel is damaged: the warning says "treated as empty", and the layer must
 /// be empty, not opaque black (the transparency channel is still fine).

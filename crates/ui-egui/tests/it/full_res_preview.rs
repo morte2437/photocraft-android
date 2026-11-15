@@ -200,3 +200,35 @@ fn adjustment_dialog_zoomed_out_skips_the_reduced_copy_when_low_res_is_off() {
     let full = mean(&row(&mut h));
     assert!((full - committed).abs() < 8.0, "off: the preview matches the committed view ({full} vs {committed})");
 }
+
+/// Check the encoded texture directly, before canvas painting or adjustment previews.
+#[test]
+fn compositor_chunks_keep_their_columns() {
+    let _gpu = photocraft_testkit::gpu_lock();
+    let rs = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        egui_kittest::wgpu::create_render_state(egui_kittest::wgpu::default_wgpu_setup(), Default::default())
+    }));
+    let Ok(rs) = rs else {
+        eprintln!("skipping: no GPU adapter");
+        return;
+    };
+    eprintln!("canvas encode adapter {:?}", rs.adapter.get_info());
+    let gpu = photocraft_ui_egui::gpu_canvas::GpuCanvas::new(&rs);
+    let doc = columns_document();
+    let refresh = gpu.refresh(doc.id.0, &doc, None, None);
+    assert!(gpu.fault().is_none(), "GPU fault after canvas refresh: {:?}", gpu.fault());
+    if refresh.kind == "full" {
+        eprintln!("skipping: GPU compositor unavailable: {:?}", refresh.fallback);
+        return;
+    }
+    assert_eq!(refresh.kind, "gpu-full", "{:?}", refresh.fallback);
+    let (format, size, texels) = gpu.read_texels(doc.id.0).expect("read back the encoded canvas");
+    assert_eq!(format, eframe::wgpu::TextureFormat::Rgba8Unorm);
+    assert_eq!(size, [W as u32, H as u32]);
+    assert_eq!(texels.len(), (W * H) as usize);
+    for (i, pixel) in texels.iter().enumerate() {
+        let x = i % W as usize;
+        let v = (x % 2) as f32;
+        assert_eq!(*pixel, [v, v, v, 1.0], "canvas pixel ({x}, {})", i / W as usize);
+    }
+}

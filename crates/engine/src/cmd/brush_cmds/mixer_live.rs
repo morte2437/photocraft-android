@@ -151,6 +151,7 @@ impl LiveMixer {
 
     /// Validate the params and capture the document and paint load, without rendering a dab.
     fn prepare(s: &Session, p: &Value, preview_limits: bool) -> Result<(Self, Vec<StrokePoint>)> {
+        mode_refusal(s)?;
         let captured = crate::channel_cmds::inject_target(s, CMD, p.clone());
         let p = &captured;
         has_paintable(s).map_err(EngineError::Other)?;
@@ -168,6 +169,7 @@ impl LiveMixer {
             sample_all_layers: flag(p, "sampleAllLayers", bm.sample_all_layers) && crate::channel_cmds::target_of(p) == crate::channel_cmds::Target::Pixels,
             clean_after_stroke: flag(p, "cleanAfterStroke", bm.clean_after_stroke),
             load_after_stroke: flag(p, "loadAfterStroke", bm.load_after_stroke),
+            solid_colors_only: bm.solid_colors_only,
         };
         let initial_state = if let Some(value) = p.get("mixerState") {
             if value.get("spatial").and_then(Value::as_array).is_some_and(|v| v.len() != 4096) {
@@ -330,9 +332,26 @@ impl LiveMixer {
     }
 }
 
+/// The reference's alert for a Mixer Brush press in an Indexed Color document (#11958).
+pub const INDEXED_REFUSAL: &str =
+    "Could not use the Mixer Brush tool because it does not work with Indexed Color images (convert image to RGB Color mode to edit).";
+/// The reference's alert for a Mixer Brush press in a Bitmap document (#11958).
+pub const BITMAP_REFUSAL: &str = "Could not use the Mixer Brush tool because it does not work with Bitmap images (convert image to Grayscale mode to edit).";
+
+/// The Mixer Brush refuses Indexed Color and Bitmap documents before anything is painted, with the
+/// reference's alert text; other modes (Duotone and Multichannel were not measured) paint as before.
+fn mode_refusal(s: &Session) -> Result<()> {
+    match s.active().map(|st| st.doc.mode) {
+        Some(photocraft_color::ColorMode::Indexed) => Err(EngineError::Other(INDEXED_REFUSAL.into())),
+        Some(photocraft_color::ColorMode::Bitmap) => Err(EngineError::Other(BITMAP_REFUSAL.into())),
+        _ => Ok(()),
+    }
+}
+
 /// Consume a matching prepared result or replay without the preview tile cap, then commit one history step.
 /// The completed stroke also applies the automatic clean/load settings to the stored paint load.
 pub(super) fn run(s: &mut Session, p: &Value) -> Result<Value> {
+    mode_refusal(s)?;
     let points = parse_points(p, CMD)?;
     let cached =
         s.live_commit.take().filter(|live| live.matches(s, CMD, p, &points) && live.mixer.as_ref().is_some_and(|(before, _)| *before == s.tools.mixer));

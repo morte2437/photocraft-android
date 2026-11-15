@@ -7,8 +7,8 @@
 #[path = "../support/recovery_psd.rs"]
 mod recovery_psd;
 
+use craft_psd::PsdFile;
 use photocraft_io::{ImportOptions, import, import_for_open};
-use photocraft_psd::PsdFile;
 
 /// Verifies a generated, two-layer PSD opens without source restrictions or damage prompts.
 #[test]
@@ -68,7 +68,7 @@ fn damaged_composite_keeps_layers_and_requests_interactive_confirmation() {
 /// Verifies mismatched resolution metadata produces a warning but no damage prompt.
 #[test]
 fn ordinary_compatibility_warning_does_not_mean_damaged() {
-    use photocraft_psd::{ImageResource, ResolutionInfo, resources::ids};
+    use craft_psd::{ImageResource, ResolutionInfo, resources::ids};
     let mut file = PsdFile::from_bytes(&recovery_psd::make_psd(false)).unwrap();
     let resolution = ResolutionInfo { v_res_fixed: ResolutionInfo::from_dpi(150.0).v_res_fixed, ..ResolutionInfo::from_dpi(300.0) };
     file.resources.push(ImageResource::new(ids::RESOLUTION_INFO, resolution.to_bytes()));

@@ -1,13 +1,13 @@
 //! [`Document`] → PSD/PSB.
 
-use photocraft_color::{ColorMode, PixelFormat, SampleType};
-use photocraft_doc::{Document, Layer, LayerContent, LayerMask, SmartContentsId};
-use photocraft_psd::file::{GlobalLayerMask, LayerInfoPlacement};
-use photocraft_psd::layer::{BlendingRanges, ChannelData, LayerFlags, LayerInfo, LayerMask as PsdMask, MaskData, MaskParameters};
-use photocraft_psd::resources::{ImageResource, ResolutionInfo, ids, version_info_resource};
-use photocraft_psd::{
+use craft_psd::file::{GlobalLayerMask, LayerInfoPlacement};
+use craft_psd::layer::{BlendingRanges, ChannelData, LayerFlags, LayerInfo, LayerMask as PsdMask, MaskData, MaskParameters};
+use craft_psd::resources::{ImageResource, ResolutionInfo, ids, version_info_resource};
+use craft_psd::{
     BlendMode as PsdBlend, ColorMode as PsdMode, Compression, Header, ImageData, LayerRecord, PsdFile, Rect as PsdRect, SectionType, TaggedBlock, Version,
 };
+use photocraft_color::{ColorMode, PixelFormat, SampleType};
+use photocraft_doc::{Document, Layer, LayerContent, LayerMask, SmartContentsId};
 use photocraft_raster::{Interrupt, Surface};
 
 use crate::adjust_map;
@@ -605,6 +605,14 @@ impl Ex<'_> {
         if !matches!(l.content, LayerContent::Shape(_)) {
             self.vector_mask_block(l, &mut raw);
         }
+        // The document field owns frame state, including an imported frame's removal.
+        raw.retain(|(k, _)| k != b"pcFr");
+        if let Some(frame) = &l.frame {
+            match serde_json::to_vec(frame) {
+                Ok(data) => raw.push((*b"pcFr", data)),
+                Err(e) => self.warnings.push(format!("frame metadata could not be written: {e}")),
+            }
+        }
         crate::comps_map::artboard_block(&self.guides, l, &mut raw);
         if let Some((comps, last)) = &self.comps {
             // Ids are assigned to every layer before emitting.
@@ -620,7 +628,7 @@ impl Ex<'_> {
     fn layer_xmp_block(&mut self, l: &Layer, raw: &mut Vec<([u8; 4], Vec<u8>)>) {
         let Some(xmp) = l.xmp.as_deref() else { return };
         let pos = raw.iter().position(|(k, _)| k == b"shmd");
-        match photocraft_psd::metadata::put_layer_xmp(pos.map(|i| raw[i].1.as_slice()), xmp) {
+        match craft_psd::metadata::put_layer_xmp(pos.map(|i| raw[i].1.as_slice()), xmp) {
             Ok(data) => match pos {
                 Some(i) => raw[i].1 = data,
                 None => raw.push((*b"shmd", data)),
@@ -1011,6 +1019,39 @@ impl Ex<'_> {
     /// it reports progress and returns `false` to stop early (a cancelled save, #3389).
     fn emit(&mut self, layers: &[Layer], tick: &mut dyn FnMut() -> bool) {
         for l in layers {
+            // Export a frame as ordinary editable groups, a vector clip and a separate border.
+            // Photoshop's private native-frame metadata is deliberately not fabricated.
+            let expanded;
+            let l = if let (Some(frame), Some(children)) = (&l.frame, l.children()) {
+                let mut clip = Layer::group("Frame Image", children.to_vec());
+                clip.blend = photocraft_color::BlendMode::Normal;
+                clip.mask = l.mask.clone();
+                clip.vector_mask = l.vector_mask.clone();
+                clip.psd_blocks.push((*b"pcFc", std::sync::Arc::new(vec![1])));
+                let cid = self.fresh_id();
+                self.layer_ids.insert(clip.id, cid);
+                let mut outer = l.clone();
+                outer.mask = None;
+                outer.vector_mask = None;
+                let mut parts = vec![clip];
+                if let Some(mut shape) = frame.stroke_shape() {
+                    // Readers that composite pixels see the border too, as for any shape layer.
+                    shape.cache = Some(photocraft_vector::render_shape(&shape, self.fmt, self.canvas));
+                    let mut border = Layer::new("Frame Stroke", LayerContent::Shape(shape));
+                    border.psd_blocks.push((*b"pcFs", std::sync::Arc::new(vec![1])));
+                    let bid = self.fresh_id();
+                    self.layer_ids.insert(border.id, bid);
+                    parts.push(border);
+                }
+                if let Some(target) = outer.children_mut() {
+                    *target = parts;
+                }
+                // Emit this prepared group directly, retaining its typed frame for content_blocks.
+                expanded = outer;
+                &expanded
+            } else {
+                l
+            };
             let extra = self.content_blocks(l);
             match &l.content {
                 LayerContent::Group(g) => {

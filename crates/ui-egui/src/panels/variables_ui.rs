@@ -51,6 +51,7 @@ pub fn menu(app: &mut PhotocraftApp, id: &str, params: &Value) -> Option<Result<
         "image.applyDataSet" if !has_params => {
             // No data set named: open the dialog on the Data Sets page to pick one.
             let mut f = Map::new();
+            f.insert("__command".into(), json!(id));
             let state = app.session.active().map(|st| crate::variables_ui::to_state(&st.doc.variables)).unwrap_or_else(|| json!({"defs": [], "dataSets": []}));
             f.insert("__variablesOrig".into(), state.clone());
             f.insert("__variables".into(), state);
@@ -119,7 +120,7 @@ fn _a(a: &photocraft_doc::PixelAlign) -> &'static str {
 const TYPES: &[(&str, &str)] = &[("visibility", "Visibility"), ("textReplacement", "Text Replacement"), ("pixelReplacement", "Pixel Replacement")];
 const METHODS: &[(&str, &str)] = &[("fit", "Fit"), ("fill", "Fill"), ("conform", "Conform"), ("asIs", "As Is")];
 
-/// Render the dialog. Mutates `fields["__variables"]` and `fields["__page"]`.
+/// Render the dialog and apply a clicked data set using the edited working fields.
 pub fn body(app: &mut PhotocraftApp, ui: &mut egui::Ui, fields: &mut Map<String, Value>) {
     let t = Tokens::get(ui.ctx());
     let layers = layer_options(app);
@@ -138,16 +139,33 @@ pub fn body(app: &mut PhotocraftApp, ui: &mut egui::Ui, fields: &mut Map<String,
     });
     ui.separator();
 
-    if layers.is_empty() {
+    let apply = if layers.is_empty() {
         ui.weak(tl!("Open a document to define variables."));
+        false
     } else if page == "define" {
         define_page(ui, &t, &layers, &mut state);
+        false
     } else {
-        data_sets_page(ui, &t, &mut state, fields);
-    }
+        data_sets_page(ui, &t, &mut state, fields)
+    };
 
     fields.insert("__variables".into(), state);
     fields.insert("__page".into(), json!(page));
+    if apply {
+        fields.remove("__appliedAt");
+        let result = confirm(app, fields);
+        fields.remove("__apply");
+        if result.is_ok()
+            && fields.get("__command").and_then(Value::as_str) == Some("image.applyDataSet")
+            && let Some(st) = app.session.active()
+        {
+            fields.insert("__variables".into(), to_state(&st.doc.variables));
+            fields.insert("__appliedAt".into(), json!([st.doc.id.0, st.revision]));
+        }
+        if let Err(error) = result {
+            app.ui.status = error;
+        }
+    }
 }
 
 /// The dialog state with only object entries in `defs`, `dataSets` and each set's `values`.
@@ -233,7 +251,8 @@ fn data_set_index(fields: &Map<String, Value>, len: usize) -> usize {
     fields.get("__cur").and_then(Value::as_u64).and_then(|v| usize::try_from(v).ok()).filter(|&i| i < len).unwrap_or(0)
 }
 
-fn data_sets_page(ui: &mut egui::Ui, _t: &Tokens, state: &mut Value, fields: &mut Map<String, Value>) {
+/// Edit one data set and report whether its Apply button was clicked.
+fn data_sets_page(ui: &mut egui::Ui, _t: &Tokens, state: &mut Value, fields: &mut Map<String, Value>) -> bool {
     let def_meta: Vec<(String, String)> = state
         .get("defs")
         .and_then(Value::as_array)
@@ -247,9 +266,9 @@ fn data_sets_page(ui: &mut egui::Ui, _t: &Tokens, state: &mut Value, fields: &mu
         .unwrap_or_default();
     if def_meta.is_empty() {
         ui.weak(tl!("Define at least one variable first."));
-        return;
+        return false;
     }
-    let Some(sets) = state.get_mut("dataSets").and_then(Value::as_array_mut) else { return };
+    let Some(sets) = state.get_mut("dataSets").and_then(Value::as_array_mut) else { return false };
     let mut cur = data_set_index(fields, sets.len());
 
     ui.horizontal(|ui| {
@@ -287,6 +306,7 @@ fn data_sets_page(ui: &mut egui::Ui, _t: &Tokens, state: &mut Value, fields: &mu
     });
     ui.separator();
 
+    let mut apply = false;
     if let Some(set) = sets.get_mut(cur) {
         // name
         let mut sname = set.get("name").and_then(Value::as_str).unwrap_or("").to_string();
@@ -297,7 +317,7 @@ fn data_sets_page(ui: &mut egui::Ui, _t: &Tokens, state: &mut Value, fields: &mu
             }
         });
         ui.add_space(4.0);
-        let Some(values) = set.get_mut("values").and_then(Value::as_array_mut) else { return };
+        let Some(values) = set.get_mut("values").and_then(Value::as_array_mut) else { return false };
         for (vname, vty) in &def_meta {
             // find or create a value entry for this variable
             let idx = values.iter().position(|v| v.get("variable").and_then(Value::as_str) == Some(vname));
@@ -339,24 +359,45 @@ fn data_sets_page(ui: &mut egui::Ui, _t: &Tokens, state: &mut Value, fields: &mu
         }
         ui.add_space(6.0);
         if crate::widgets::secondary_button(ui, tl!("Apply"), 84.0).clicked() {
-            fields.insert("__apply".into(), json!(sname));
+            fields.insert("__apply".into(), json!(cur));
+            apply = true;
         }
     }
     fields.insert("__cur".into(), json!(cur));
+    apply
 }
 
-/// OK: save the definitions and data sets, and apply one if the Apply button set `__apply`.
+/// Save the edited definitions and data sets. Apply Data Set OK also applies the selected row.
 pub fn confirm(app: &mut PhotocraftApp, fields: &Map<String, Value>) -> Result<Value, String> {
-    let state = fields.get("__variables").cloned().unwrap_or_else(|| json!({}));
-    let defs = state.get("defs").cloned().unwrap_or_else(|| json!([]));
-    let sets = state.get("dataSets").cloned().unwrap_or_else(|| json!([]));
-    // Only define when there is at least one named variable (empty define clears).
+    let empty = json!([]);
+    let state = fields.get("__variables").unwrap_or(&Value::Null);
+    let defs = state.get("defs").unwrap_or(&empty);
+    let sets = state.get("dataSets").unwrap_or(&empty);
+    let selected = if fields.get("__command").and_then(Value::as_str) == Some("image.applyDataSet") && !fields.contains_key("__apply") {
+        sets.as_array().filter(|rows| !rows.is_empty()).map(|rows| data_set_index(fields, rows.len()))
+    } else {
+        None
+    };
+    // An unchanged OK after Apply closes without another application or history entry.
+    if let Some(index) = selected
+        && let Some(st) = app.session.active()
+        && fields.get("__appliedAt") == Some(&json!([st.doc.id.0, st.revision]))
+        && st.doc.variables.active == Some(index)
+        && state == &to_state(&st.doc.variables)
+    {
+        return Ok(json!({"defined": true}));
+    }
     app.run("image.variables.define", json!({"defs": defs}))?;
     app.run("image.variables.dataSets", json!({"dataSets": sets}))?;
-    if let Some(name) = fields.get("__apply").and_then(Value::as_str) {
-        return app.run("image.applyDataSet", json!({"name": name}));
+    let request = match fields.get("__apply") {
+        Some(Value::String(name)) => Some(json!({"name": name})),
+        Some(value) => value.as_u64().map(|index| json!({"index": index})),
+        None => selected.map(|index| json!({"index": index})),
+    };
+    match request {
+        Some(params) => app.run("image.applyDataSet", params),
+        None => Ok(json!({"defined": true})),
     }
-    Ok(json!({"defined": true}))
 }
 
 #[cfg(test)]

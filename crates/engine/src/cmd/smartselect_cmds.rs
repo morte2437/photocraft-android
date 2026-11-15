@@ -69,6 +69,26 @@ pub(crate) fn with_doc_sampler<R>(doc: &Document, layer: Option<LayerId>, all_la
     }
 }
 
+/// A flat, opaque image: what Quick Selection reads with a group active and Sample All Layers off.
+struct FlatSampler;
+
+impl Sampler for FlatSampler {
+    fn rgba(&self, r: Rect) -> Vec<[f32; 4]> {
+        vec![[0.0, 0.0, 0.0, 1.0]; r.width() as usize * r.height() as usize]
+    }
+}
+
+/// Runs `f` with Quick Selection's sampler: [`with_sampler`]'s, except that with a group active
+/// and Sample All Layers off it reads a flat area, so a click selects only the brush disc instead
+/// of the composite's shapes, as the reference application does (#12933). Artboards and frames,
+/// groups too but not measured, keep reading the composite.
+fn with_quick_sampler<R>(s: &Session, all_layers: bool, f: impl FnOnce(&dyn Sampler, &Document) -> R) -> Result<R> {
+    let d = s.active().ok_or(EngineError::NoDocument)?;
+    let plain_group = |l: &Layer| l.frame.is_none() && matches!(&l.content, LayerContent::Group(g) if g.artboard.is_none());
+    let group = d.active_layer.and_then(|id| d.doc.layer(id)).is_some_and(plain_group);
+    if group && !all_layers { Ok(f(&FlatSampler, &d.doc)) } else { with_sampler(s, all_layers, f) }
+}
+
 /// Stores `region` combined with the current selection by `m` as one history step.
 /// Finding nothing never destroys work: the selection (and history) is left alone and the
 /// caller gets `changed: false`, whatever the mode. (Select Subject and Object Selection run
@@ -99,6 +119,7 @@ fn points(p: &Value) -> Vec<(f32, f32)> {
 /// edges and removes blockiness.
 const ENHANCE: RefineParams = RefineParams { radius: 4.0, smart_radius: true, smooth: 15.0, feather: 0.0, contrast: 25.0, shift_edge: 0.0 };
 
+/// Expands a selection around sampled points using image gradients, optionally enhancing edges.
 fn quick_selection(s: &mut Session, p: &Value) -> Result<Value> {
     let pts = points(p);
     if pts.is_empty() {
@@ -111,12 +132,28 @@ fn quick_selection(s: &mut Session, p: &Value) -> Result<Value> {
         _ => SelectionMode::Add,
     };
     let enhance = b(p, "enhanceEdge", false);
-    let region = with_sampler(s, b(p, "sampleAllLayers", false), |smp, doc| {
+    let region = with_quick_sampler(s, b(p, "sampleAllLayers", false), |smp, doc| {
         let canvas = doc.bounds();
-        let r = quick::quick_select(smp, canvas, &pts, size)?;
-        if enhance { matting::refine_mask(smp, &matting::region_reader(&r), r.bbox, canvas, &ENHANCE) } else { Some(r) }
+        let Some(r) = quick::quick_select(smp, canvas, &pts, size) else { return Ok(None) };
+        let surface = matting::region_surface(&r);
+        if enhance { matting::refine_surface(smp, &surface, canvas, &ENHANCE, None).map_err(|e| EngineError::Other(e.to_string())) } else { Ok(Some(surface)) }
+    })??;
+    let Some(region) = region else { return apply(s, "Quick Selection", None, m) };
+    let bounds = region.content_bounds();
+    let selected = s.edit("Quick Selection", |doc, _| {
+        let empty = photocraft_raster::Surface::new(photocraft_color::PixelFormat::GRAY8);
+        let old = doc.selection.as_ref().unwrap_or(&empty);
+        let area = old.content_bounds().union(&bounds).intersect(&doc.bounds());
+        let out = match m {
+            SelectionMode::Replace => region.clone(),
+            SelectionMode::Add => photocraft_algo::selection::combine_sparse(old, &region, area, f32::max),
+            SelectionMode::Subtract => photocraft_algo::selection::combine_sparse(old, &region, area, |a, b| (a - b).max(0.0)),
+            SelectionMode::Intersect => photocraft_algo::selection::combine_surfaces(old, &region, area, f32::min),
+        };
+        doc.selection = (!out.content_bounds().is_empty()).then_some(out);
+        Ok(doc.selection.is_some())
     })?;
-    apply(s, "Quick Selection", region.as_ref(), m)
+    Ok(json!({"selected": selected, "changed": true, "bounds": [bounds.x0, bounds.y0, bounds.width(), bounds.height()]}))
 }
 
 fn rect_param(p: &Value) -> Option<Rect> {
@@ -263,7 +300,25 @@ fn object_at_point(s: &mut Session, p: &Value, (x, y): (f32, f32)) -> Result<Val
     Ok(out)
 }
 
+/// The reference application's Object Selection alert in the modes it refuses (#12867).
+/// Multichannel and Duotone weren't measured and keep selecting.
+pub fn object_mode_refusal(mode: photocraft_color::ColorMode) -> Option<&'static str> {
+    use photocraft_color::ColorMode;
+    match mode {
+        ColorMode::Indexed => Some(
+            "Could not complete your request because the tool does not work with Indexed Color images. Please convert the image to RGB or another supported mode before using..",
+        ),
+        ColorMode::Bitmap => Some(
+            "Could not complete your request because the tool does not work with Bitmap images. Please convert the image to RGB or another supported mode before using..",
+        ),
+        _ => None,
+    }
+}
+
 fn object_selection(s: &mut Session, p: &Value) -> Result<Value> {
+    if let Some(why) = s.active().and_then(|d| object_mode_refusal(d.doc.mode)) {
+        return Err(EngineError::Other(why.into()));
+    }
     if p.get("rect").is_none()
         && let Some(pt) = point_param(p)
     {
@@ -434,24 +489,14 @@ fn refine_edge(s: &mut Session, p: &Value) -> Result<Value> {
         let edited = if edits.is_empty() { None } else { select_mask_edits::apply(doc, active, start.cloned(), &edits) };
         let Some(sel) = (if edits.is_empty() { start } else { edited.as_ref() }) else { return Ok(None) };
         let brush = matting::EdgeBrush::new(&strokes, doc.bounds());
-        // The refined result is dense over the selection's bounds: refuse what would not fit
-        // rather than allocate it (a thin edit across a huge canvas; the #8783 review).
-        let content = sel.content_bounds();
-        let area = matting::refine_area(content, doc.bounds(), &params, brush.as_ref());
-        if u64::from(area.width()) * u64::from(area.height()) > matting::MAX_REFINE_AREA {
-            return Err(bad(
-                "select.refineEdge",
-                &format!("the selection is too large to refine ({} × {} px; at most {} px in all)", area.width(), area.height(), matting::MAX_REFINE_AREA),
-            ));
-        }
-        Ok(matting::refine_mask_brushed(smp, &matting::surface_reader(sel), content, doc.bounds(), &params, brush.as_ref()))
+        matting::refine_surface(smp, sel, doc.bounds(), &params, brush.as_ref()).map_err(|e| EngineError::Other(e.to_string()))
     })??;
     let d = s.active().ok_or(EngineError::NoDocument)?;
     let active = d.active_layer.filter(|id| d.doc.layer(*id).is_some());
     match output.as_str() {
         "selection" => {
             let selected = s.edit("Select and Mask", |doc, _| {
-                doc.selection = region.as_ref().map(matting::region_surface);
+                doc.selection = region.clone();
                 Ok(doc.selection.is_some())
             })?;
             Ok(json!({ "output": output, "selected": selected }))
@@ -459,8 +504,7 @@ fn refine_edge(s: &mut Session, p: &Value) -> Result<Value> {
         "layerMask" => {
             let id = active.ok_or_else(|| EngineError::Other("no active layer".into()))?;
             s.edit("Select and Mask", |doc, _| {
-                let surface =
-                    region.as_ref().map(matting::region_surface).unwrap_or_else(|| photocraft_raster::Surface::new(photocraft_color::PixelFormat::GRAY8));
+                let surface = region.clone().unwrap_or_else(|| photocraft_raster::Surface::new(photocraft_color::PixelFormat::GRAY8));
                 crate::extra_cmds::background_to_layer_for_mask(doc, id);
                 let existing = doc.layer(id).and_then(|l| l.mask.as_ref()).cloned().unwrap_or_else(LayerMask::reveal_all);
                 doc.layer_mut(id).ok_or(EngineError::NoLayer(id))?.mask = Some(LayerMask { surface, ..existing });
@@ -476,14 +520,14 @@ fn refine_edge(s: &mut Session, p: &Value) -> Result<Value> {
                 EngineError::Other(format!("the active layer is {} {} layer without pixels", src_layer.content.article(), src_layer.content.kind_name()))
             })?;
             let name = d.doc.copy_name(&src_layer.name);
-            let empty = Region { bbox: Rect::EMPTY, mask: Vec::new() };
+            let empty = photocraft_raster::Surface::new(photocraft_color::PixelFormat::GRAY8);
             let reg = region.as_ref().unwrap_or(&empty);
-            let pixels = if decontaminate { matting::decontaminate(src, reg, params.radius, amount) } else { src.clone() };
+            let pixels = if decontaminate { matting::decontaminate_surface(src, reg, params.radius, amount) } else { src.clone() };
             let with_mask = matches!(output.as_str(), "newLayerWithMask" | "newDocumentWithMask");
             let (content, mask) = if with_mask {
-                (pixels, Some(LayerMask { surface: matting::region_surface(reg), ..LayerMask::reveal_all() }))
+                (pixels, Some(LayerMask { surface: reg.clone(), ..LayerMask::reveal_all() }))
             } else {
-                (matting::masked_copy(&pixels, reg), None)
+                (matting::masked_copy_surface(&pixels, reg, reg.content_bounds()), None)
             };
             if output.starts_with("newDocument") {
                 // Same canvas, colour mode, depth and profile, so the pixels need no conversion.
@@ -568,4 +612,11 @@ pub fn specs() -> Vec<CommandSpec> {
 }
 
 #[cfg(test)]
+mod object_transparent_layer_tests;
+#[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod object_mode_refusal_tests;
+#[cfg(test)]
+mod quick_group_target_tests;

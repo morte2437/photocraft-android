@@ -61,7 +61,7 @@ fn the_interruptible_warp_reports_progress_and_stops_when_cancelled() {
 }
 
 /// Perspective Crop's map lands each quad corner exactly on its rectangle corner; degenerate,
-/// self-crossing, counter-clockwise and non-finite quads have none.
+/// self-crossing and non-finite quads have none.
 #[test]
 fn quad_to_rect_maps_corners_and_refuses_bad_quads() {
     let q = [[30.0, 12.0], [140.0, 25.0], [128.0, 110.0], [14.0, 95.0]];
@@ -75,13 +75,37 @@ fn quad_to_rect_maps_corners_and_refuses_bad_quads() {
     for bad in [
         [[0.0, 0.0], [50.0, 0.0], [100.0, 0.0], [0.0, 50.0]],
         [[0.0, 0.0], [50.0, 50.0], [50.0, 0.0], [0.0, 50.0]],
-        [[0.0, 0.0], [0.0, 50.0], [50.0, 50.0], [50.0, 0.0]],
+        [[0.0, 0.0], [50.0, 50.0], [0.0, 50.0], [50.0, 0.0]],
         [[0.0, 0.0], [f64::NAN, 0.0], [50.0, 50.0], [0.0, 50.0]],
         [[0.0, 0.0]; 4],
     ] {
         assert!(quad_to_rect(&bad, 10.0, 10.0).is_none(), "{bad:?}");
     }
     assert!(quad_to_rect(&q, 0.0, 10.0).is_none());
+}
+
+/// #12489: a quad wound counter-clockwise (a box flipped on one axis) maps mirrored, each corner
+/// onto its own rectangle corner. Perspective Warp's clockwise-only check still refuses it.
+#[test]
+fn quad_to_rect_maps_a_counter_clockwise_quad_mirrored() {
+    let q = [[140.0, 25.0], [30.0, 12.0], [14.0, 95.0], [128.0, 110.0]];
+    assert!(!convex_quad(&q) && convex_quad_any_winding(&q));
+    let h = quad_to_rect(&q, 100.0, 80.0).unwrap();
+    for (c, want) in q.iter().zip([[0.0, 0.0], [100.0, 0.0], [100.0, 80.0], [0.0, 80.0]]) {
+        let (x, y) = h.apply(c[0], c[1]);
+        assert!((x - want[0]).abs() < 1e-9 && (y - want[1]).abs() < 1e-9, "{c:?} -> ({x}, {y})");
+    }
+    // Self-crossing in either winding, three corners on a line, and a sliver stay refused.
+    for bad in [
+        [[0.0, 0.0], [50.0, 0.0], [0.0, 50.0], [50.0, 50.0]],
+        [[50.0, 0.0], [0.0, 0.0], [50.0, 50.0], [0.0, 50.0]],
+        [[50.0, 0.0], [25.0, 0.0], [0.0, 0.0], [50.0, 50.0]],
+        [[50.0, 0.0], [0.0, 0.0], [0.0, 0.01], [50.0, 0.01]],
+        [[50.0, 0.0], [0.0, f64::INFINITY], [0.0, 50.0], [50.0, 50.0]],
+    ] {
+        assert!(!convex_quad_any_winding(&bad), "{bad:?}");
+        assert!(quad_to_rect(&bad, 10.0, 10.0).is_none(), "{bad:?}");
+    }
 }
 
 fn rgba() -> Surface {

@@ -5,16 +5,19 @@
 //!
 //! On the layer mask (double-click its Channels row, or Mask Options… on its Layers thumbnail)
 //! it is Photoshop's Layer Mask Display Options: just the rubylith's colour and opacity.
+//!
+//! The Channels panel's New Channel… is the same dialog for a channel still to be made (name,
+//! Masked / Selected Areas, colour, opacity); OK runs `channel.new` (#11451).
 
-use egui::{Align2, Sense, pos2, vec2};
 use photocraft_doc::ColorIndicates;
 use serde_json::{Map, Value, json};
 
 use crate::PhotocraftApp;
-use crate::theme::Tokens;
 
 pub const COMMAND: &str = "channel.options";
 const MARK: &str = "__channelOptions";
+pub const NEW_CHANNEL: &str = "channel.new";
+const NEW_CHANNEL_MARK: &str = "__newChannel";
 
 pub fn owns(fields: &Map<String, Value>) -> bool {
     fields.contains_key(MARK)
@@ -75,6 +78,28 @@ pub fn open(app: &mut PhotocraftApp, channel: &Value) -> Option<u64> {
     Some(app.ui.open_dialog(crate::state::DialogKind::Command, f))
 }
 
+/// The New Channel fields: Channel Options' for a channel still to be made (the next "Alpha N"
+/// name, Masked Areas, red at 50%), or `None` without a document. OK runs `channel.new`.
+pub fn new_channel_fields(app: &PhotocraftApp) -> Option<Map<String, Value>> {
+    let doc = &app.session.active()?.doc;
+    let mut f = Map::new();
+    f.insert(MARK.into(), json!(true));
+    f.insert(NEW_CHANNEL_MARK.into(), json!(true));
+    f.insert("__command".into(), json!(NEW_CHANNEL));
+    f.insert("__label".into(), json!("New Channel…"));
+    f.insert("name".into(), json!(photocraft_engine::channel_cmds::next_alpha_name(doc, "Alpha")));
+    f.insert("indicates".into(), json!("masked"));
+    f.insert("color".into(), json!("#ff0000"));
+    f.insert("opacity".into(), json!(50.0));
+    Some(f)
+}
+
+/// Opens New Channel, or `None` without a document.
+pub fn open_new_channel(app: &mut PhotocraftApp) -> Option<u64> {
+    let f = new_channel_fields(app)?;
+    Some(app.ui.open_dialog(crate::state::DialogKind::Command, f))
+}
+
 /// The `channel.options` params for the dialog's fields: spot channels take `solidity`, the
 /// others `opacity`.
 pub fn params(f: &Map<String, Value>) -> Value {
@@ -91,14 +116,22 @@ pub fn params(f: &Map<String, Value>) -> Value {
     Value::Object(p)
 }
 
+/// OK: runs `channel.options` with the dialog's settings ([`params`]).
 pub fn confirm(app: &mut PhotocraftApp, f: &Map<String, Value>) -> Result<Value, String> {
-    app.run(COMMAND, params(f))
+    app.run(if f.contains_key(NEW_CHANNEL_MARK) { NEW_CHANNEL } else { COMMAND }, params(f))
 }
 
+/// Label column bounds for [`crate::widgets::label_column_width`]: the English labels' width, and what the 200 pt name field leaves of the dialog.
+const LABEL_MIN_W: f32 = 84.0;
+const LABEL_MAX_W: f32 = 200.0;
+/// Every label these dialogs put in the column, so Channel Options, Layer Mask Display Options
+/// and New Spot Channel share one width in a language.
+const LABELS: [&str; 2] = ["Name:", "Color:"];
+
+/// A row's label in the shared column, sized for every one of [`LABELS`] in the current language.
 fn label(ui: &mut egui::Ui, text: &str) {
-    let t = Tokens::get(ui.ctx());
-    let (r, _) = ui.allocate_exact_size(vec2(84.0, 22.0), Sense::hover());
-    ui.painter().text(pos2(r.right() - 6.0, r.center().y), Align2::RIGHT_CENTER, text, egui::FontId::proportional(12.0), t.text_dim);
+    let w = crate::widgets::label_column_width(ui, &LABELS.map(crate::i18n::t), LABEL_MIN_W, LABEL_MAX_W);
+    crate::widgets::column_label(ui, text, w);
 }
 
 pub fn body(ui: &mut egui::Ui, f: &mut Map<String, Value>) {
@@ -122,8 +155,8 @@ pub fn body(ui: &mut egui::Ui, f: &mut Map<String, Value>) {
     ui.indent("channel-options-indicates", |ui| {
         ui.radio_value(&mut indicates, "masked".to_string(), tl!("Masked Areas"));
         ui.radio_value(&mut indicates, "selected".to_string(), tl!("Selected Areas"));
-        // Quick Mask can't be a spot channel.
-        if !quick {
+        // Quick Mask can't be a spot channel; New Spot Channel… makes spot channels.
+        if !quick && !f.contains_key(NEW_CHANNEL_MARK) {
             ui.radio_value(&mut indicates, "spot".to_string(), tl!("Spot Color"));
         }
     });

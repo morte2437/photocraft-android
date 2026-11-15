@@ -303,12 +303,15 @@ impl Sources {
 fn load_sources(s: &Session, p: &Value, cmd: &str, budget: Option<usize>) -> Result<Loaded> {
     let mut src = Sources::default();
     let mut load = SourceLoad::new(budget);
-    if p.get("useOpenDocuments").and_then(Value::as_bool).unwrap_or(false) {
+    // "Use open documents" merges exactly the open documents; the dialog also sends its prefilled
+    // folder (a string), which is not scanned then (#13580). Explicit file lists still add on top.
+    let open = p.get("useOpenDocuments").and_then(Value::as_bool).unwrap_or(false);
+    if open {
         for d in s.documents() {
             src.add(&mut load, d.doc.name.clone(), &d.doc, 0, cmd)?;
         }
     }
-    let paths: Vec<String> = match p.get("paths").or_else(|| p.get("input")) {
+    let paths: Vec<String> = match p.get("paths").or_else(|| p.get("input")).filter(|v| !(open && v.is_string())) {
         Some(Value::Array(a)) => a.iter().filter_map(Value::as_str).map(str::to_string).collect(),
         Some(Value::String(dir)) => list_images(dir)?,
         _ => Vec::new(),
@@ -335,7 +338,8 @@ pub(crate) fn luma_alpha(surf: &Surface, area: Rect, k: usize) -> (usize, usize,
     for y in 0..h {
         let row = surf.read_region(Rect::new(area.x0, area.y0 + y as i32, area.x1, area.y0 + y as i32 + 1));
         for x in 0..w {
-            let p = to_rgba(&fmt, &row[x * n..(x + 1) * n]);
+            let Some(px) = row.get(x * n..(x + 1) * n) else { break };
+            let p = to_rgba(&fmt, px);
             let i = (y / k) * sw + x / k;
             l[i] += (0.2126 * p[0] + 0.7152 * p[1] + 0.0722 * p[2]) * p[3] + (1.0 - p[3]) * 0.0;
             a[i] += p[3];
@@ -1204,7 +1208,7 @@ fn merge_to_hdr(s: &mut Session, p: &Value) -> Result<Value> {
         q[3] = 1.0;
     }
     let mut doc = Document::new(format!("Untitled_HDR{}", s.documents().len() + 1), Size::new(w as u32, h as u32), ColorMode::Rgb, depth);
-    doc.icc_profile = if depth == SampleType::F32 { Some(photocraft_cms::builtin::Builtin::LinearSrgb.profile().to_bytes()) } else { icc };
+    doc.icc_profile = if depth == SampleType::F32 { Some(craft_cms::builtin::Builtin::LinearSrgb.profile().to_bytes()) } else { icc };
     let fmt = doc.pixel_format();
     let n = fmt.channels();
     let mut data = vec![0.0f32; w * h * n];

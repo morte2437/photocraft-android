@@ -50,6 +50,9 @@ fn focused_font_search_does_not_type_into_the_canvas_layer() {
 
 #[test]
 fn numeric_type_fields_have_localized_accessible_names() {
+    if !crate::i18n::needs_catalogs() {
+        return;
+    }
     let pt = crate::i18n::Lang::from_code("pt-br").unwrap();
     let mut h = Harness::builder().build_ui_state(
         move |ui, value: &mut f32| {
@@ -795,25 +798,26 @@ fn options_bar_t_icon_scrub_stops_at_the_size_limits() {
 }
 
 /// Rests the pointer on the widget named `label` past the tooltip delay; true when its tooltip
-/// (a second node with the same name) shows.
-fn tooltip_shows(h: &mut Harness<'static, PhotocraftApp>, role: egui::accesskit::Role, label: &str) -> bool {
+/// `tip` shows (one more node with that text).
+fn tooltip_shows(h: &mut Harness<'static, PhotocraftApp>, role: egui::accesskit::Role, label: &str, tip: &str) -> bool {
+    let before = h.query_all_by_label(tip).count();
     let at = h.get_by_role_and_label(role, label).rect().center();
     h.hover_at(at);
     h.run_steps(8);
-    h.query_all_by_label(label).count() == 2
+    h.query_all_by_label(tip).count() == before + 1
 }
 
-/// The scrubby "T" icon keeps its "Font size" tooltip: the size field's drag area, laid over the
-/// icon after it, must not take its hover.
+/// The scrubby "T" icon keeps its tooltip ("Set font size", #12057): the size field's drag area,
+/// laid over the icon after it, must not take its hover.
 #[test]
 fn options_bar_t_icon_shows_its_tooltip() {
     let mut app = new_app();
     app.run("type.create", json!({"text": "Hello", "size": 20, "x": 300, "y": 420})).unwrap();
     let mut h = options_harness(app);
-    assert!(tooltip_shows(&mut h, egui::accesskit::Role::Button, "Set the text color"), "the probe sees an ordinary tooltip");
+    assert!(tooltip_shows(&mut h, egui::accesskit::Role::Button, "Set the text color", "Set text color"), "the probe sees an ordinary tooltip");
     h.hover_at(egui::pos2(890.0, 55.0));
     h.run_steps(4);
-    assert!(tooltip_shows(&mut h, egui::accesskit::Role::Label, "Font size"), "hovering the \"T\" icon shows \"Font size\"");
+    assert!(tooltip_shows(&mut h, egui::accesskit::Role::Label, "Font size", "Set font size"), "hovering the \"T\" icon shows \"Set font size\"");
 }
 
 /// A point inside glyph `i` of vertical type: `f` of the way down its advance, right of the
@@ -2728,10 +2732,10 @@ fn type_mask_commits_the_glyphs_as_the_selection_in_one_step() {
     assert!(v.height() > 2 * v.width(), "{v:?}");
 }
 
-/// #1055: Escape cancels a Type Mask session whatever "Use Escape to Commit" says: the selection
-/// and the layers stay as they were.
+/// #1055: Cancel throws a Type Mask session away: the selection and the layers stay as they were.
+/// (Escape commits it, as in the reference application: #12070, `mask_escape_tests`.)
 #[test]
-fn type_mask_escape_leaves_the_selection_unchanged() {
+fn type_mask_cancel_leaves_the_selection_unchanged() {
     let mut app = new_app();
     app.run("select.all", json!({})).unwrap();
     let (before, layers) = (selection_bounds(&app), app.session.active().unwrap().doc.layers.len());
@@ -2741,7 +2745,7 @@ fn type_mask_escape_leaves_the_selection_unchanged() {
     click(&mut h, p);
     assert!(h.state().ui.text_edit.as_ref().is_some_and(|ed| ed.mask), "typing a mask");
     super::insert(h.state_mut(), "I");
-    h.key_press(egui::Key::Escape);
+    super::cancel(h.state_mut());
     h.run_steps(2);
     assert!(h.state().ui.text_edit.is_none());
     assert_eq!(selection_bounds(h.state()), before);
@@ -3005,19 +3009,18 @@ fn multi_click_without_a_session_does_nothing() {
     assert_eq!((ed.anchor, ed.caret), (5, 5));
 }
 
-/// #3036: ⇧ on the click that commits a Type Mask adds the glyphs to the selection and ⌥
-/// subtracts them, as in Photoshop; while typing, the working text has no Layers panel row.
+/// #3036: while typing, the working text has no Layers panel row. ⇧ or ⌥ on the click that
+/// commits a Type Mask no longer combine: the glyphs replace the selection (#12073,
+/// `mask_replace_selection_tests`).
 #[test]
-fn type_mask_shift_adds_and_alt_subtracts_without_a_layer_row() {
+fn type_mask_shift_and_alt_replace_without_a_layer_row() {
     use crate::canvas::{ToolEvent, tool_event};
     use crate::state::Tool;
-    use photocraft_geom::Rect;
     let mut app = new_app();
     type_with(&mut app, Tool::HorizontalTypeMask, "I");
     let glyphs = selection_bounds(&app).unwrap();
     let mut app = new_app();
     app.ui.extras.snap = false; // the second text would snap to the first one's selected edge
-    let rect = Rect::new(1000, 100, 1100, 200);
     app.run("select.rect", json!({"x": 1000, "y": 100, "width": 100, "height": 100})).unwrap();
     // Type, then commit with a click outside the text holding `m`.
     let type_and_commit = |app: &mut PhotocraftApp, m: Modifiers| {
@@ -3032,14 +3035,10 @@ fn type_mask_shift_adds_and_alt_subtracts_without_a_layer_row() {
         tool_event(app, ToolEvent::Up { x: 1500.0, y: 800.0 }, m);
         assert!(app.ui.text_edit.is_none());
     };
-    let at = |app: &PhotocraftApp, x: i32, y: i32| app.session.active().unwrap().doc.selection.as_ref().map_or(0.0, |s| s.sample_channel(x, y, 0));
-    let stem = ((glyphs.x0 + glyphs.x1) / 2, (glyphs.y0 + glyphs.y1) / 2);
     type_and_commit(&mut app, Modifiers::SHIFT);
-    assert_eq!(selection_bounds(&app), Some(rect.union(&glyphs)), "⇧ adds");
-    assert!(at(&app, stem.0, stem.1) > 0.99 && at(&app, 1050, 150) > 0.99);
+    assert_eq!(selection_bounds(&app), Some(glyphs), "⇧ replaces");
     type_and_commit(&mut app, Modifiers::ALT);
-    assert!(at(&app, stem.0, stem.1) < 0.01, "⌥ subtracts the glyphs");
-    assert!(at(&app, 1050, 150) > 0.99, "and keeps the rest");
+    assert_eq!(selection_bounds(&app), Some(glyphs), "⌥ replaces");
 }
 
 /// #7713: justification needs a paragraph box. On point text the Paragraph panel's four justify

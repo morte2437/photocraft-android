@@ -12,6 +12,7 @@ fn dragging_a_brush_shows_its_tip_preview() {
     for theme in crate::theme::ThemeKind::ALL {
         for mode in 0..3 {
             let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), Default::default());
+            app.session.edit_prefs(|p| p.general.auto_show_home_screen = false);
             app.ui.tool = crate::Tool::Brush;
             app.run("prefs.set", json!({"path": "interface.theme", "value": theme.id()})).unwrap();
             app.ui.panels.brush_settings = mode != 2;
@@ -58,6 +59,7 @@ fn dragging_a_brush_shows_its_tip_preview() {
 #[test]
 fn dragging_a_brush_to_the_list_edge_scrolls_the_list() {
     let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), Default::default());
+    app.session.edit_prefs(|p| p.general.auto_show_home_screen = false);
     app.ui.panels.brush_settings = true;
     app.ui.brush_tab = 1;
     app.ui.brushes_panel.view = BrushesView::List;
@@ -186,6 +188,8 @@ fn brush_picker_cards_follow_the_part_boxes() {
     h.state_mut().run("file.new", serde_json::json!({"width": 400, "height": 300})).unwrap();
     h.state_mut().ui.tool = crate::state::Tool::Brush;
     h.state_mut().ui.brush_picker = Some([300.0, 120.0]);
+    // Every part on (Brush Tip starts off).
+    h.state_mut().ui.brush_picker_list.show_tip = true;
     h.run_steps(8);
     let presets = h.state().session.tools.presets.clone();
     let cards = |h: &Harness<'_, PhotocraftApp>| -> Vec<Rect> {
@@ -409,6 +413,7 @@ fn the_preview_slider_scales_the_previews_not_the_brush_size() {
         let mut sizes = Vec::new();
         for scale in [0.5f32, 1.0, 2.0] {
             let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), Default::default());
+            app.session.edit_prefs(|p| p.general.auto_show_home_screen = false);
             app.ui.panels.brush_settings = true;
             app.ui.brush_tab = 1;
             app.ui.brushes_panel.view = if grid { BrushesView::Grid } else { BrushesView::List };

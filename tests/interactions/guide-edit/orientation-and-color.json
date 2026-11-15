@@ -1,0 +1,95 @@
+{
+  "schema": 1,
+  "name": "orientation-and-color",
+  "steps": [
+    {
+      "event": {
+        "op": "begin"
+      },
+      "expect": {
+        "editing": true,
+        "vertical": [
+          10,
+          20
+        ],
+        "history": 2,
+        "editCommands": 0,
+        "preview": {
+          "vertical": [
+            10,
+            20
+          ]
+        }
+      }
+    },
+    {
+      "event": {
+        "op": "set",
+        "field": "orientation",
+        "value": "horizontal"
+      },
+      "expect": {
+        "preview": {
+          "vertical": [
+            20
+          ],
+          "horizontal": [
+            10
+          ]
+        }
+      }
+    },
+    {
+      "event": {
+        "op": "set",
+        "field": "position",
+        "value": "50%"
+      },
+      "expect": {
+        "preview": {
+          "horizontal": [
+            100
+          ]
+        }
+      }
+    },
+    {
+      "event": {
+        "op": "set",
+        "field": "color",
+        "value": "magenta"
+      },
+      "expect": {
+        "colors": [],
+        "preview": {
+          "colors": [
+            {
+              "vertical": false,
+              "position": 100,
+              "rgb": [
+                255,
+                0,
+                255
+              ]
+            }
+          ]
+        }
+      }
+    },
+    {
+      "event": {
+        "op": "confirm"
+      },
+      "expect": {
+        "vertical": [
+          20
+        ],
+        "horizontal": [
+          100
+        ],
+        "history": 3,
+        "editCommands": 1
+      }
+    }
+  ]
+}

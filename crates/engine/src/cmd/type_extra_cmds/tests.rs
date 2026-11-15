@@ -661,7 +661,7 @@ fn an_edited_type_path_keeps_the_knot_cap() {
     let id = text_layer(&mut s, "Hi");
     let knots: Vec<(f64, f64)> = (0..=MAX_TYPE_PATH_KNOTS).map(|i| (i as f64 * 0.001, 50.0)).collect();
     let mut t = text(&s, id).clone();
-    t.shape = TextShape::Path { path: Subpath::polyline(&knots[..2]), start: 0.0, flip: false };
+    t.shape = TextShape::Path { path: Subpath::polyline(&knots[..2]), start: 0.0, end: None, flip: false };
     assert!(set_type_path(&mut t, &Path::new(vec![Subpath::polyline(&knots[..MAX_TYPE_PATH_KNOTS])])).is_ok());
     assert!(set_type_path(&mut t, &Path::new(vec![Subpath::polyline(&knots)])).is_err());
 }
@@ -838,4 +838,222 @@ fn a_document_without_type_never_waits_for_the_text_engine() {
     let mut s = session(8);
     text_layer(&mut s, "type");
     assert!(has_type_layers(&s.active().unwrap().doc));
+}
+
+/// Verifies `type.setPathPlacement` commits valid range updates with undo/redo and rejects inverted, infinite, or out-of-bounds inputs.
+#[test]
+fn path_placement_updates_and_rejects_invalid_inputs() {
+    let mut empty = Session::new();
+    assert!(empty.execute("type.setPathPlacement", json!({})).is_err());
+    let mut s = session(8);
+    let id = text_layer(&mut s, "Path");
+    assert!(s.execute("type.setPathPlacement", json!({"start": 1})).is_err());
+    s.edit("path", |doc, _| {
+        doc.work_path = Some(Path::new(vec![Subpath::polyline(&[(10.0, 60.0), (200.0, 60.0)])]));
+        Ok(())
+    })
+    .unwrap();
+    s.execute("type.attachToPath", json!({"start": 4})).unwrap();
+    let original = text(&s, id).shape.clone();
+    let path = crate::type_extra_cmds::type_path(text(&s, id)).unwrap();
+    s.edit("remove work path", |doc, _| {
+        doc.work_path = None;
+        Ok(())
+    })
+    .unwrap();
+    s.execute("type.setPathPlacement", json!({"layer": id.0, "start": 20, "flip": true})).unwrap();
+    assert!(matches!(text(&s, id).shape, TextShape::Path { start: 20.0, flip: true, .. }));
+    assert_eq!(crate::type_extra_cmds::type_path(text(&s, id)).unwrap(), path);
+    assert!(s.undo());
+    assert_eq!(text(&s, id).shape, original);
+    assert!(s.redo());
+    s.execute("type.setPathPlacement", json!({"start": 30})).unwrap();
+    assert!(matches!(text(&s, id).shape, TextShape::Path { start: 30.0, flip: true, .. }));
+    s.execute("type.setPathPlacement", json!({"flip": false})).unwrap();
+    assert!(matches!(text(&s, id).shape, TextShape::Path { start: 30.0, flip: false, .. }));
+    for p in [json!({"start": "bad"}), json!({"start": 1e100}), json!({"flip": 1}), json!({"layer": "bad"})] {
+        assert!(s.execute("type.setPathPlacement", p).is_err());
+    }
+    s.execute("type.setPathPlacement", json!({"end": 50})).unwrap();
+    s.execute("type.setPathPlacement", json!({"flip": true})).unwrap();
+    assert!(matches!(text(&s, id).shape, TextShape::Path { start: 30.0, end: Some(50.0), .. }));
+    let before = text(&s, id).shape.clone();
+    for params in [json!({"end": 29}), json!({"start": 51}), json!({"end": 1e100}), json!({"end": "bad"}), json!({"start": -1}), json!({"end": 191})] {
+        assert!(s.execute("type.setPathPlacement", params).is_err());
+        assert_eq!(text(&s, id).shape, before);
+    }
+    let path = crate::type_extra_cmds::type_path(text(&s, id)).unwrap();
+    let mut layer = text(&s, id).clone();
+    set_type_path(&mut layer, &path).unwrap();
+    assert!(matches!(layer.shape, TextShape::Path { end: Some(50.0), .. }));
+    s.execute("type.setPathPlacement", json!({"start": 0, "end": 190})).unwrap();
+    s.execute("type.setPathPlacement", json!({"end": null})).unwrap();
+    assert!(matches!(text(&s, id).shape, TextShape::Path { end: None, .. }));
+    s.execute("layer.setProps", json!({"layer": id.0, "locked": true})).unwrap();
+    assert!(s.execute("type.setPathPlacement", json!({"layer": id.0, "flip": true})).is_err());
+}
+
+/// Ensures command availability is restricted to path text layers and correctly handles legacy unconstrained endpoints or degenerate subpaths.
+#[test]
+fn path_placement_availability_and_legacy_ranges() {
+    let mut s = session(8);
+    let id = text_layer(&mut s, "Path");
+    let line = Subpath::polyline(&[(0.0, 0.0), (100.0, 0.0)]);
+    with_text(&mut s, &json!({}), "area", |t, _| {
+        t.shape = TextShape::Area { path: Path::new(vec![Subpath::polygon(&[(0.0, 0.0), (100.0, 0.0), (100.0, 100.0), (0.0, 100.0)])]) };
+        Ok(())
+    })
+    .unwrap();
+    assert!(!s.is_enabled("type.setPathPlacement"));
+    assert!(s.is_enabled("type.detachFromPath"));
+    assert!(s.execute("type.setPathPlacement", json!({"start": 0})).is_err());
+    s.execute("type.detachFromPath", json!({})).unwrap();
+    with_text(&mut s, &json!({}), "path", |t, _| {
+        t.shape = TextShape::Path { path: line.clone(), start: -5.0, end: Some(10.0), flip: false };
+        Ok(())
+    })
+    .unwrap();
+    assert!(s.is_enabled("type.setPathPlacement"));
+    s.execute("type.setPathPlacement", json!({"end": null})).unwrap();
+    assert!(matches!(text(&s, id).shape, TextShape::Path { start: -5.0, end: None, .. }));
+    with_text(&mut s, &json!({}), "degenerate", |t, _| {
+        t.shape = TextShape::Path { path: Subpath::polyline(&[(0.0, 0.0), (0.0, 0.0)]), start: 0.0, end: None, flip: false };
+        Ok(())
+    })
+    .unwrap();
+    let before = text(&s, id).shape.clone();
+    assert!(s.execute("type.setPathPlacement", json!({"end": 0, "flip": true})).is_err());
+    assert_eq!(text(&s, id).shape, before);
+    with_text(&mut s, &json!({}), "closed", |t, _| {
+        let mut path = line.clone();
+        path.closed = true;
+        t.shape = TextShape::Path { path, start: 0.0, end: None, flip: false };
+        Ok(())
+    })
+    .unwrap();
+    s.execute("type.setPathPlacement", json!({"start": 190, "end": 210})).unwrap();
+    assert!(matches!(text(&s, id).shape, TextShape::Path { start: 190.0, end: Some(210.0), .. }));
+
+    // Degenerate closed path is rejected on explicit range.
+    with_text(&mut s, &json!({}), "degenerate_closed", |t, _| {
+        t.shape = TextShape::Path { path: Subpath::polygon(&[(0.0, 0.0), (0.0, 0.0)]), start: 0.0, end: None, flip: false };
+        Ok(())
+    })
+    .unwrap();
+    assert!(s.execute("type.setPathPlacement", json!({"start": 0.0, "end": 10.0})).is_err());
+
+    // Closed negative seam offsets, huge multi-lap ranges, and stationary ranges are stored gracefully.
+    with_text(&mut s, &json!({}), "closed_ranges", |t, _| {
+        let mut path = line.clone();
+        path.closed = true;
+        t.shape = TextShape::Path { path, start: 0.0, end: None, flip: false };
+        Ok(())
+    })
+    .unwrap();
+    s.execute("type.setPathPlacement", json!({"start": -25.0, "end": 1000.0})).unwrap();
+    assert!(matches!(text(&s, id).shape, TextShape::Path { start: -25.0, end: Some(1000.0), .. }));
+    s.execute("type.setPathPlacement", json!({"start": 40.0, "end": 40.0})).unwrap();
+    assert!(matches!(text(&s, id).shape, TextShape::Path { start: 40.0, end: Some(40.0), .. }));
+
+    // Explicit start on open legacy end:null validated against bounds and canonical normalized.
+    with_text(&mut s, &json!({}), "open_start_null_end", |t, _| {
+        t.shape = TextShape::Path { path: line.clone(), start: 10.0, end: Some(50.0), flip: false };
+        Ok(())
+    })
+    .unwrap();
+    assert!(s.execute("type.setPathPlacement", json!({"start": 120.0, "end": null})).is_err());
+    assert!(s.execute("type.setPathPlacement", json!({"start": -5.0, "end": null})).is_err());
+    s.execute("type.setPathPlacement", json!({"start": 30.0, "end": null})).unwrap();
+    assert!(matches!(text(&s, id).shape, TextShape::Path { start: 30.0, end: None, .. }));
+
+    // Position-locked and fully locked layers are rejected upfront.
+    s.execute("layer.lockLayers", json!({"position": true})).unwrap();
+    assert!(s.execute("type.setPathPlacement", json!({"start": 10.0})).is_err());
+    s.execute("layer.lockLayers", json!({"position": false, "all": true})).unwrap();
+    assert!(s.execute("type.setPathPlacement", json!({"start": 10.0})).is_err());
+    s.execute("layer.lockLayers", json!({"all": false})).unwrap();
+    assert!(s.execute("type.setPathPlacement", json!({"start": 10.0})).is_ok());
+}
+
+/// Proves path placement validation tolerates `f32` precision upward rounding at endpoints while rejecting true out-of-bounds spans.
+#[test]
+fn path_placement_noninteger_line_rounding_upward_and_zero_capacity() {
+    let mut s = session(8);
+    let id = text_layer(&mut s, "Path");
+    // Line from (0, 0) to (7, 7) has length 7 * sqrt(2) ≈ 9.899494936611665.
+    // In f32, length rounds upward to 9.8994951248168945.
+    let knots = [(0.0, 0.0), (7.0, 7.0)];
+    let path = Subpath::polyline(&knots);
+    let geometry = photocraft_text::warp::PathGeometry::new(&path, false).unwrap();
+    let length = geometry.length();
+    let length_f32 = length as f32;
+    assert!(f64::from(length_f32) > length, "scale 7 * sqrt2 must round upward in f32");
+    let canonical = geometry.canonical_length_f32();
+    assert!(f64::from(canonical) <= length, "canonical f32 must never exceed geometry");
+
+    with_text(&mut s, &json!({}), "attach", |t, _| {
+        t.shape = TextShape::Path { path: path.clone(), start: 0.0, end: None, flip: false };
+        Ok(())
+    })
+    .unwrap();
+
+    // Genuine out-of-bounds rejected.
+    assert!(s.execute("type.setPathPlacement", json!({"end": 9.95})).is_err());
+    assert!(s.execute("type.setPathPlacement", json!({"end": length_f32 + 0.1})).is_err());
+
+    // Upward-rounded endpoint is accepted and normalized to canonical maximum.
+    s.execute("type.setPathPlacement", json!({"end": length_f32})).unwrap();
+    assert!(matches!(text(&s, id).shape, TextShape::Path { end: Some(e), .. } if e == canonical));
+
+    // Zero-capacity endpoint range at the path boundary is accepted.
+    s.execute("type.setPathPlacement", json!({"start": length_f32, "end": length_f32})).unwrap();
+    assert!(matches!(text(&s, id).shape, TextShape::Path { start, end: Some(end), .. } if start == canonical && end == canonical));
+
+    // Flipped case at the path boundary is accepted.
+    s.execute("type.setPathPlacement", json!({"start": 0.0, "end": length_f32, "flip": true})).unwrap();
+    assert!(matches!(text(&s, id).shape, TextShape::Path { start: 0.0, end: Some(end), flip: true, .. } if end == canonical));
+}
+
+/// Flipping preserves stale endpoints after shortening a path; endpoint edits still validate.
+#[test]
+fn path_placement_shortened_path_flip_only_and_endpoint_rejection() {
+    let mut s = session(8);
+    let id = text_layer(&mut s, "Path");
+    let line100 = Subpath::polyline(&[(0.0, 0.0), (100.0, 0.0)]);
+    with_text(&mut s, &json!({}), "attach", |t, _| {
+        t.shape = TextShape::Path { path: line100, start: 10.0, end: Some(80.0), flip: false };
+        Ok(())
+    })
+    .unwrap();
+
+    // Shorten the path from length 100 to length 50.
+    let shortened = Path::new(vec![Subpath::polyline(&[(0.0, 0.0), (50.0, 0.0)])]);
+    with_text(&mut s, &json!({}), "shorten", |t, _| set_type_path(t, &shortened)).unwrap();
+
+    // Stored end (80.0) is now past the shortened path length (50.0).
+    assert!(matches!(text(&s, id).shape, TextShape::Path { start: 10.0, end: Some(80.0), flip: false, .. }));
+
+    // Flip-only call must succeed and preserve the stored range.
+    let r = s.execute("type.setPathPlacement", json!({"flip": true})).unwrap();
+    assert_eq!(r, json!({"start": 10.0, "end": 80.0, "flip": true}));
+    assert!(matches!(text(&s, id).shape, TextShape::Path { start: 10.0, end: Some(80.0), flip: true, .. }));
+
+    // Flip back without supplying endpoints also succeeds.
+    let r = s.execute("type.setPathPlacement", json!({"flip": false})).unwrap();
+    assert_eq!(r, json!({"start": 10.0, "end": 80.0, "flip": false}));
+    assert!(matches!(text(&s, id).shape, TextShape::Path { start: 10.0, end: Some(80.0), flip: false, .. }));
+
+    // Supplying out-of-bounds start or end on the shortened path must be rejected.
+    let before = text(&s, id).shape.clone();
+    assert!(s.execute("type.setPathPlacement", json!({"end": 80.0})).is_err());
+    assert!(s.execute("type.setPathPlacement", json!({"start": 60.0})).is_err());
+    assert!(s.execute("type.setPathPlacement", json!({"start": -5.0})).is_err());
+    assert!(s.execute("type.setPathPlacement", json!({"start": 10.0, "flip": true})).is_err());
+    assert!(s.execute("type.setPathPlacement", json!({"start": 40.0, "end": 30.0})).is_err());
+    assert_eq!(text(&s, id).shape, before);
+
+    // Supplying a valid range on the shortened path succeeds and updates the range.
+    let r = s.execute("type.setPathPlacement", json!({"start": 5.0, "end": 45.0, "flip": true})).unwrap();
+    assert_eq!(r, json!({"start": 5.0, "end": 45.0, "flip": true}));
+    assert!(matches!(text(&s, id).shape, TextShape::Path { start: 5.0, end: Some(45.0), flip: true, .. }));
 }

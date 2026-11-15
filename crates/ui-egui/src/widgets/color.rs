@@ -26,13 +26,22 @@ pub fn hue_stops() -> Vec<Color32> {
 
 /// Paint a small checkerboard (transparency) in `rect`.
 pub fn checker(painter: &egui::Painter, rect: Rect, cell: f32) {
+    checker_at(painter, rect, rect.min, cell);
+}
+
+/// [`checker`] over `rect` with its cells counted from `origin` rather than from `rect`'s corner,
+/// so the visible part of a larger, clipped image keeps the image's phase as it is panned past
+/// the edge, as the canvas's checkerboard keeps the document's. Only cells meeting `rect` are drawn.
+pub fn checker_at(painter: &egui::Painter, rect: Rect, origin: Pos2, cell: f32) {
     painter.rect_filled(rect, 0.0, Color32::from_gray(250));
-    let nx = (rect.width() / cell).ceil() as i32;
-    let ny = (rect.height() / cell).ceil() as i32;
-    for j in 0..ny {
-        for i in 0..nx {
-            if (i + j) % 2 == 1 {
-                let r = Rect::from_min_size(Pos2::new(rect.left() + i as f32 * cell, rect.top() + j as f32 * cell), Vec2::splat(cell)).intersect(rect);
+    let first = |from: f32, o: f32| ((from - o) / cell).floor() as i32;
+    let last = |to: f32, o: f32| ((to - o) / cell).ceil() as i32;
+    let (i0, i1) = (first(rect.left(), origin.x), last(rect.right(), origin.x));
+    let (j0, j1) = (first(rect.top(), origin.y), last(rect.bottom(), origin.y));
+    for j in j0..j1 {
+        for i in i0..i1 {
+            if (i + j).rem_euclid(2) == 1 {
+                let r = Rect::from_min_size(Pos2::new(origin.x + i as f32 * cell, origin.y + j as f32 * cell), Vec2::splat(cell)).intersect(rect);
                 painter.rect_filled(r, 0.0, Color32::from_gray(214));
             }
         }

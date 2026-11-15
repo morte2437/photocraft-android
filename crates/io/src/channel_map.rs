@@ -16,6 +16,9 @@ pub(crate) const DISPLAY_INFO_OLD: u16 = 1007;
 pub(crate) const QUICK_MASK_INFO: u16 = 1022;
 /// Alpha channel identifiers (Photoshop 6): one big-endian u32 per extra channel, no count prefix.
 pub(crate) const ALPHA_IDENTIFIERS: u16 = 1053;
+/// Alternate Spot Colors (PSD resource 1067): version (u16), count (u16), then per spot channel its
+/// identifier (u32, as in 1053) and a colour structure (space + four u16 components).
+pub(crate) const ALTERNATE_SPOT_COLORS: u16 = 1067;
 
 const SPACE_RGB: u16 = 0;
 const SPACE_HSB: u16 = 1;
@@ -88,6 +91,31 @@ fn display_records(data: &[u8], versioned: bool) -> std::slice::ChunksExact<'_, 
 /// without a record is not a spot.
 pub(crate) fn spot_flags(data: &[u8], versioned: bool, skip: usize) -> Vec<bool> {
     display_records(data, versioned).skip(skip).map(|rec| rec.get(12) == Some(&2)).collect()
+}
+
+/// The colour space of each extra channel's DisplayInfo record, after skipping `skip` records,
+/// in the same records [`apply_display_info`] reads.
+pub(crate) fn display_spaces(data: &[u8], versioned: bool, skip: usize) -> Vec<u16> {
+    display_records(data, versioned).skip(skip).map(|rec| u16::from_be_bytes([rec[0], rec[1]])).collect()
+}
+
+/// The spot colours of an Alternate Spot Colors resource (1067) by channel identifier, those in
+/// a colour space [`decode_known_color`] reads. The reference editor's 24.7 stores a spot's
+/// DisplayInfo colour in a space it does not document (psd-tools cmyk-alpha-spot.psd: 0x2331)
+/// and its ink here, in Lab.
+pub(crate) fn alternate_spot_colors(data: &[u8]) -> Vec<(u32, Color)> {
+    let count = data.get(2..4).map_or(0, |c| usize::from(u16::from_be_bytes([c[0], c[1]])));
+    let body = data.get(4..).unwrap_or_default();
+    body.as_chunks::<14>()
+        .0
+        .iter()
+        .take(count)
+        .filter_map(|rec| {
+            let u = |i: usize| u16::from_be_bytes([rec[i], rec[i + 1]]);
+            let id = u32::from_be_bytes([rec[0], rec[1], rec[2], rec[3]]);
+            decode_known_color(u(4), [u(6), u(8), u(10), u(12)]).map(|c| (id, c))
+        })
+        .collect()
 }
 
 /// Whether a DisplayInfo resource 1077 marks any channel as a spot (kind 2), in 13-byte records

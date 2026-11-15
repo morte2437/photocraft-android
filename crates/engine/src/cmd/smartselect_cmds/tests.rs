@@ -272,7 +272,7 @@ fn select_subject_samples_the_selected_layer_else_the_composite() {
 /// after Deselect); sampling something else or a pixel edit computes it again.
 #[test]
 fn select_subject_repeat_reuses_the_mask_until_pixels_change() {
-    let (mut s, _) = disc(8);
+    let (mut s, inside) = disc(8);
     let sel = |s: &Session| {
         let mut v = Vec::new();
         s.active().unwrap().doc.selection.as_ref().unwrap().read_region_into(Rect::new(0, 0, 200, 160), &mut v);
@@ -298,7 +298,10 @@ fn select_subject_repeat_reuses_the_mask_until_pixels_change() {
     .unwrap();
     assert!(s.subject_cache.region.is_none());
     s.execute("select.subject", json!({})).unwrap();
-    assert_eq!(sel(&s), first);
+    // Recomputed on the edited pixels (one changed pixel may move the edge a little).
+    assert!(!std::sync::Arc::ptr_eq(&mask, &cached(&s)));
+    let v = sel_iou(&s, 200, 160, inside);
+    assert!(v > 0.9, "IoU {v}");
 }
 
 /// A vertical Gaussian-blurred edge at x = 40 (warm left, cool right) with the left half selected.
@@ -543,29 +546,26 @@ fn sel_bytes(s: &Session, w: i32, h: i32) -> Vec<u8> {
     (0..h).flat_map(|y| (0..w).map(move |x| (cov(s, x, y) * 255.0).round() as u8)).collect()
 }
 
-/// The #8783 review: a refine whose result would be dense over more than
-/// [`matting::MAX_REFINE_AREA`] pixels is refused, not allocated: a thin Brush edit across a
-/// huge canvas (its edited selection spans the canvas) and a selection of the whole canvas.
-/// The selection stays as it was.
+/// Huge sparse selections refine without a dense bounding-box result.
 #[test]
-fn refine_edge_refuses_a_selection_too_large_to_refine() {
+fn refine_edge_accepts_huge_sparse_and_solid_selections() {
     let mut s = Session::new();
     s.add_document(Document::new("huge", photocraft_doc::Size::new(100_000, 100_000), photocraft_doc::ColorMode::Rgb, photocraft_color::SampleType::U8), None);
     s.execute("select.rect", json!({"x": 10, "y": 60, "width": 10, "height": 10})).unwrap();
-    let small = s.active().and_then(|d| d.doc.selection.clone()).expect("selected");
-    let diagonal = json!({"edits": [{"tool": "brush", "points": [[0, 0], [99_999, 99_999]], "size": 1}]});
-    let t = std::time::Instant::now();
-    let e = s.execute("select.refineEdge", diagonal).expect_err("too large to refine");
-    assert!(e.to_string().contains("too large to refine"), "{e}");
-    assert!(s.active().and_then(|d| d.doc.selection.as_ref()) == Some(&small), "the selection is unchanged");
-    // The small selection itself still refines.
-    s.execute("select.refineEdge", json!({"radius": 4})).unwrap();
-    s.execute("edit.undo", json!({})).unwrap();
+    s.execute("select.refineEdge", json!({"edits": [{"tool": "brush", "points": [[0, 0], [99_999, 99_999]], "size": 1}]})).expect("sparse refine");
+    let diagonal = s.active().and_then(|d| d.doc.selection.as_ref()).expect("selected");
+    assert!(diagonal.tile_count() < 4000);
+    for coordinate in [100, 50_000, 99_990] {
+        assert!(diagonal.sample_channel(coordinate, coordinate, 0) > 0.5, "diagonal stroke missing at {coordinate}");
+    }
+    assert!(diagonal.sample_channel(100, 150, 0) < 0.01, "off-stroke pixel inside a touched tile was filled");
     s.execute("select.all", json!({})).unwrap();
-    let all = s.active().and_then(|d| d.doc.selection.clone()).expect("selected");
-    assert!(s.execute("select.refineEdge", json!({"radius": 4})).is_err());
-    assert!(s.active().and_then(|d| d.doc.selection.as_ref()) == Some(&all));
-    assert!(t.elapsed() < std::time::Duration::from_secs(20), "{:?}", t.elapsed());
+    s.execute("select.refineEdge", json!({"radius": 4})).expect("solid refine");
+    let all = s.active().and_then(|d| d.doc.selection.as_ref()).expect("selected");
+    assert_eq!(all.sample_channel(50_000, 50_000, 0), 1.0);
+    let a = all.tile(photocraft_geom::TileCoord::new(10, 10)).expect("interior");
+    let b = all.tile(photocraft_geom::TileCoord::new(20, 20)).expect("interior");
+    assert!(std::sync::Arc::ptr_eq(a, b), "solid output buffers are shared");
 }
 
 /// The #8783 review: Brush and Lasso edits and Refine Edge Brush strokes that would paint
@@ -699,4 +699,15 @@ fn refine_edge_rejects_bad_edits_and_keeps_the_selection() {
         assert!(s.execute("select.refineEdge", json!({"edits": bad})).is_err(), "{bad}");
         assert_eq!(sel_bytes(&s, 80, 40), before, "{bad}");
     }
+}
+
+#[test]
+fn refine_edge_rejects_excessive_scratch_before_changing_selection() {
+    let mut s = Session::new();
+    s.add_document(Document::new("scratch", photocraft_doc::Size::new(10_000, 10_000), photocraft_doc::ColorMode::Rgb, photocraft_color::SampleType::U8), None);
+    s.execute("select.rect", json!({"x": 5000, "y": 5000, "width": 1, "height": 1})).unwrap();
+    let before = s.active().unwrap().doc.selection.clone();
+    let error = s.execute("select.refineEdge", json!({"feather": 1000})).expect_err("scratch limit");
+    assert!(error.to_string().contains("not enough memory"), "{error}");
+    assert_eq!(s.active().unwrap().doc.selection, before);
 }

@@ -14,7 +14,7 @@ corpus = []
 [dependencies]
 photocraft-geom = { workspace = true }
 photocraft-color = { workspace = true }
-photocraft-cms = { workspace = true }
+craft-cms = { workspace = true }
 photocraft-raster = { workspace = true }
 photocraft-doc = { workspace = true }
 photocraft-ops = { workspace = true }
@@ -23,29 +23,32 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 rayon = { workspace = true }
+chrono = { workspace = true }
+web-time = { workspace = true }
 photocraft-paint = { workspace = true }
 photocraft-algo = { workspace = true }
 photocraft-text = { workspace = true }
 photocraft-vector = { workspace = true }
 photocraft-io = { workspace = true }
-photocraft-psd = { workspace = true }
+craft-xml = { workspace = true }
+craft-psd = { workspace = true }
 photocraft-format = { workspace = true }
 photocraft-plugins = { workspace = true }
 base64 = "0.22"
 blake3 = { version = "1.8", default-features = false, features = ["pure"] }
 photocraft-codecs = { workspace = true }
+photocraft-formats = { workspace = true }
 flate2 = { workspace = true }
 craft-print = { workspace = true }
 
-# Photoshop `.kys` shortcut sets (`edit.keyboardShortcuts` `importKys`); already in the tree
-# through photocraft-ui-egui and usvg.
-roxmltree = "0.21"
 # Release tags use the same semantic versions as Cargo.
 semver = "1"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 tempfile = "3"
-chrono = { workspace = true }
+# `clock`: the local time that names History Options' snapshot on save (#2966); already in the
+# tree through rmcp. The web build has no local clock here and names it "Snapshot N".
+chrono = { workspace = true, features = ["clock"] }
 
 # `file_cmds::same_file` on Windows: the volume serial number and file index, so a hard link to a
 # file is that file (std's `MetadataExt::file_index` is unstable).
@@ -60,12 +63,12 @@ winsafe = { version = "=0.0.29", default-features = false, features = ["kernel"]
 photocraft-ipp = { workspace = true }
 
 [dev-dependencies]
-photocraft-affinity = { workspace = true, features = ["synth"] }
+craft-affinity = { workspace = true, features = ["synth"] }
 photocraft-io = { workspace = true, features = ["testgen"] }
 # Synthetic camera raw files for the open tests.
 photocraft-raw = { workspace = true, features = ["testgen"] }
 photocraft-testkit = { workspace = true }
+exr = { version = "1.73", default-features = false }
 # WebAssembly text -> binary for plug-in test modules (Apache-2.0 WITH LLVM-exception).
 wat = "1.228"
 # Synthetic multi-part EXR fixtures for the parts-commands tests.
-exr = { version = "1.73", default-features = false }

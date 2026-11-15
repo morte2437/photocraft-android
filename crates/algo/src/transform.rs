@@ -210,6 +210,15 @@ pub fn convex_quad(q: &[[f64; 2]; 4]) -> bool {
     area2.is_finite() && area2 >= 2.0
 }
 
+/// Is `q` (TL, TR, BR, BL) a usable Perspective Crop quad in either winding: a [`convex_quad`],
+/// or one wound counter-clockwise on screen (a box flipped on one axis, which crops mirrored,
+/// #12489) with the same corner angle and area limits? Self-crossing, degenerate and non-finite
+/// quads are not. The Perspective Warp steps keep the clockwise-only [`convex_quad`].
+pub fn convex_quad_any_winding(q: &[[f64; 2]; 4]) -> bool {
+    let [tl, tr, br, bl] = *q;
+    convex_quad(q) || convex_quad(&[tl, bl, br, tr])
+}
+
 /// The output size a Perspective Crop of `q` (TL, TR, BR, BL) takes when none is given: the mean
 /// length of the top and bottom edges by the mean length of the left and right edges.
 pub fn quad_size(q: &[[f64; 2]; 4]) -> (f64, f64) {
@@ -218,12 +227,79 @@ pub fn quad_size(q: &[[f64; 2]; 4]) -> (f64, f64) {
     ((len(tl, tr) + len(bl, br)) / 2.0, (len(tl, bl) + len(tr, br)) / 2.0)
 }
 
+/// How much the depth must change across the quad, as a fraction, for a pair of sides to count as
+/// converging. Below this the recovered proportions are dominated by a pixel of click error.
+const MIN_FORESHORTENING: f64 = 0.005;
+/// How many times larger or smaller than the quad's longest edge an estimated side may be.
+const MAX_ESTIMATE_RATIO: f64 = 4.0;
+/// How far, as a fraction, one pixel of error on one corner may move the recovered proportions.
+/// Quads from a camera model move about 1 %; the issue's measured skewed quad moves 5.3 %.
+const MAX_ASPECT_SWING: f64 = 0.1;
+
+/// The free output size of a Perspective Crop of `q` (TL, TR, BR, BL) in an image centred on
+/// `center`: the rectangle the quad shows in perspective, or the quad's longest edges when its
+/// sides are too close to parallel to recover that, the estimate would not survive a pixel of
+/// click error, or it is implausible.
+pub fn quad_free_size(q: &[[f64; 2]; 4], center: [f64; 2]) -> (f64, f64) {
+    let len = |a: [f64; 2], b: [f64; 2]| (b[0] - a[0]).hypot(b[1] - a[1]);
+    let [tl, tr, br, bl] = *q;
+    let (edge_w, edge_h) = (len(tl, tr).max(len(bl, br)), len(tl, bl).max(len(tr, br)));
+    let near = |v: f64, edge: f64| v.is_finite() && v >= edge / MAX_ESTIMATE_RATIO && v <= edge * MAX_ESTIMATE_RATIO;
+    match perspective_size(q, center) {
+        Some((w, h)) if near(w, edge_w) && near(h, edge_h) => (w, h),
+        _ => (edge_w, edge_h),
+    }
+}
+
+/// The size [`perspective_estimate`] gives `q`, or `None` when moving any corner one pixel along
+/// either axis loses the estimate or swings its proportions by more than [`MAX_ASPECT_SWING`].
+fn perspective_size(q: &[[f64; 2]; 4], center: [f64; 2]) -> Option<(f64, f64)> {
+    let (width, aspect) = perspective_estimate(q, center)?;
+    for corner in 0..4 {
+        for axis in 0..2 {
+            for step in [-1.0, 1.0] {
+                let mut nudged = *q;
+                nudged[corner][axis] += step;
+                let (_, other) = perspective_estimate(&nudged, center)?;
+                if (other / aspect - 1.0).abs() > MAX_ASPECT_SWING {
+                    return None;
+                }
+            }
+        }
+    }
+    Some((width, width / aspect))
+}
+
+/// The width and the aspect ratio of the rectangle `q` shows. The width is the largest horizontal
+/// scale at a corner of the unit-square-to-quad map, so the nearest part of the quad keeps its
+/// detail. The aspect ratio is recovered with the principal point at `center` (Zhang and He,
+/// "Whiteboard scanning and image enhancement", 2007). `None` when two sides are nearly parallel,
+/// which leaves the focal length undefined.
+fn perspective_estimate(q: &[[f64; 2]; 4], [cx, cy]: [f64; 2]) -> Option<(f64, f64)> {
+    let Homography([a, b, _, d, e, _, g, h, _]) = Homography::rect_to_quad([0.0, 0.0, 1.0, 1.0], *q)?;
+    if g.abs().min(h.abs()) < MIN_FORESHORTENING {
+        return None;
+    }
+    let (ux, uy, vx, vy) = (a - g * cx, d - g * cy, b - h * cx, e - h * cy);
+    let focal2 = -(ux * vx + uy * vy) / (g * h);
+    if !focal2.is_finite() || focal2 <= 0.0 {
+        return None;
+    }
+    let focal = focal2.sqrt();
+    let aspect = ux.hypot(uy).hypot(g * focal) / vx.hypot(vy).hypot(h * focal);
+    let scale_at = |[s, t]: [f64; 2], [x, y]: [f64; 2]| (a - x * g).hypot(d - y * g) / (1.0 + g * s + h * t);
+    let [tl, tr, br, bl] = *q;
+    let width = [scale_at([0.0, 0.0], tl), scale_at([1.0, 0.0], tr), scale_at([1.0, 1.0], br), scale_at([0.0, 1.0], bl)].into_iter().fold(0.0, f64::max);
+    Some((width, aspect))
+}
+
 /// The homography taking the quad `q` (TL, TR, BR, BL) onto the rectangle (0, 0)–(`w`, `h`), corner
 /// to corner: the inverse of the unit-square-to-quad map (Heckbert, "Fundamentals of Texture
 /// Mapping and Image Warping", 1989, §2.2.3) scaled to the rectangle. `None` when `q` isn't a
-/// [`convex_quad`] or the size isn't positive.
+/// [`convex_quad_any_winding`] or the size isn't positive. A quad wound counter-clockwise maps
+/// mirrored, each corner onto its own rectangle corner.
 pub fn quad_to_rect(q: &[[f64; 2]; 4], w: f64, h: f64) -> Option<Homography> {
-    if !(convex_quad(q) && w.is_finite() && h.is_finite() && w > 0.0 && h > 0.0) {
+    if !(convex_quad_any_winding(q) && w.is_finite() && h.is_finite() && w > 0.0 && h > 0.0) {
         return None;
     }
     Homography::rect_to_quad([0.0, 0.0, w, h], *q)?.inverse()

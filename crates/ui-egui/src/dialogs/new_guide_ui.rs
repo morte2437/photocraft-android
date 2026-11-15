@@ -53,6 +53,7 @@ pub(crate) fn color_label(name: &str) -> &'static str {
     }
 }
 
+/// Accept the named guide colours and the explicit custom-colour choice.
 fn is_color_name(name: &str) -> bool {
     name == CUSTOM || GUIDE_COLORS.iter().any(|(n, ..)| *n == name)
 }
@@ -65,10 +66,12 @@ fn custom_color(f: &Map<String, Value>) -> String {
         .map_or_else(|| "#4affff".to_string(), str::to_string)
 }
 
+/// Identify the specialized New Guide or Edit Selected Guides dialog fields.
 pub fn owns(fields: &Map<String, Value>) -> bool {
     fields.contains_key(MARK)
 }
 
+/// Read the ruler unit used for guide positions without an explicit suffix.
 fn ruler_unit(app: &PhotocraftApp) -> Unit {
     app.session.prefs().units_and_rulers.rulers
 }
@@ -77,6 +80,34 @@ fn ruler_unit(app: &PhotocraftApp) -> Unit {
 /// as in Photoshop.
 fn with_unit(value: &str, unit: Unit) -> String {
     format!("{value} {}", unit.suffix())
+}
+
+/// `typed` with `unit` after its first number when that number has none ("300 / 2" with pixel
+/// rulers → "300 px / 2"); anything else as typed. Nor when a length later in its term makes it
+/// a plain factor ("2 / 2 * 50 px": the term is in px already).
+fn unit_on_first_number(typed: &str, unit: Unit) -> String {
+    let end = typed
+        .char_indices()
+        .find(|&(i, c)| !(c.is_ascii_digit() || matches!(c, '.' | ',') || (i == 0 && matches!(c, '-' | '+'))))
+        .map_or(typed.len(), |(i, _)| i);
+    let (number, rest) = typed.split_at(end);
+    let bare = !number.is_empty() && rest.trim_start().starts_with(['+', '-', '*', '/']) && !factor_has_unit(rest);
+    if bare { format!("{} {}{rest}", number, unit.suffix()) } else { typed.to_string() }
+}
+
+/// Whether an operand multiplied or divided in at the start of `rest` (up to the first `+` or `-`
+/// between operands) carries a unit, as the engine splits operands.
+fn factor_has_unit(mut rest: &str) -> bool {
+    while let Some(operand) = rest.trim_start().strip_prefix(['*', '/']).map(str::trim_start) {
+        // The operand runs to the next operator; a sign at its start is its own.
+        let end = operand.char_indices().find(|&(i, c)| i > 0 && matches!(c, '+' | '-' | '*' | '/')).map_or(operand.len(), |(i, _)| i);
+        let (operand, after) = operand.split_at(end);
+        if Unit::parse_length(operand).is_some_and(|(_, u)| u.is_some()) {
+            return true;
+        }
+        rest = after;
+    }
+    false
 }
 
 /// `px` (document pixels) in the ruler unit, as the field shows it: "14.11 cm". Percent is of the
@@ -145,9 +176,15 @@ pub fn open_edit(app: &mut PhotocraftApp) -> Result<u64, String> {
     f.insert(INITIAL_COLOR.into(), json!(if color == CUSTOM { custom.clone() } else { color.clone() }));
     f.insert("color".into(), json!(color));
     f.insert("customColor".into(), json!(custom));
-    Ok(app.ui.open_dialog(DialogKind::Command, f))
+    let id = app.ui.open_dialog(DialogKind::Command, f.clone());
+    if let Err(error) = crate::guide_edit::begin(app, id, &f) {
+        app.ui.close_dialog(id);
+        return Err(error);
+    }
+    Ok(id)
 }
 
+/// Edit the dialog fields and show validation errors without changing the live guide.
 pub fn body(ui: &mut egui::Ui, f: &mut Map<String, Value>) {
     let mut orientation = f.get("orientation").and_then(Value::as_str).unwrap_or("horizontal").to_string();
     let mut position = f.get("position").and_then(Value::as_str).unwrap_or_default().to_string();
@@ -164,7 +201,17 @@ pub fn body(ui: &mut egui::Ui, f: &mut Map<String, Value>) {
         });
         ui.end_row();
         let position_label = ui.label(tl!("Position"));
-        ui.add(egui::TextEdit::singleline(&mut position).desired_width(120.0)).labelled_by(position_label.id);
+        let response = ui.add(egui::TextEdit::singleline(&mut position).desired_width(120.0)).labelled_by(position_label.id);
+        if ui.is_enabled() {
+            crate::field_tab::register(ui.ctx(), response.id);
+        }
+        if response.gained_focus() {
+            crate::field_tab::select_all(ui.ctx(), response.id, &position);
+        }
+        if response.changed() && f.contains_key(EDIT) {
+            // A deliberately retyped rounded readout is a new position, not the untouched one.
+            f.insert("__positionEdited".into(), json!(true));
+        }
         ui.end_row();
         ui.label(tl!("Color"));
         ui.horizontal(|ui| {
@@ -193,10 +240,14 @@ pub fn body(ui: &mut egui::Ui, f: &mut Map<String, Value>) {
 /// the engine to read (or refuse, keeping the dialog open). Custom… sends its "#rrggbb".
 pub fn params(app: &PhotocraftApp, f: &Map<String, Value>) -> Value {
     let orientation = f.get("orientation").and_then(Value::as_str).unwrap_or("horizontal");
-    let typed = f.get("position").and_then(Value::as_str).unwrap_or_default().trim();
-    let position = match Unit::parse_length(typed) {
-        Some((_, None)) => with_unit(typed, ruler_unit(app)),
-        _ => typed.to_string(),
+    // A Unicode minus (U+2212) is a minus, as the engine reads it.
+    let typed = f.get("position").and_then(Value::as_str).unwrap_or_default().trim().replace('−', "-");
+    let position = match Unit::parse_length(&typed) {
+        Some((_, None)) => with_unit(&typed, ruler_unit(app)),
+        Some(_) => typed,
+        // Arithmetic (#10440): a first number without a unit is in the ruler unit, as in
+        // Photoshop ("300 / 2" is 150 px with pixel rulers); the engine evaluates the rest.
+        None => unit_on_first_number(&typed, ruler_unit(app)),
     };
     let color = f.get("color").and_then(Value::as_str).filter(|c| is_color_name(c)).unwrap_or(DEFAULT_COLOR);
     let color = if color == CUSTOM { custom_color(f) } else { color.to_string() };
@@ -212,10 +263,11 @@ pub fn params(app: &PhotocraftApp, f: &Map<String, Value>) -> Value {
     }
 }
 
+/// Dispatch New Guide or guarded guide editing, retaining typed fields on a retryable error.
 pub fn confirm(app: &mut PhotocraftApp, f: &Map<String, Value>) -> Result<Value, String> {
     let params = params(app, f);
     if f.contains_key(EDIT) {
-        return confirm_edit(app, f, &params);
+        return confirm_edit(app, f);
     }
     match app.run(COMMAND, params.clone()) {
         Ok(result) => {
@@ -244,28 +296,66 @@ pub fn confirm(app: &mut PhotocraftApp, f: &Map<String, Value>) -> Result<Value,
 
 /// Edit Selected Guides' OK: the edited guide stays selected (at the end of the other list if it
 /// turned). A refused edit reopens the dialog, as New Guide does.
-fn confirm_edit(app: &mut PhotocraftApp, f: &Map<String, Value>, params: &Value) -> Result<Value, String> {
-    match app.run(EDIT_COMMAND, params.clone()) {
-        Ok(result) => {
-            let (from, to) = (params["orientation"] == "vertical", params["newOrientation"] == "vertical");
-            let index = if from == to {
-                params["index"].as_u64().and_then(|i| usize::try_from(i).ok())
+fn confirm_edit(app: &mut PhotocraftApp, f: &Map<String, Value>) -> Result<Value, String> {
+    let (params, result) = match crate::guide_edit::finish(app, f) {
+        Ok(Some(applied)) => applied,
+        Ok(None) => return Ok(Value::Null),
+        Err(error) => {
+            if crate::guide_edit::retryable(app) {
+                let mut again = f.clone();
+                again.insert("__error".into(), json!(error));
+                let id = app.ui.open_dialog(DialogKind::Command, again);
+                if let Some(draft) = app.guide_edit.as_mut() {
+                    draft.dialog = id;
+                }
             } else {
-                app.session.active().map(|st| if to { st.doc.guides.vertical.len() } else { st.doc.guides.horizontal.len() }.saturating_sub(1))
-            };
-            if let Some(i) = index {
-                crate::guide_select::select(app, to, i);
+                app.guide_edit = None;
             }
-            Ok(result)
+            return Err(error);
         }
-        Err(e) => {
-            let mut again = f.clone();
-            again.insert("__error".into(), json!(e));
-            app.ui.open_dialog(DialogKind::Command, again);
-            Err(e)
-        }
+    };
+    let (from, to) = (params["orientation"] == "vertical", params["newOrientation"] == "vertical");
+    let index = if from == to {
+        params["index"].as_u64().and_then(|i| usize::try_from(i).ok())
+    } else {
+        app.session.active().map(|st| if to { st.doc.guides.vertical.len() } else { st.doc.guides.horizontal.len() }.saturating_sub(1))
+    };
+    if let Some(i) = index {
+        crate::guide_select::select(app, to, i);
     }
+    Ok(result)
+}
+
+/// The validated draft shown on the canvas, without changing the document or its history.
+pub fn edit_preview<'a>(app: &'a PhotocraftApp, doc: &photocraft_doc::Document) -> Option<&'a photocraft_doc::Guides> {
+    crate::guide_edit::preview(app, doc)
 }
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod arithmetic_tests {
+    use super::{Unit, unit_on_first_number};
+
+    /// #10440: a first number without a unit is in the ruler unit, the rest goes to the engine.
+    #[test]
+    fn a_leading_bare_number_gets_the_ruler_unit() {
+        assert_eq!(unit_on_first_number("300 / 2", Unit::Pixels), "300 px / 2");
+        assert_eq!(unit_on_first_number("3+1in", Unit::Centimeters), "3 cm+1in");
+        assert_eq!(unit_on_first_number("100% / 3", Unit::Pixels), "100% / 3");
+        assert_eq!(unit_on_first_number("abc", Unit::Pixels), "abc");
+    }
+
+    /// A bare number multiplied or divided within a term that has a length is a plain factor:
+    /// the length is the term's unit, so the ruler unit isn't added (it would make a length
+    /// times a length). A term of bare numbers still gets it.
+    #[test]
+    fn a_leading_factor_of_a_length_gets_no_ruler_unit() {
+        for typed in ["2 * 50 px", "2 / 2 * 50 px", "2*50px+10", "4 / 2 * 1in - 3", "2 * -1cm"] {
+            assert_eq!(unit_on_first_number(typed, Unit::Centimeters), typed);
+        }
+        assert_eq!(unit_on_first_number("2 * 3 + 1in", Unit::Centimeters), "2 cm * 3 + 1in");
+        assert_eq!(unit_on_first_number("6 / 2 / 3 - 1", Unit::Centimeters), "6 cm / 2 / 3 - 1");
+    }
+}

@@ -63,9 +63,9 @@ note = "No ONNX runtime dependency"
 [[item]]
 id = "AUTO-219-8"
 target = "xtask check that every panel button routes through a command id"
-status = "missing"
+status = "partial"
 issue = 219
-note = "No such xtask check"
+note = "cargo xtask panel-commands (run by xtask ci and CI) fails on a shell click handler that changes the document or session directly; 1 allowlisted function left (panels/color.rs color_field assigns the foreground/background colour instead of tools.setColors)"
 
 [[item]]
 id = "AUTO-219-9"
@@ -80,3 +80,9 @@ target = "Agent acceptance suite grown to 30-50 workflows"
 status = "partial"
 issue = 219
 note = "automation/tests/it/agent_tasks.rs runs 10 workflows over MCP"
+
+[[item]]
+id = "AUTO-MCP-LIVE"
+target = "Connect an MCP client to the running app without a terminal (no flags, ports or tokens to copy)"
+status = "done"
+note = "2026-11-12 (#5525, #11363, craft-ai-integrations#195): the ArtCraft Launcher's agents switch (the one consent; read through craft-ai-agents) starts and stops the loopback control server while the app runs (no restart) and publishes agent-connection.json; plain photocraft-cli mcp works in the open app on every call while agents are allowed (launch / headless / error while it is closed) and headless otherwise (--headless forces it); the launcher's Add buttons register every Craft app, PhotoCraft writes no client configuration. automation/tests/mcp_live.rs, apps/photocraft/src/agent_link.rs tests"

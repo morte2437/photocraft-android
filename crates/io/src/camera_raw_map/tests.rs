@@ -52,7 +52,7 @@ fn source_item() -> Descriptor {
 fn all_controls_item() -> Descriptor {
     let mut item = source_item();
     let mut d = get_desc(&item, "Fltr").unwrap().clone();
-    set(&mut d, "WBal", Value::Enumerated { type_id: photocraft_psd::descriptor::Id::new("WBal"), value: photocraft_psd::descriptor::Id::new("Cst ") });
+    set(&mut d, "WBal", Value::Enumerated { type_id: craft_psd::descriptor::Id::new("WBal"), value: craft_psd::descriptor::Id::new("Cst ") });
     set(&mut d, "ShpR", Value::Double(1.2));
     for (key, value) in [
         ("Temp", -26),

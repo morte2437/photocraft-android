@@ -8,11 +8,11 @@
 use crate::common;
 
 use common::raster;
+use craft_psd::PsdFile;
 use photocraft_color::{ColorMode, SampleType};
 use photocraft_doc::Document;
 use photocraft_geom::{Rect, Size};
 use photocraft_io::*;
-use photocraft_psd::PsdFile;
 
 /// The unicode alpha channel names (resource 1045), empty without it.
 fn names(file: &PsdFile) -> Vec<String> {
@@ -47,7 +47,7 @@ fn resave_keeps_a_name_marked_merged_transparency() {
             assert!(!ps.merged_has_alpha(), "{case}: nothing marks it yet");
             let name: Vec<u8> = [0u8, 0, 0, 13].into_iter().chain("Transparency\0".encode_utf16().flat_map(u16::to_be_bytes)).collect();
             ps.resources.retain(|r| !matches!(r.id, 1006 | 1045));
-            ps.resources.push(photocraft_psd::ImageResource::new(1045, name));
+            ps.resources.push(craft_psd::ImageResource::new(1045, name));
             assert!(ps.merged_has_alpha(), "{case}: the name marks the merged transparency");
 
             let opened = import(path, &ps.to_bytes().expect("write")).expect("import").document;

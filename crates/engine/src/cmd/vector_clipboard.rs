@@ -49,7 +49,7 @@ fn prepare(bytes: &[u8]) -> Result<(Document, Vec<String>)> {
     if imported.document.layers.is_empty() {
         return Err(bad("the SVG contains no drawable objects"));
     }
-    imported.document.icc_profile = Some(photocraft_cms::Builtin::Srgb.profile().to_bytes());
+    imported.document.icc_profile = Some(craft_cms::Builtin::Srgb.profile().to_bytes());
     Ok((imported.document, imported.warnings))
 }
 

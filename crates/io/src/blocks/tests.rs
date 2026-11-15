@@ -64,9 +64,9 @@ fn gradient_fill_opacity_stops_become_alpha() {
 /// `gs99`, which Photoshop doesn't write, so every gradient opened as Classic.
 #[test]
 fn gradient_fill_reads_the_interpolation_method() {
+    use craft_psd::descriptor::{Id, Value};
     use photocraft_color::Color;
     use photocraft_doc::{Fill, GradientStyle};
-    use photocraft_psd::descriptor::{Id, Value};
     let f = Fill::gradient(vec![(0.0, Color::BLACK), (1.0, Color::WHITE)], 0.0, 1.0, GradientStyle::Linear, false);
     let (k, data) = super::write_fill(&f);
     let d = super::parse_prefix_versioned(&data).unwrap();
@@ -84,8 +84,8 @@ fn gradient_fill_reads_the_interpolation_method() {
 
 #[test]
 fn lab_descriptor_colours_round_trip() {
+    use craft_psd::descriptor::{Descriptor, Value};
     use photocraft_color::ColorMode;
-    use photocraft_psd::descriptor::{Descriptor, Value};
     let d = Descriptor::new("LbCl").with("Lmnc", Value::Double(19.07)).with("A   ", Value::Double(52.29)).with("B   ", Value::Double(-85.08));
     let c = super::color_from_desc(&d).unwrap();
     assert_eq!(c.mode, ColorMode::Lab);
@@ -103,8 +103,8 @@ fn lab_descriptor_colours_round_trip() {
 /// psd-tools `stroke-color-descriptors-hsb-with-rgb-mode.psd`, used to be dropped (#6774).
 #[test]
 fn hsb_descriptor_colours_parse() {
+    use craft_psd::descriptor::{Descriptor, Value};
     use photocraft_doc::Fill;
-    use photocraft_psd::descriptor::{Descriptor, Value};
     let hsb = |h: f64, s: f64, b: f64| {
         Descriptor::new("HSBC").with("H   ", Value::UnitFloat { unit: *b"#Ang", value: h }).with("Strt", Value::Double(s)).with("Brgh", Value::Double(b))
     };
@@ -174,8 +174,8 @@ fn gradient_stop_alpha_round_trips_once() {
 
 #[test]
 fn blending_ranges_map_to_blend_if() {
+    use craft_psd::layer::BlendingRanges;
     use photocraft_doc::{BlendIf, BlendRange};
-    use photocraft_psd::layer::BlendingRanges;
     // Full ranges (what every layer without Blend If carries) → the default setting.
     assert_eq!(super::blend_if_from_ranges(&BlendingRanges::full(3)), BlendIf::default());
     assert_eq!(super::blend_if_from_ranges(&BlendingRanges::default()), BlendIf::default());
@@ -240,8 +240,8 @@ fn brst_round_trip() {
 
 #[test]
 fn placed_layer_warp_is_read() {
+    use craft_psd::descriptor::ObjectArray;
     use photocraft_geom::warp::WarpStyle;
-    use photocraft_psd::descriptor::ObjectArray;
     let e = |t: &str, v: &str| Value::Enumerated { type_id: Id::new(t), value: Id::new(v) };
     let bounds = Descriptor::new("Rctn")
         .with("Top ", Value::UnitFloat { unit: *b"#Pxl", value: 0.0 })

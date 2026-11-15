@@ -6,13 +6,13 @@
 //! [`PsdExportOptions::stage_on_scratch_from`](super::PsdExportOptions::stage_on_scratch_from)
 //! set and spilling on, each channel is appended to a [`StageFile`] in the scratch directory as
 //! soon as it is encoded, and the model keeps only a [`Stored`] range: the writer then copies it
-//! through in short reads (`photocraft_psd`'s `put_encoded`). A channel that cannot be staged
+//! through in short reads (`craft_psd`'s `put_encoded`). A channel that cannot be staged
 //! (the disk is full, say) stays in memory: staging only ever saves memory.
 
 use std::sync::Arc;
 
-use photocraft_psd::source::{ReadAt, Source, Stored};
-use photocraft_psd::{ChannelData, ImageData, PsdError};
+use craft_psd::source::{ReadAt, Source, Stored};
+use craft_psd::{ChannelData, ImageData, PsdError};
 use photocraft_raster::stage_file::StageFile;
 
 /// Encoded data shorter than this stays in memory: a range costs more than it saves.
@@ -34,7 +34,7 @@ impl ReadAt for Backing {
         self.0.len()
     }
 
-    fn read_at(&self, offset: u64, buf: &mut [u8]) -> photocraft_psd::Result<()> {
+    fn read_at(&self, offset: u64, buf: &mut [u8]) -> craft_psd::Result<()> {
         self.0.read_exact_at(buf, offset).map_err(|e| PsdError::Read(format!("staged export data, {} bytes at offset {offset}: {e}", buf.len())))
     }
 }
@@ -157,7 +157,7 @@ impl Parts {
     }
 
     /// The channel: `head` (of the length given to [`Parts::new`]) and then the parts.
-    pub(crate) fn finish(mut self, id: i16, compression: photocraft_psd::Compression, head: &[u8]) -> photocraft_psd::Result<ChannelData> {
+    pub(crate) fn finish(mut self, id: i16, compression: craft_psd::Compression, head: &[u8]) -> craft_psd::Result<ChannelData> {
         if head.len() != self.head_len {
             return Err(PsdError::Invalid("banded channel head has the wrong length".into()));
         }
@@ -198,7 +198,7 @@ impl ReadAt for Joined {
         self.len
     }
 
-    fn read_at(&self, offset: u64, buf: &mut [u8]) -> photocraft_psd::Result<()> {
+    fn read_at(&self, offset: u64, buf: &mut [u8]) -> craft_psd::Result<()> {
         if offset.checked_add(buf.len() as u64).is_none_or(|end| end > self.len) {
             return Err(PsdError::Read(format!("staged export data, {} bytes at offset {offset} past its {} bytes", buf.len(), self.len)));
         }

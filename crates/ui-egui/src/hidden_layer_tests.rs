@@ -47,9 +47,8 @@ fn bounds(app: &PhotocraftApp, id: LayerId) -> Rect {
 #[test]
 fn auto_select_skips_hidden_layers() {
     let (mut app, id) = app(Tool::Move);
-    let bg = app.session.active().unwrap().doc.layers[0].id;
     drag(&mut app, [16.0, 16.0], [30.0, 16.0]);
-    assert_eq!(app.session.active().unwrap().active_layer, Some(bg), "the visible layer under the pointer was picked");
+    assert!(app.session.active().unwrap().selected_layers().is_empty(), "the hidden layer and locked Background are skipped");
     assert_eq!(bounds(&app, id), Rect::new(8, 8, 24, 24), "the hidden layer stayed put");
 }
 
@@ -72,7 +71,14 @@ fn painting_a_hidden_layer_is_refused_at_the_press() {
         let n = steps(&app);
         tool_event(&mut app, ToolEvent::Down { x: 30.0, y: 30.0, pressure: 1.0 }, egui::Modifiers::NONE);
         assert!(app.drag.is_none() && app.live_stroke.is_none(), "{tool:?}: no stroke started");
-        assert!(app.ui.status.contains("target layer is hidden"), "{tool:?}: {}", app.ui.status);
+        // The Brush (#11898) and the Classic gradient (#12017) say so in an alert, the other tools
+        // in the status bar.
+        let alert = app.ui.dialogs.iter().any(|d| d.fields.get("message").and_then(|m| m.as_str()).is_some_and(|m| m.contains("target layer is hidden")));
+        if matches!(tool, Tool::Brush | Tool::Gradient) {
+            assert!(alert, "{tool:?}: {:?}", app.ui.dialogs);
+        } else {
+            assert!(app.ui.status.contains("target layer is hidden") && app.ui.dialogs.is_empty(), "{tool:?}: {}", app.ui.status);
+        }
         tool_event(&mut app, ToolEvent::Up { x: 40.0, y: 40.0 }, egui::Modifiers::NONE);
         assert_eq!((bounds(&app, id), steps(&app)), (Rect::new(8, 8, 24, 24), n), "{tool:?}");
         // Shown again, the same press paints.

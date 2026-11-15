@@ -4,6 +4,8 @@ use photocraft_color::{ColorMode, SampleType};
 use photocraft_doc::{Document, Layer, LayerContent, Size};
 
 #[test]
+/// Round-trip nontrivial double-precision geometry and require bit-identical guide/origin values plus complete document
+/// equality.
 fn f64_coordinates_reload_bit_exact() {
     let x = 11.183221215612905_f64;
     let y = 0.1 + 0.2;
@@ -18,6 +20,11 @@ fn f64_coordinates_reload_bit_exact() {
     doc.guides.horizontal.push(x);
     doc.guides.vertical.push(y);
     doc.ruler_origin = [x, y];
+    doc.metadata.import_conversion = Some(std::sync::Arc::new(photocraft_doc::import_conversion::ImportConversion::Opaque {
+        schema_version: 2,
+        record: std::sync::Arc::new(b"inert future provenance".to_vec()),
+        attachments: Vec::new(),
+    }));
     let bytes = photocraft_format::save_to_bytes(&doc, &Default::default()).unwrap();
     let back = photocraft_format::load_from_bytes(&bytes).unwrap();
     assert_eq!(back.guides.horizontal[0].to_bits(), x.to_bits());

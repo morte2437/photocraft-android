@@ -78,6 +78,8 @@ mkdir -p "$STAGE/usr/share/icons"
 cp -R "$ROOT/assets/app-icon/hicolor" "$STAGE/usr/share/icons/"
 mkdir -p "$STAGE/usr/share/doc/photocraft"
 copy_docs "$STAGE/usr/share/doc/photocraft"
+install -Dm644 "$ROOT/docs/mcp.md" "$STAGE/usr/share/doc/photocraft/mcp.md"
+install -Dm644 "$ROOT/docs/control-protocol.md" "$STAGE/usr/share/doc/photocraft/control-protocol.md"
 # photocraft-cli's man pages and shell completions, from its clap definition, written by the
 # example built above. A cross build runs it through $EMULATOR, like the --version check at the
 # end, and leaves them out without one, as a --skip-build run whose prebuilt binaries came without

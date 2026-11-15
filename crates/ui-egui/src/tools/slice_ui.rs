@@ -229,6 +229,11 @@ pub fn pointer(app: &mut PhotocraftApp, ev: ToolEvent, _mods: egui::Modifiers) -
     true
 }
 
+/// The slice colour from Preferences › Guides, Grid & Slices.
+pub fn slice_color(app: &PhotocraftApp) -> Color32 {
+    hex(&app.session.prefs().guides_grid_and_slices.slice_color, Color32::from_rgb(0x38, 0xb5, 0xff))
+}
+
 fn hex(s: &str, fallback: Color32) -> Color32 {
     let s = s.trim_start_matches('#');
     let b = |i: usize| s.get(i..i + 2).and_then(|h| u8::from_str_radix(h, 16).ok());
@@ -246,7 +251,7 @@ pub fn draw_overlay(app: &PhotocraftApp, painter: &egui::Painter, xf: &ViewXform
         return;
     }
     let prefs = &app.session.prefs().guides_grid_and_slices;
-    let color = hex(&prefs.slice_color, Color32::from_rgb(0x38, 0xb5, 0xff));
+    let color = slice_color(app);
     let numbers = prefs.show_slice_numbers;
     let selected_color = Color32::from_rgb(0xff, 0xb0, 0x00);
     let to_screen = |r: photocraft_geom::Rect| Rect::from_two_pos(xf.to_screen(r.x0 as f32, r.y0 as f32), xf.to_screen(r.x1 as f32, r.y1 as f32));

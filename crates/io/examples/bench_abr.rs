@@ -7,10 +7,10 @@
 
 use std::time::Instant;
 
+use craft_psd::abr::{AbrSample, write_v6};
+use craft_psd::descriptor::{Descriptor, UnicodeString, Value};
 use photocraft_color::PixelFormat;
 use photocraft_paint::{StrokePoint, render_stroke};
-use photocraft_psd::abr::{AbrSample, write_v6};
-use photocraft_psd::descriptor::{Descriptor, UnicodeString, Value};
 use photocraft_raster::Surface;
 
 fn prc(v: f64) -> Value {

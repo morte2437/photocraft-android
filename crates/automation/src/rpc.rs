@@ -33,7 +33,7 @@ use serde_json::{Value, json};
 
 use crate::budgets::{BatchReplyBudget, write_reply};
 use crate::security::{
-    AUTH_DEADLINE, AuthDeadlineStream, ConnectionLimiter, LineRead, MAX_BATCH_STEPS, MAX_CONNECTIONS, MAX_REQUEST_BYTES, authentication_reply,
+    AUTH_DEADLINE, AuthDeadlineStream, AuthStep, ConnectionLimiter, LineRead, MAX_BATCH_STEPS, MAX_CONNECTIONS, MAX_REQUEST_BYTES, ServerHandshake,
     configure_stream, discard_rest_of_line, read_bounded_line, repeat_auth_reply,
 };
 use crate::{AutomationError, Headless};
@@ -79,12 +79,16 @@ fn attach_memory_error_details(obj: &mut Value, err: &AutomationError) {
                 }
             }
         }
-        AutomationError::Import(photocraft_io::IoError::PsdImportBudget { required, limit })
-        | AutomationError::Engine(photocraft_engine::EngineError::PsdHardBudget { required, limit, .. }) => {
+        AutomationError::Import(photocraft_io::IoError::PsdImportBudget { required, limit, free_memory })
+        | AutomationError::Engine(photocraft_engine::EngineError::PsdHardBudget { required, limit, free_memory, .. }) => {
             if let Some(m) = obj.as_object_mut() {
                 m.insert("required".into(), json!(required));
                 m.insert("hard".into(), json!(limit));
                 m.insert("hardLimit".into(), json!(limit));
+                if let Some(free) = free_memory {
+                    m.insert("available".into(), json!(free));
+                    m.insert("availableRam".into(), json!(free));
+                }
             }
         }
         _ => {}
@@ -164,9 +168,11 @@ impl Headless {
             "doc.new" => self.command_run("file.new", p),
             "doc.save" => {
                 let tga_bits = photocraft_engine::file_cmds::tga_bits_param(&p, "doc.save").map_err(|e| bad(e.to_string()))?;
+                let pdf_spot_plates = photocraft_engine::file_cmds::pdf_spot_plates_param(&p, "doc.save").map_err(|e| bad(e.to_string()))?;
                 let mut opts = photocraft_io::ExportOptions {
                     tiff_layers: p.get("tiffLayers").and_then(Value::as_bool).unwrap_or(false),
                     tga_bits,
+                    pdf_spot_plates,
                     pcraft_full_composite: photocraft_engine::file_cmds::pcraft_full_composite_param(&p, "doc.save")
                         .map_err(|e| bad(e.to_string()))?
                         .unwrap_or(false),
@@ -180,6 +186,9 @@ impl Headless {
                 let tiff_bool = |key| photocraft_engine::file_cmds::tiff_bool_param(&p, key, "doc.save").map_err(|e| bad(e.to_string()));
                 opts.tiff_transparency = tiff_bool("tiffTransparency")?;
                 opts.encode.tiff_pyramid = tiff_bool("tiffPyramid")?.unwrap_or(false);
+                if let Some(maximize) = photocraft_engine::file_cmds::maximize_compatibility_param(&p, "doc.save").map_err(|e| bad(e.to_string()))? {
+                    opts.psd_maximize_compatibility = maximize;
+                }
                 match p.get("quality") {
                     None | Some(Value::Null) => {}
                     Some(v) => {
@@ -368,6 +377,7 @@ fn serve_tcp_connection(h: &Mutex<Headless>, stream: std::net::TcpStream, token:
     let mut reader = std::io::BufReader::new(AuthDeadlineStream::new(read, auth_deadline));
     let mut out = stream;
     let mut line = String::new();
+    let mut handshake = ServerHandshake::new();
     let mut authenticated = false;
     loop {
         match read_bounded_line(&mut reader, &mut line)? {
@@ -385,19 +395,19 @@ fn serve_tcp_connection(h: &Mutex<Headless>, stream: std::net::TcpStream, token:
             LineRead::Line if line.trim().is_empty() => continue,
             LineRead::Line => {}
         }
-        let reply = if authenticated {
-            repeat_auth_reply(&line).unwrap_or_else(|| respond(h, &line))
+        let (reply, step) = if authenticated {
+            (repeat_auth_reply(&line).unwrap_or_else(|| respond(h, &line)), AuthStep::Authenticated)
         } else {
-            let (reply, ok) = authentication_reply(&line, token);
-            authenticated = ok;
-            if ok {
+            let (reply, step) = handshake.reply(&line, token);
+            if step == AuthStep::Authenticated {
+                authenticated = true;
                 reader.get_mut().authenticated()?;
             }
-            reply
+            (reply, step)
         };
         write_reply(&mut out, &reply)?;
         out.flush()?;
-        if !authenticated {
+        if step == AuthStep::Rejected {
             return Ok(());
         }
     }

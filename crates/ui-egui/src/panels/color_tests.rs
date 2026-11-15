@@ -160,11 +160,11 @@ fn studio_color_chips_keep_default_and_swap_buttons_below() {
         );
         PhotocraftApp::setup_context(&h.ctx, kind);
         h.run_steps(2);
-        h.get_by_label("Swap colours (X)").click();
+        h.get_by_label("Switch Foreground and Background Colors (X)").click();
         h.run_steps(2);
         assert_eq!(h.state().session.tools.foreground, [0.0, 0.0, 1.0, 1.0], "{kind:?}");
         assert_eq!(h.state().session.tools.background, [1.0, 0.0, 0.0, 1.0], "{kind:?}");
-        h.get_by_label("Default colours (D)").click();
+        h.get_by_label("Default Foreground and Background Colors (D)").click();
         h.run_steps(2);
         assert_eq!(h.state().session.tools.foreground, [0.0, 0.0, 0.0, 1.0], "{kind:?}");
         assert_eq!(h.state().session.tools.background, [1.0, 1.0, 1.0, 1.0], "{kind:?}");
@@ -219,7 +219,7 @@ fn swap_and_default_colors_recolour_selected_type() {
         );
         PhotocraftApp::setup_context(&h.ctx, crate::theme::ThemeKind::Studio);
         h.run_steps(2);
-        h.get_by_label("Swap colours (X)").click();
+        h.get_by_label("Switch Foreground and Background Colors (X)").click();
         h.run_steps(2);
         assert_eq!(h.state().session.tools.foreground, [0.0, 0.0, 1.0, 1.0]);
         assert_eq!(h.state().session.tools.background, [1.0, 0.0, 0.0, 1.0]);
@@ -228,7 +228,7 @@ fn swap_and_default_colors_recolour_selected_type() {
         assert_eq!((rgb(h.state(), id, 6), rgb(h.state(), id, 10)), (blue, blue), "selected: {selected}");
         // Default Colors: the selection takes black, the new foreground.
         h.state_mut().run("tools.setColors", json!({"foreground": "#00ff00"})).unwrap();
-        h.get_by_label("Default colours (D)").click();
+        h.get_by_label("Default Foreground and Background Colors (D)").click();
         h.run_steps(2);
         assert_eq!(h.state().session.tools.foreground, [0.0, 0.0, 0.0, 1.0]);
         assert_eq!(rgb(h.state(), id, 6), [0, 0, 0, 255], "selected: {selected}");

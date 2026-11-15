@@ -233,6 +233,10 @@ fn weights(o: i32, scale: f64, kernel: Kernel, edge: Option<(i32, i32)>, content
             let sum: f64 = w.iter().sum();
             (lo, w.into_iter().map(|v| v / sum).collect())
         }
+        // Past a 4096x reduction Lanczos would build a weight per covered source sample (tens of
+        // thousands per output sample); the box average that folds the beyond-edge weights is
+        // indistinguishable at that scale.
+        Kernel::Lanczos if scale < 1.0 / 4096.0 => weights(o, scale, Kernel::Bilinear, edge, content),
         Kernel::Lanczos => {
             let stretch = if scale < 1.0 { 1.0 / scale } else { 1.0 };
             let u = (o as f64 + 0.5) / scale - 0.5;
@@ -286,6 +290,21 @@ pub fn scaled_rect(r: Rect, sx: f64, sy: f64) -> Rect {
         return Rect::EMPTY;
     }
     Rect::new((r.x0 as f64 * sx).floor() as i32, (r.y0 as f64 * sy).floor() as i32, (r.x1 as f64 * sx).ceil() as i32, (r.y1 as f64 * sy).ceil() as i32)
+}
+
+/// The largest rectangle a resize of content at `r` by `(sx, sy)` with `filter` stores: the
+/// result, or the image between the passes of a two-pass bicubic. That one keeps an axis at its
+/// old size, so when both axes shrink it is larger than the result (#9212).
+pub fn largest_resize_rect(r: Rect, sx: f64, sy: f64, filter: Resample) -> Rect {
+    let area = |r: Rect| u64::from(r.width()) * u64::from(r.height());
+    let (mut cur, mut largest) = (r, Rect::EMPTY);
+    for p in plan(filter, sx, sy) {
+        cur = scaled_rect(cur, p.sx, p.sy);
+        if area(cur) > area(largest) {
+            largest = cur;
+        }
+    }
+    largest
 }
 
 /// Resizes a surface by `(sx, sy)` about the document origin. The surface's
@@ -346,71 +365,137 @@ fn resize(s: &Surface, sx: f64, sy: f64, filter: Resample, canvas: Option<Rect>)
 
 /// Runs `filter`'s passes. Between two passes the image is stored in its own format, which
 /// clips it (and rounds it at 8 and 16 bits) as Photoshop does; the smaller scale goes first, so
-/// the intermediate image is never larger than the result.
+/// the intermediate image is never larger than the result when an axis grows, but is when both
+/// shrink ([`largest_resize_rect`]).
 fn resize_with_budget(s: &Surface, sx: f64, sy: f64, filter: Resample, canvas: Option<Rect>, budget: usize) -> Surface {
+    resize_controlled(s, sx, sy, filter, canvas, budget, &photocraft_raster::Interrupt::NONE)
+}
+
+/// Resize with cancellation between passes and bounded groups of output bands.
+/// A cancelled operation returns no partially resized surface.
+pub fn resize_surface_with_interrupt(
+    s: &Surface,
+    sx: f64,
+    sy: f64,
+    filter: Resample,
+    ctl: &photocraft_raster::Interrupt,
+) -> Result<Surface, photocraft_raster::Cancelled> {
+    ctl.check()?;
+    let out = resize_controlled(s, sx, sy, filter, None, READ_BUDGET, ctl);
+    ctl.check()?;
+    Ok(out)
+}
+
+fn resize_controlled(s: &Surface, sx: f64, sy: f64, filter: Resample, canvas: Option<Rect>, budget: usize, ctl: &photocraft_raster::Interrupt) -> Surface {
     let mut cur: Option<Surface> = None;
     let mut canvas = canvas;
     for p in plan(filter, sx, sy) {
-        let next = resize_pass(cur.as_ref().unwrap_or(s), p, canvas, budget);
+        if ctl.cancelled() {
+            return Surface::new(s.format());
+        }
+        let next = resize_pass(cur.as_ref().unwrap_or(s), p, canvas, budget, ctl);
         canvas = canvas.map(|c| scaled_rect(c, p.sx, p.sy));
         cur = Some(next);
     }
-    let mut out = cur.unwrap_or_else(|| s.clone());
+    let mut out = preserve_details(cur.unwrap_or_else(|| s.clone()), filter, sx, sy);
+    out.prune();
+    out
+}
+
+/// Preserve Details' light sharpening of an enlargement (Lanczos's output, for the other filters
+/// nothing).
+fn preserve_details(mut out: Surface, filter: Resample, sx: f64, sy: f64) -> Surface {
     if filter == Resample::PreserveDetails && (sx > 1.0 || sy > 1.0) {
         let dst = out.content_bounds();
         let p = crate::FilterParams::UnsharpMask { amount: 30.0, radius: 0.6 * sx.max(sy) as f32, threshold: 0.0 };
         let area = crate::output_area(&p, dst, dst, None);
         out = crate::apply(&out, &p, area, dst, None);
     }
-    out.prune();
     out
 }
 
-/// One pass. With `canvas`, the content and the canvas repeat their edge outwards (see
-/// [`resize_surface_in_canvas`]).
-fn resize_pass(s: &Surface, pass: Pass, canvas: Option<Rect>, budget: usize) -> Surface {
-    let Pass { sx, sy, kx, ky } = pass;
-    let edge = canvas.map(|c| s.content_bounds().union(&c)).filter(|a| !a.is_empty());
-    let fmt = s.format();
-    let mut out = Surface::with_default(fmt, &s.default_pixel());
-    let src = s.content_bounds();
-    let dst = scaled_rect(src, sx, sy);
-    if dst.is_empty() {
-        return out;
+/// Output rows computed together by [`PassState::band`].
+const BAND: usize = 64;
+
+/// One pass prepared: its taps and the constants every band needs. [`PassState::band`] computes
+/// one band of output rows from the source, so the parallel loop of [`resize_pass`] and
+/// [`ResizeSteps`] run the same code and give the same pixels.
+struct PassState {
+    n: usize,
+    alpha: bool,
+    /// The output extent.
+    dst: Rect,
+    /// The area every tap is clamped into (the source's content, or with a canvas that and the canvas).
+    area: Rect,
+    hx: Vec<Taps>,
+    vy: Vec<Taps>,
+    x_lo: i32,
+    x_hi: i32,
+    def: Vec<f32>,
+    /// A source row of nothing but the default pixel, after the horizontal pass.
+    def_row: Vec<f32>,
+    rows_per_read: i32,
+}
+
+impl PassState {
+    /// Prepares `pass` over `s`; `None` when the output is empty. With `canvas`, the content and
+    /// the canvas repeat their edge outwards (see [`resize_surface_in_canvas`]).
+    fn new(s: &Surface, pass: Pass, canvas: Option<Rect>, budget: usize) -> Option<Self> {
+        let Pass { sx, sy, kx, ky } = pass;
+        let edge = canvas.map(|c| s.content_bounds().union(&c)).filter(|a| !a.is_empty());
+        let fmt = s.format();
+        let src = s.content_bounds();
+        let dst = scaled_rect(src, sx, sy);
+        if dst.is_empty() {
+            return None;
+        }
+        let n = fmt.channels();
+        let alpha = fmt.alpha;
+        // With `edge`, every tap is clamped into the edge area, which holds the content.
+        let area = edge.unwrap_or(src);
+        let hx = taps(dst.x0, dst.x1, sx, kx, edge.map(|r| (r.x0, r.x1 - 1)), (area.x0, area.x1 - 1));
+        let vy = taps(dst.y0, dst.y1, sy, ky, edge.map(|r| (r.y0, r.y1 - 1)), (area.y0, area.y1 - 1));
+        let x_lo = hx.iter().filter(|t| !t.weights.is_empty()).map(|t| t.start).min().unwrap_or(area.x0);
+        let x_hi = hx.iter().map(|t| t.start + t.weights.len() as i32).max().unwrap_or(area.x0).max(x_lo);
+        let mut def = s.default_pixel();
+        premultiply(&mut def, n, alpha);
+        let dw = dst.width() as usize;
+        let mut st = Self { n, alpha, dst, area, hx, vy, x_lo, x_hi, def, def_row: Vec::new(), rows_per_read: 1 };
+        st.def_row = {
+            let row: Vec<f32> = st.def.iter().copied().cycle().take((x_hi - x_lo) as usize * n).collect();
+            let mut out = vec![0.0f32; dw * n];
+            st.horizontal(&row, &mut out);
+            out
+        };
+        // At most one tile row per read anyway, so this always fits an `i32`.
+        st.rows_per_read = (budget / ((x_hi - x_lo).max(1) as usize * n).max(dw * n)).clamp(1, TILE_SIZE as usize) as i32;
+        Some(st)
     }
-    let n = fmt.channels();
-    let alpha = fmt.alpha;
-    // With `edge`, every tap is clamped into the edge area, which holds the content.
-    let area = edge.unwrap_or(src);
-    let hx = taps(dst.x0, dst.x1, sx, kx, edge.map(|r| (r.x0, r.x1 - 1)), (area.x0, area.x1 - 1));
-    let vy = taps(dst.y0, dst.y1, sy, ky, edge.map(|r| (r.y0, r.y1 - 1)), (area.y0, area.y1 - 1));
-    let x_lo = hx.iter().filter(|t| !t.weights.is_empty()).map(|t| t.start).min().unwrap_or(area.x0);
-    let x_hi = hx.iter().map(|t| t.start + t.weights.len() as i32).max().unwrap_or(area.x0).max(x_lo);
-    let mut def = s.default_pixel();
-    premultiply(&mut def, n, alpha);
-    let dw = dst.width() as usize;
-    const BAND: usize = 64;
-    let bands: Vec<(usize, usize)> = (0..vy.len()).step_by(BAND).map(|b| (b, (b + BAND).min(vy.len()))).collect();
-    // Horizontal pass of one source row (`row` spans `x_lo..x_hi`) into `dw` samples.
-    let horizontal = |row: &[f32], out: &mut [f32]| match n {
-        1 => horizontal_fixed::<1>(row, out, &hx, x_lo, &def),
-        2 => horizontal_fixed::<2>(row, out, &hx, x_lo, &def),
-        3 => horizontal_fixed::<3>(row, out, &hx, x_lo, &def),
-        4 => horizontal_fixed::<4>(row, out, &hx, x_lo, &def),
-        5 => horizontal_fixed::<5>(row, out, &hx, x_lo, &def),
-        _ => horizontal_dynamic(row, out, &hx, x_lo, &def, n),
-    };
-    // A source row of nothing but the default pixel, after the horizontal pass.
-    let def_row = {
-        let row: Vec<f32> = def.iter().copied().cycle().take((x_hi - x_lo) as usize * n).collect();
-        let mut out = vec![0.0f32; dw * n];
-        horizontal(&row, &mut out);
-        out
-    };
-    // At most one tile row per read anyway, so this always fits an `i32`.
-    let rows_per_read = (budget / ((x_hi - x_lo).max(1) as usize * n).max(dw * n)).clamp(1, TILE_SIZE as usize) as i32;
-    let run = |&(b0, b1): &(usize, usize)| -> (Rect, Vec<f32>) {
-        let band = vy.get(b0..b1).unwrap_or(&[]);
+
+    /// How many bands of [`BAND`] output rows the pass has.
+    fn bands(&self) -> usize {
+        self.vy.len().div_ceil(BAND)
+    }
+
+    /// Horizontal pass of one source row (`row` spans `x_lo..x_hi`) into `dw` samples.
+    fn horizontal(&self, row: &[f32], out: &mut [f32]) {
+        let (hx, x_lo, def) = (&self.hx, self.x_lo, &self.def);
+        match self.n {
+            1 => horizontal_fixed::<1>(row, out, hx, x_lo, def),
+            2 => horizontal_fixed::<2>(row, out, hx, x_lo, def),
+            3 => horizontal_fixed::<3>(row, out, hx, x_lo, def),
+            4 => horizontal_fixed::<4>(row, out, hx, x_lo, def),
+            5 => horizontal_fixed::<5>(row, out, hx, x_lo, def),
+            _ => horizontal_dynamic(row, out, hx, x_lo, def, self.n),
+        }
+    }
+
+    /// Band `b` of the output: its rectangle and samples, from the pass's source `s`.
+    fn band(&self, s: &Surface, b: usize) -> (Rect, Vec<f32>) {
+        let (n, alpha, area, dst, x_lo, x_hi) = (self.n, self.alpha, self.area, self.dst, self.x_lo, self.x_hi);
+        let dw = dst.width() as usize;
+        let (b0, b1) = (b * BAND, ((b + 1) * BAND).min(self.vy.len()));
+        let band = self.vy.get(b0..b1).unwrap_or(&[]);
         let y_lo = band.iter().filter(|t| !t.weights.is_empty()).map(|t| t.start).min().unwrap_or(area.y0);
         let y_hi = band.iter().map(|t| t.start + t.weights.len() as i32).max().unwrap_or(area.y0).max(y_lo);
         let mut res = vec![0.0f32; band.len() * dw * n];
@@ -434,7 +519,7 @@ fn resize_pass(s: &Surface, pass: Pass, canvas: Option<Rect>, budget: usize) -> 
             if s.has_tiles_in(Rect::new(x_lo, y, x_hi, y1)) {
                 let mut c0 = y;
                 while c0 < y1 {
-                    let c1 = (c0 + rows_per_read).min(y1);
+                    let c1 = (c0 + self.rows_per_read).min(y1);
                     let read = Rect::new(x_lo, c0, x_hi, c1);
                     s.read_region_into(read, &mut rows);
                     premultiply(&mut rows, n, alpha);
@@ -442,7 +527,7 @@ fn resize_pass(s: &Surface, pass: Pass, canvas: Option<Rect>, budget: usize) -> 
                     hrows.resize((c1 - c0) as usize * dw * n, 0.0);
                     let rw = read.width() as usize * n;
                     for (row, out) in rows.chunks_exact(rw.max(1)).zip(hrows.chunks_exact_mut(dw * n)) {
-                        horizontal(row, out);
+                        self.horizontal(row, out);
                     }
                     for (r, h) in (c0..c1).zip(hrows.chunks_exact(dw * n)) {
                         add(&mut res, r, h);
@@ -456,7 +541,7 @@ fn resize_pass(s: &Surface, pass: Pass, canvas: Option<Rect>, budget: usize) -> 
                     let (a, b) = ((y - t.start).max(0) as usize, (y1 - t.start).max(0) as usize);
                     let w: f32 = t.weights.get(a.min(t.weights.len())..b.min(t.weights.len())).unwrap_or(&[]).iter().sum();
                     if w != 0.0 {
-                        for (dv, sv) in d.iter_mut().zip(&def_row) {
+                        for (dv, sv) in d.iter_mut().zip(&self.def_row) {
                             *dv += sv * w;
                         }
                     }
@@ -465,7 +550,7 @@ fn resize_pass(s: &Surface, pass: Pass, canvas: Option<Rect>, budget: usize) -> 
             y = y1;
         }
         for (t, d) in band.iter().zip(res.chunks_exact_mut(dw * n)) {
-            for (dv, sv) in d.iter_mut().zip(&def_row) {
+            for (dv, sv) in d.iter_mut().zip(&self.def_row) {
                 *dv += sv * t.outside;
             }
         }
@@ -476,7 +561,15 @@ fn resize_pass(s: &Surface, pass: Pass, canvas: Option<Rect>, budget: usize) -> 
         }
         unpremultiply(&mut res, n, alpha);
         (Rect::new(dst.x0, dst.y0 + b0 as i32, dst.x1, dst.y0 + b1 as i32), res)
-    };
+    }
+}
+
+/// One pass. With `canvas`, the content and the canvas repeat their edge outwards (see
+/// [`resize_surface_in_canvas`]).
+fn resize_pass(s: &Surface, pass: Pass, canvas: Option<Rect>, budget: usize, ctl: &photocraft_raster::Interrupt) -> Surface {
+    let mut out = Surface::with_default(s.format(), &s.default_pixel());
+    let Some(st) = PassState::new(s, pass, canvas, budget) else { return out };
+    let bands: Vec<usize> = (0..st.bands()).collect();
     // Bands go into the output a group at a time, so the `f32` rows held at once are bounded by
     // the group, not by the whole destination (#1544).
     #[cfg(not(target_arch = "wasm32"))]
@@ -484,18 +577,116 @@ fn resize_pass(s: &Surface, pass: Pass, canvas: Option<Rect>, budget: usize) -> 
     #[cfg(target_arch = "wasm32")]
     let group = 1;
     for chunk in bands.chunks(group) {
+        if ctl.cancelled() {
+            return Surface::new(s.format());
+        }
         #[cfg(not(target_arch = "wasm32"))]
         let parts: Vec<(Rect, Vec<f32>)> = {
             use rayon::prelude::*;
-            chunk.par_iter().map(run).collect()
+            chunk.par_iter().map(|&b| st.band(s, b)).collect()
         };
         #[cfg(target_arch = "wasm32")]
-        let parts: Vec<(Rect, Vec<f32>)> = chunk.iter().map(run).collect();
+        let parts: Vec<(Rect, Vec<f32>)> = chunk.iter().map(|&b| st.band(s, b)).collect();
         for (r, d) in parts {
             out.write_region(r, &d);
         }
     }
     out
+}
+
+/// [`resize_surface`] (or, with a canvas, [`resize_surface_in_canvas`]) in resumable steps, for a
+/// caller that cannot block, such as the web build with no threads: [`ResizeSteps::step`] computes
+/// bands of output rows until the caller says to stop, and returns the surface once they are all
+/// done. It runs [`resize_with_budget`]'s passes and [`resize_pass`]'s bands through the same
+/// code, so its result equals [`resize_surface`]'s.
+pub struct ResizeSteps {
+    /// The current pass's source: the input, then each pass's output.
+    src: Surface,
+    passes: std::vec::IntoIter<Pass>,
+    total: usize,
+    canvas: Option<Rect>,
+    filter: Resample,
+    scale: (f64, f64),
+    run: Option<PassRun>,
+    /// Final pruning must yield too: sparse output can contain many default-filled tiles.
+    prune: Option<photocraft_raster::PruneCursor>,
+}
+
+/// The pass being computed by [`ResizeSteps`].
+struct PassRun {
+    pass: Pass,
+    state: PassState,
+    out: Surface,
+    next: usize,
+}
+
+impl ResizeSteps {
+    /// Resizes `src` by `(sx, sy)` about the document origin, as [`resize_surface`] (no `canvas`)
+    /// or [`resize_surface_in_canvas`] does.
+    pub fn new(src: Surface, sx: f64, sy: f64, filter: Resample, canvas: Option<Rect>) -> Self {
+        let passes = plan(filter, sx, sy);
+        Self { src, total: passes.len(), passes: passes.into_iter(), canvas, filter, scale: (sx, sy), run: None, prune: None }
+    }
+
+    /// How far along it is, `0.0..=1.0`: whole passes plus the bands done of the current one.
+    pub fn progress(&self) -> f32 {
+        let done = self.total.saturating_sub(self.passes.len() + usize::from(self.run.is_some()));
+        let part = self.run.as_ref().map_or(0.0, |r| r.next as f32 / r.state.bands().max(1) as f32);
+        ((done as f32 + part) / self.total.max(1) as f32).clamp(0.0, 1.0)
+    }
+
+    /// Does at least one unit of work (planning a pass, one band of 64 output rows, or the
+    /// closing prune batch) and goes on while `more()` returns true. `Some` once the resize is done.
+    pub fn step(&mut self, more: &mut dyn FnMut() -> bool) -> Option<Surface> {
+        loop {
+            match self.run.take() {
+                None => {
+                    if let Some(pass) = self.passes.next() {
+                        let out = Surface::with_default(self.src.format(), &self.src.default_pixel());
+                        match PassState::new(&self.src, pass, self.canvas, READ_BUDGET) {
+                            Some(state) => self.run = Some(PassRun { pass, state, out, next: 0 }),
+                            None => self.advance(out, pass),
+                        }
+                    } else if let Some(out) = self.finish_step() {
+                        return Some(out);
+                    }
+                }
+                Some(mut run) if run.next < run.state.bands() => {
+                    let (r, data) = run.state.band(&self.src, run.next);
+                    run.out.write_region(r, &data);
+                    run.next += 1;
+                    self.run = Some(run);
+                }
+                Some(run) => self.advance(run.out, run.pass),
+            }
+            if !more() {
+                return None;
+            }
+        }
+    }
+
+    /// The next pass reads this one's output.
+    fn advance(&mut self, out: Surface, pass: Pass) {
+        self.canvas = self.canvas.map(|c| scaled_rect(c, pass.sx, pass.sy));
+        self.src = out;
+    }
+
+    /// The last pass's output, with the same final pruning as [`resize_with_budget`], but at
+    /// most four tiles per unit so a broad transparent area cannot monopolize the closing poll.
+    fn finish_step(&mut self) -> Option<Surface> {
+        if self.prune.is_none() {
+            let placeholder = Surface::new(self.src.format());
+            let out = std::mem::replace(&mut self.src, placeholder);
+            self.src = preserve_details(out, self.filter, self.scale.0, self.scale.1);
+            self.prune = Some(self.src.prune_cursor());
+        }
+        let cursor = self.prune.as_mut()?;
+        if !self.src.prune_batch(cursor, 4) {
+            return None;
+        }
+        let placeholder = Surface::new(self.src.format());
+        Some(std::mem::replace(&mut self.src, placeholder))
+    }
 }
 
 /// Moves a surface by whole pixels (default pixel kept).

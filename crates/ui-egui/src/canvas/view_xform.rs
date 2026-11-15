@@ -36,7 +36,7 @@ impl ViewXform {
         )
     }
 
-    pub(super) fn pixel_aligned_for(self, app: &PhotocraftApp, ppp: f32) -> Self {
+    pub(crate) fn pixel_aligned_for(self, app: &PhotocraftApp, ppp: f32) -> Self {
         // Default Crop counter-moves the frame and camera with fractional pointer deltas.
         // Preserve that continuous mapping so its fixed frame does not wobble during a drag.
         if crate::crop_mode::moves_image(app) { self } else { self.pixel_aligned(ppp) }

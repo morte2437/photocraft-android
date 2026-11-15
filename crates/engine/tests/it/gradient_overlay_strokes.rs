@@ -67,7 +67,8 @@ fn a_gradient_overlay_is_laid_out_again_after_each_stroke() {
 fn a_stroke_inside_the_layer_keeps_its_own_damage() {
     let mut s = session("layer.layerStyle.gradientOverlay", json!({"from": "#ff0000", "to": "#0000ff", "angle": 0}));
     s.execute("paint.stroke", json!({"points": [[10, 10], [150, 70]], "size": 12, "hardness": 1.0, "color": GREY})).unwrap();
-    // Within the layer's bounds: the gradient's frame stays, so only the stroke repaints.
+    // Within the layer's bounds: the gradient's frame stays, so only the stroke repaints (grown
+    // by the effects' margin, as any change to the layer's pixels is).
     let r = s.execute("paint.stroke", json!({"points": [[60, 40], [70, 40]], "size": 6, "hardness": 1.0, "color": GREY})).unwrap();
     let d = &r["damage"];
     let reported = photocraft_geom::Rect::new(
@@ -76,7 +77,9 @@ fn a_stroke_inside_the_layer_keeps_its_own_damage() {
         (d[0].as_i64().unwrap() + d[2].as_i64().unwrap()) as i32,
         (d[1].as_i64().unwrap() + d[3].as_i64().unwrap()) as i32,
     );
-    assert_eq!(s.active().unwrap().last_damage, Some(reported));
+    let st = s.active().unwrap();
+    let margin = photocraft_compose::effects::margin(st.doc.layer(st.active_layer.unwrap()).unwrap());
+    assert_eq!(st.last_damage, Some(reported.inflate(margin)));
 }
 
 #[test]

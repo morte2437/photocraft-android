@@ -1,4 +1,4 @@
-use photocraft_cms::{Builtin, Intent, Profile, Transform};
+use craft_cms::{Builtin, Intent, Profile, Transform};
 use photocraft_codecs::{ChannelLayout, SampleType as CodecSample, decode};
 use photocraft_color::{BlendMode, ColorMode, PixelFormat, SampleType};
 use photocraft_doc::{Document, Layer, LayerContent, LayerMask};
@@ -123,13 +123,14 @@ fn assert_mixed_region_alpha(samples: &[f32], tolerance: f32, context: &str) {
 }
 
 fn compare_flat_and_layered_mixed_cmyk_regions() {
-    let custom = photocraft_cms::synth::cmyk_profile(&photocraft_cms::synth::CmykParams {
+    let custom = craft_cms::synth::cmyk_profile(&craft_cms::synth::CmykParams {
         description: "Mixed regions uncoated".into(),
         tvi: [0.26, 0.26, 0.26, 0.3],
         grid_a2b: 5,
         grid_b2a: 9,
         ..Default::default()
-    });
+    })
+    .unwrap();
     let coated = Builtin::CoatedCmyk.profile().to_bytes();
     for (name, profile) in [("untagged", None), ("coated", Some(coated.clone())), ("uncoated", Some(custom.to_bytes()))] {
         for (depth, sample) in [(SampleType::U8, CodecSample::U8), (SampleType::U16, CodecSample::U16), (SampleType::F32, CodecSample::F32)] {
@@ -223,14 +224,14 @@ fn jpeg_keeps_four_components_profile_and_zero_ink_matte_when_composited() {
 
 #[test]
 fn composite_uses_distinctive_document_profile_on_every_worker() {
-    let params = photocraft_cms::synth::CmykParams {
+    let params = craft_cms::synth::CmykParams {
         description: "Export synthetic uncoated".into(),
         tvi: [0.26, 0.26, 0.26, 0.3],
         grid_a2b: 5,
         grid_b2a: 9,
         ..Default::default()
     };
-    let profile = photocraft_cms::synth::cmyk_profile(&params);
+    let profile = craft_cms::synth::cmyk_profile(&params).unwrap();
     let mut doc = document(SampleType::F32, 0.5);
     doc.size = Size::new(64, 64);
     doc.icc_profile = Some(profile.to_bytes());
@@ -241,9 +242,9 @@ fn composite_uses_distinctive_document_profile_on_every_worker() {
     let transform = Transform::new(Builtin::Srgb.profile(), &profile, Intent::RelativeColorimetric, true).unwrap();
     let fallback = Transform::new(Builtin::Srgb.profile(), Builtin::CoatedCmyk.profile(), Intent::RelativeColorimetric, true).unwrap();
     let mut expected = [0.0; 4];
-    transform.eval_fast(&rgb.px[0][..3], &mut expected);
+    transform.eval_fast(&rgb.px[0][..3], &mut expected).unwrap();
     let mut wrong = [0.0; 4];
-    fallback.eval_fast(&rgb.px[0][..3], &mut wrong);
+    fallback.eval_fast(&rgb.px[0][..3], &mut wrong).unwrap();
     assert!(expected.iter().zip(wrong).any(|(a, b)| (a - b).abs() > 0.02));
     assert!(photocraft_io::pixels::bands(rgb.px.len()).len() > 1);
 
@@ -320,7 +321,7 @@ fn rgb_only_export_uses_direct_composite_not_reseparated_cmyk() {
 
     let image = decode(&result.bytes).unwrap();
     assert_eq!(image.data(), expected.data());
-    assert_eq!(Profile::parse(image.icc.as_ref().unwrap()).unwrap().color_space, photocraft_cms::ColorSpace::Rgb);
+    assert_eq!(Profile::parse(image.icc.as_ref().unwrap()).unwrap().color_space, craft_cms::ColorSpace::Rgb);
 }
 
 #[test]
@@ -343,11 +344,12 @@ fn layered_tiff_keeps_its_existing_cmyk_psd_composite_path() {
 /// tagged CMYK files were 95–100% off before).
 #[test]
 fn merged_composite_of_a_tagged_cmyk_file_reads_through_its_profile() {
-    use photocraft_cms::synth::{CmykParams, cmyk_profile};
+    use craft_cms::synth::{CmykParams, cmyk_profile};
     use photocraft_color::convert::{CmykSpace, cmyk_to_rgb, with_cmyk_space};
     let mut doc = Document::new("tagged", Size::new(6, 4), ColorMode::Cmyk, SampleType::U8);
     let profile =
-        cmyk_profile(&CmykParams { description: "Merged Test CMYK".into(), tvi: [0.26, 0.26, 0.26, 0.3], grid_a2b: 5, grid_b2a: 9, ..Default::default() });
+        cmyk_profile(&CmykParams { description: "Merged Test CMYK".into(), tvi: [0.26, 0.26, 0.26, 0.3], grid_a2b: 5, grid_b2a: 9, ..Default::default() })
+            .unwrap();
     doc.icc_profile = Some(profile.to_bytes());
     let mut surface = Surface::new(photocraft_color::PixelFormat::new(ColorMode::Cmyk, SampleType::U8, false));
     for x in 0..6 {
@@ -357,7 +359,7 @@ fn merged_composite_of_a_tagged_cmyk_file_reads_through_its_profile() {
     }
     doc.layers.push(Layer::new("Background", LayerContent::Raster(surface)));
     let psd = export(&doc, "psd", &ExportOptions::default()).unwrap();
-    let file = photocraft_psd::PsdFile::from_bytes(&psd.bytes).unwrap();
+    let file = craft_psd::PsdFile::from_bytes(&psd.bytes).unwrap();
     let merged = photocraft_io::merged_composite(&file).unwrap();
     // The merged image's own inks (planar, 255 = no ink), shown through the file's profile.
     let raw = file.decode_merged().unwrap();

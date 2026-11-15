@@ -3,13 +3,13 @@ use crate::common;
 
 use std::io::Read;
 
+use craft_psd::Compression;
 use photocraft_codecs::{ChannelLayout, Format, Image, SampleType as CodecSample};
 use photocraft_color::{ColorMode, SampleType};
 use photocraft_doc::{Document, Layer, LayerContent};
 use photocraft_format::{SaveOptions, load_from_bytes, read_thumbnail, save_to_bytes};
 use photocraft_geom::Size;
 use photocraft_io::{PsdExportOptions, document_to_psd_with, import};
-use photocraft_psd::Compression;
 use photocraft_raster::Rgba8Image;
 
 fn document(depth: SampleType, size: Size) -> Document {
@@ -77,17 +77,17 @@ fn png_psd_and_pcraft_decode_identically() {
             let mut file = document_to_psd_with(&doc, &opts).0;
             // The IO exporter normally chooses Raw for float composites; also cover ZIP here.
             if depth == SampleType::F32 {
-                file.image_data = photocraft_psd::ImageData::encode(compression, &merged, &file.header).unwrap();
+                file.image_data = craft_psd::ImageData::encode(compression, &merged, &file.header).unwrap();
             }
             let bytes = file.to_bytes().unwrap();
-            let parsed = photocraft_psd::PsdFile::from_bytes(&bytes).unwrap();
+            let parsed = craft_psd::PsdFile::from_bytes(&bytes).unwrap();
             assert_eq!(parsed.image_data.compression, compression);
             let (inflated, legacy) = old_and_new_inflate(&parsed.image_data.data);
             // The PSD streaming helper uses a different flate2 reader from plane decoding.
-            assert_eq!(photocraft_psd::compression::zip_decompress(&legacy, inflated.len()).unwrap(), inflated);
+            assert_eq!(craft_psd::compression::zip_decompress(&legacy, inflated.len()).unwrap(), inflated);
             file.image_data.data = legacy;
             for fixture in [bytes, file.to_bytes().unwrap()] {
-                let parsed = photocraft_psd::PsdFile::from_bytes(&fixture).unwrap();
+                let parsed = craft_psd::PsdFile::from_bytes(&fixture).unwrap();
                 assert_eq!(parsed.image_data.decode(&parsed.header).unwrap(), merged);
                 let back = import("compatibility.psd", &fixture).unwrap().document;
                 assert_eq!(back.layers[0].surface().unwrap().read_region(doc.bounds()), pixels);

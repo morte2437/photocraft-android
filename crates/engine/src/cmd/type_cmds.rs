@@ -8,7 +8,7 @@
 
 use std::sync::Arc;
 
-use photocraft_color::{Color, PixelFormat};
+use photocraft_color::{Color, ColorMode, PixelFormat};
 use photocraft_doc::text::{
     AntiAlias, Caps, CharStyle, FontBaseline, FontFeature, FontVariation, Kerning, Orientation, ParagraphRun, ParagraphStyle, TextAlign, TextDirection,
     TextRun, TextShape,
@@ -655,6 +655,22 @@ pub fn refresh_at(dpi: f32, format: PixelFormat, t: &mut TextLayer) {
     t.psd_raw = Some(Arc::new(photocraft_text::psd::build_tysh(t, dpi, layout.bounds())));
 }
 
+/// Makes `t` paragraph text in the box `[x, y, width, height]`: the box sits at the text-space
+/// origin and the layer transform moves it to `(x, y)`, keeping its linear part. `x` and `y` are
+/// document px (the transform's translation); `width` and `height` are text-space px, so under a
+/// scaled transform they are scaled by its linear part.
+/// `type.edit`'s `box` param and the Type tool's live box-drag preview both use it, so the preview
+/// shows exactly the layer the command would make. Non-finite numbers count as 0, as a JSON
+/// `null` does in the command (a width or height of 0 becomes the 1 px minimum). The stored size
+/// is clamped to `1.0..=f32::MAX` so a huge input can't become an infinite `f32`.
+pub fn apply_box(t: &mut TextLayer, b: [f64; 4]) {
+    let [x, y, w, h] = b.map(|v| if v.is_finite() { v } else { 0.0 });
+    let size = |v: f64| v.clamp(1.0, f64::from(f32::MAX)) as f32;
+    let lin = t.transform.m;
+    t.shape = TextShape::Box { x: 0.0, y: 0.0, width: size(w), height: size(h) };
+    t.transform = Affine { m: [lin[0], lin[1], lin[2], lin[3], x, y] };
+}
+
 /// Refuses to change a type layer under Lock All (its own or an enclosing group's), with
 /// Photoshop's message. Every command that edits a type layer's text calls it first (#3132, #4188).
 pub(crate) fn check_text_unlocked(doc: &Document, id: LayerId) -> Result<()> {
@@ -671,26 +687,34 @@ pub(crate) fn check_text_unlocked(doc: &Document, id: LayerId) -> Result<()> {
 fn with_text_layer<R>(s: &mut Session, p: &Value, label: &str, f: impl FnOnce(&mut TextLayer, f32, &mut Option<String>) -> Result<R>) -> Result<R> {
     let id = layer_id(s, p)?;
     check_text_unlocked(&s.active().ok_or(EngineError::NoDocument)?.doc, id)?;
+    let typed = typed_name(s, id);
+    let mut named = None;
     let (r, damage) = s.edit(label, |doc, _| {
         let (dpi, format) = (doc.resolution_dpi, doc.pixel_format());
         let l = doc.layer_mut(id).ok_or(EngineError::NoLayer(id))?;
-        let auto_named = is_auto_named(l);
+        let auto_named = is_auto_named(l, typed.as_deref());
         let LayerContent::Text(t) = &mut l.content else {
             return Err(EngineError::Other(format!("layer {} is {} {} layer, not a type layer", id.0, l.content.article(), l.content.kind_name())));
         };
         let before = t.cache.as_ref().map(|c| c.tile_bounds());
+        // Only a text change renames: a style or layout edit keeps a copy's "Title copy" (#9023).
+        let old_text = auto_named.then(|| t.text.clone());
         let mut rename = None;
         let r = f(t, dpi, &mut rename)?;
         refresh_at(dpi, format, t);
         // Only this layer's pixels changed: the canvas recomposites their old and new area
         // instead of the whole document (#124). Unknown old pixels mean a full refresh.
         let damage = before.zip(t.cache.as_ref().map(|c| c.tile_bounds())).map(|(a, b)| a.union(&b));
-        let name = rename.or_else(|| auto_named.then(|| layer_name(&t.text)));
+        named.clone_from(&rename);
+        let name = rename.or_else(|| old_text.is_some_and(|old| old != t.text).then(|| layer_name(&t.text)));
         if let Some(n) = name {
             l.name = n;
         }
         Ok((r, damage))
     })?;
+    if let Some(n) = named {
+        note_typed_name(s, id, &n);
+    }
     if let Some(d) = damage {
         s.hint_damage(d);
     }
@@ -789,9 +813,33 @@ fn shown_style_params<'a>(t: &TextLayer, p: &'a Value) -> Result<std::borrow::Co
 }
 
 /// Whether a type layer still has the name it got from its text, so the name follows edits to
-/// the text. A layer renamed to anything else keeps its name (#483).
-pub(crate) fn is_auto_named(l: &Layer) -> bool {
-    matches!(&l.content, LayerContent::Text(t) if l.name == layer_name(&t.text))
+/// the text. A layer renamed to anything else keeps its name (#483). A duplicate's name ("Title
+/// copy", "Title copy 2") still comes from its text, so the copy is renamed after its new text
+/// as Photoshop does, unless the user typed that name (`typed`, #9023).
+pub(crate) fn is_auto_named(l: &Layer, typed: Option<&str>) -> bool {
+    let LayerContent::Text(t) = &l.content else { return false };
+    let auto = layer_name(&t.text);
+    // Duplicate Layer names a copy of "Title copy" "Title copy 2", not "Title copy copy".
+    l.name == auto || (typed != Some(l.name.as_str()) && copy_root(&l.name).is_some_and(|root| root == copy_root(&auto).unwrap_or(&auto)))
+}
+
+/// The name the user last gave layer `id` in the active document, if any (see
+/// [`crate::DocState::typed_names`]).
+pub(crate) fn typed_name(s: &Session, id: LayerId) -> Option<String> {
+    s.active().and_then(|d| d.typed_names.get(&id)).cloned()
+}
+
+/// Records that the user named layer `id` of the active document `name` (#9023).
+pub(crate) fn note_typed_name(s: &mut Session, id: LayerId, name: &str) {
+    if let Some(d) = s.active_mut() {
+        d.typed_names.insert(id, name.to_string());
+    }
+}
+
+/// The name a Duplicate Layer copy was made from: "Title" for "Title copy" or "Title copy 2".
+fn copy_root(name: &str) -> Option<&str> {
+    let (root, rest) = name.rsplit_once(" copy")?;
+    (rest.is_empty() || rest.strip_prefix(' ').is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))).then_some(root)
 }
 
 /// The name a type layer gets from its text: its first non-empty line, at most 40 characters.
@@ -905,8 +953,60 @@ pub(crate) fn new_text_layer(s: &Session, p: &Value, cmd: &str) -> Result<TextLa
     Ok(t)
 }
 
+/// The name of the history state a new horizontal type layer makes: what `type.create` records
+/// (vertical text is "New Vertical Type Layer", #12058), and what the
+/// Type tool's commit keeps in the modes [`commits_as_selection`] names (#12041).
+pub const NEW_TYPE_LAYER_LABEL: &str = "New Type Layer";
+
+/// Whether committing Type-tool text `t` in colour mode `mode` leaves no type layer, but a
+/// selection in the shape of its glyphs, as Photoshop does in its Indexed Color and Bitmap
+/// documents (#12041).
+///
+/// Both halves of the answer come from the issue:
+/// - the modes: Indexed Color and Bitmap are the two documents that keep no type layer;
+/// - the text: only the horizontal point text the measurement describes - the tool "still lets you
+///   click and type" and the commit leaves "a selection in the shape of the typed glyphs". Paragraph
+///   (box) text and vertical type are on its *Not measured* list, whose rule is that an unmeasured
+///   case keeps today's behaviour - and today's behaviour is the outcome that makes sense here
+///   anyway: a coverage mask cannot give back a box that reflows or a column of stacked lines, so
+///   the selection would end the editability the layer exists for. The Type Mask tools keep turning
+///   both into the selection, as they do today: there the user asked for one.
+///
+/// The check belongs to the Type tool's commit (the Type Mask tools' `type.createSelection` with
+/// `removeLayer`, which it already runs for `ed.mask`) and *not* to the `type.create` command, even
+/// though a colour-mode check there is what looks simplest:
+/// - `type.create` is the primitive the tools build the layer they edit and show on canvas with
+///   (`pointer_up` in `ui-egui`), and Preferences > Type > "Fill new type layers with placeholder
+///   text" (on by default) already gives that first call non-empty text. Branching there would make
+///   the click produce a selection and no layer, so there would be nothing to type into - while the
+///   reference application still lets you click and type in these modes and shows the text while
+///   editing. Only its commit differs.
+/// - `type.create` is also what automation, actions and a script's new text layer go through, and
+///   the measured difference is the tool's.
+pub fn commits_as_selection(mode: ColorMode, t: &TextLayer) -> bool {
+    let measured = matches!(t.shape, TextShape::Point) && t.orientation == Orientation::Horizontal;
+    measured && matches!(mode, ColorMode::Indexed | ColorMode::Bitmap)
+}
+
+/// Name the step the Type tool's commit made in such a document (#12041). The commit runs the Type
+/// Mask tools' `type.createSelection` with `removeLayer` - the same conversion, coalesced into the
+/// one step of the typing session - and that command names the step "Type Mask", while Photoshop's
+/// history state here is the type layer's own name.
+///
+/// An edit that does not carry the session's `coalesce` key (the Alt+arrow kerning step, which is
+/// deliberately one state per press) ends the session's step, exactly as it does for the Type Mask
+/// tools and for the plain type layer's rename on commit; the conversion is then a state of its own
+/// and takes this name too. Photoshop repeats a state name whenever the same thing happens again,
+/// so the two states read as the two type-layer steps they are.
+pub fn name_selection_commit(s: &mut Session) {
+    if let Some(st) = s.active_mut() {
+        st.history.set_current_label(NEW_TYPE_LAYER_LABEL);
+    }
+}
+
 const CHAR_PARAMS: &str = r##""font":str,"fontStyle":str,"weight":100..900,"italic":bool,"size":0.1..=1296 pt,"color":"#rrggbb"|[r,g,b,a],"tracking":-1000..=10000 (1/1000 em),"leading":pt|"auto","baselineShift":pt,"horizontalScale":%,"verticalScale":%,"underline":bool,"strikethrough":bool,"fauxBold":bool,"fauxItalic":bool,"kerning":1/1000em (manual, after each character)|"metrics"|"optical"|"off","caps":"normal|small|all","baseline":"normal|superscript|subscript","ligatures":bool,"discretionaryLigatures":bool,"features":{"ss01":1},"variations":{"wght":650},"language":str"##;
 
+/// The Type commands: create and edit type layers, set styles, fill paths, and the queries about them.
 pub fn specs() -> Vec<CommandSpec> {
     vec![
         CommandSpec {
@@ -919,13 +1019,19 @@ pub fn specs() -> Vec<CommandSpec> {
             journal: true,
             run: |s, p| {
                 let mut t = new_text_layer(s, p, "type.create")?;
-                let name = p.get("name").and_then(Value::as_str).map(str::to_string).unwrap_or_else(|| layer_name(&t.text));
-                let id = s.edit("New Type Layer", |doc, active| {
+                let given = p.get("name").and_then(Value::as_str).map(str::to_string);
+                let name = given.clone().unwrap_or_else(|| layer_name(&t.text));
+                // The reference application names new vertical text after its tool (#12058).
+                let label = if t.orientation == Orientation::Vertical { "New Vertical Type Layer" } else { NEW_TYPE_LAYER_LABEL };
+                let id = s.edit(label, |doc, active| {
                     refresh(doc, &mut t);
                     let id = crate::layer_place::insert_new(doc, *active, Layer::new(name, LayerContent::Text(t)), crate::layer_place::Place::AutoEditable);
                     *active = Some(id);
                     Ok(id)
                 })?;
+                if let Some(given) = given {
+                    note_typed_name(s, id, &given);
+                }
                 let bounds = s.active().and_then(|d| d.doc.layer(id)).and_then(|l| l.surface()).map(|c| c.content_bounds());
                 let mut out = json!({ "layer": id.0, "bounds": bounds.map(|r| [r.x0, r.y0, r.x1, r.y1]) });
                 if let Some(LayerContent::Text(t)) = s.active().and_then(|d| d.doc.layer(id)).map(|l| &l.content) {
@@ -1027,9 +1133,11 @@ pub fn specs() -> Vec<CommandSpec> {
                     }
                     let lin = t.transform.m;
                     if let Some(b) = p.get("box").and_then(Value::as_array).filter(|b| b.len() == 4) {
-                        let v: Vec<f64> = b.iter().map(|x| x.as_f64().unwrap_or(0.0)).collect();
-                        t.shape = TextShape::Box { x: 0.0, y: 0.0, width: v[2].max(1.0) as f32, height: v[3].max(1.0) as f32 };
-                        t.transform = Affine { m: [lin[0], lin[1], lin[2], lin[3], v[0], v[1]] };
+                        let mut v = [0.0; 4];
+                        for (slot, x) in v.iter_mut().zip(b) {
+                            *slot = x.as_f64().unwrap_or(0.0);
+                        }
+                        apply_box(t, v);
                     }
                     if let Some(pt) = p.get("point").and_then(Value::as_array).filter(|b| b.len() == 2) {
                         t.shape = TextShape::Point;
@@ -1201,3 +1309,6 @@ fn step_size(s: &mut Session, p: &Value, up: bool, default_by: f32) -> Result<Va
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+#[path = "type_vertical_history_name_tests.rs"]
+mod vertical_history_name_tests;

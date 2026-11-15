@@ -147,6 +147,66 @@ pub trait Sampler: Sync {
         }
         RgbImage { w: ow, h: oh, px }
     }
+
+    /// Straight RGBA (`0..=1`) over `r`, box-downsampled by `step` like [`Self::rgb_scaled`], read
+    /// in the same strips. Unlike [`Self::rgb`], alpha survives, so a transparent working pixel
+    /// stays transparent instead of becoming mid grey: Object Finder needs that to stop at the
+    /// edge of a transparent layer (#12852).
+    fn rgba_scaled(&self, r: Rect, step: usize) -> Vec<[f32; 4]> {
+        if step <= 1 {
+            return self.rgba(r);
+        }
+        let (w, h) = (r.width() as usize, r.height() as usize);
+        let (ow, oh) = (w.div_ceil(step), h.div_ceil(step));
+        let rows_per = (64usize.div_ceil(step)).max(1);
+        let strips: Vec<usize> = (0..oh.div_ceil(rows_per)).collect();
+        let run = |si: &usize| -> Vec<[f32; 4]> {
+            let oy0 = si * rows_per;
+            let oy1 = (oy0 + rows_per).min(oh);
+            let y0 = r.y0 + (oy0 * step) as i32;
+            let y1 = (r.y0 + (oy1 * step) as i32).min(r.y1);
+            let strip = self.rgba(Rect::new(r.x0, y0, r.x1, y1));
+            downsample_rgba(&strip, w, (y1 - y0) as usize, step)
+        };
+        #[cfg(not(target_arch = "wasm32"))]
+        let parts: Vec<Vec<[f32; 4]>> = {
+            use rayon::prelude::*;
+            strips.par_iter().map(run).collect()
+        };
+        #[cfg(target_arch = "wasm32")]
+        let parts: Vec<Vec<[f32; 4]>> = strips.iter().map(run).collect();
+        let mut px = Vec::with_capacity(ow * oh);
+        for p in parts {
+            px.extend(p);
+        }
+        px
+    }
+}
+
+/// Box-average straight RGBA by an integer `step` (`ceil(w/step) × ceil(h/step)`).
+fn downsample_rgba(px: &[[f32; 4]], w: usize, h: usize, step: usize) -> Vec<[f32; 4]> {
+    let (ow, oh) = (w.div_ceil(step), h.div_ceil(step));
+    let mut out = vec![[0.0f32; 4]; ow * oh];
+    for oy in 0..oh {
+        for ox in 0..ow {
+            let mut acc = [0.0f32; 4];
+            let mut n = 0.0f32;
+            for y in oy * step..((oy + 1) * step).min(h) {
+                for x in ox * step..((ox + 1) * step).min(w) {
+                    if let Some(p) = px.get(y * w + x) {
+                        for c in 0..4 {
+                            acc[c] += p[c];
+                        }
+                        n += 1.0;
+                    }
+                }
+            }
+            if let Some(o) = out.get_mut(oy * ow + ox) {
+                *o = acc.map(|v| v / n.max(1.0));
+            }
+        }
+    }
+    out
 }
 
 /// Samples a raster surface (any format; converted to straight RGBA).

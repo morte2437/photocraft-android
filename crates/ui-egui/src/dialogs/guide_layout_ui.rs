@@ -2,6 +2,7 @@
 
 use egui::{Color32, Stroke};
 use photocraft_doc::{Document, Guides};
+use photocraft_engine::prefs::Unit;
 use serde_json::{Map, Value, json};
 
 use crate::{PhotocraftApp, theme::Tokens, widgets};
@@ -31,6 +32,113 @@ pub fn owns(f: &Map<String, Value>) -> bool {
     f.contains_key(MARK)
 }
 
+fn ruler_unit(app: &PhotocraftApp) -> Unit {
+    app.session.prefs().units_and_rulers.rulers
+}
+
+fn with_unit(value: &str, unit: Unit) -> String {
+    format!("{value} {}", unit.suffix())
+}
+
+/// Decimals the reference application's guide layout fields show in every unit, trailing zeros
+/// dropped: 20 px at 72 ppi opens as "0.706 cm", a typed "13.5 px" stays "13.5 px".
+const FIELD_DECIMALS: usize = 3;
+
+/// Document pixels in the active document's ruler unit: "0.706 cm", "0.278 in", "20 px".
+pub(crate) fn in_ruler_unit(app: &PhotocraftApp, px: f64, along_x: bool) -> String {
+    let units = &app.session.prefs().units_and_rulers;
+    let (dpi, extent) = app.session.active().map_or((72.0, 1.0), |st| {
+        let d = &st.doc;
+        (f64::from(d.resolution_dpi.max(1.0)), f64::from(if along_x { d.size.width } else { d.size.height }))
+    });
+    let v = units.rulers.from_px(px, dpi, extent, units.point_size.per_inch());
+    with_unit(&photocraft_engine::prefs::fmt_decimals(v, FIELD_DECIMALS), units.rulers)
+}
+
+/// The unit a field's text names, or `fallback` when it names none.
+fn text_unit(text: &str, fallback: Unit) -> Unit {
+    Unit::parse_length(text).and_then(|(_, unit)| unit).unwrap_or(fallback)
+}
+
+/// The text a field settles on when it loses focus. A bare number takes `unit`, the unit the
+/// field showed when it got focus (after "2 mm", a typed "5" becomes "5 mm").
+fn normalize_field_text(text: &str, app: &PhotocraftApp, along_x: bool, optional: bool, unit: Unit) -> Option<String> {
+    let t = text.trim();
+    if t.is_empty() {
+        if optional {
+            return Some(String::new());
+        } else {
+            return Some(in_ruler_unit(app, 0.0, along_x));
+        }
+    }
+    let (v, unit) = match Unit::parse_length(t) {
+        Some((v, typed)) => (v, typed.unwrap_or(unit)),
+        None => (widgets::parse_num(t)?, unit),
+    };
+    Some(with_unit(&photocraft_engine::prefs::fmt_decimals(v, FIELD_DECIMALS), unit))
+}
+
+fn parse_length_str(text: &str, app: &PhotocraftApp, along_x: bool) -> Option<f64> {
+    let t = text.trim();
+    if t.is_empty() {
+        return None;
+    }
+    let units = &app.session.prefs().units_and_rulers;
+    let (dpi, extent) = app.session.active().map_or((72.0, 1.0), |st| {
+        let d = &st.doc;
+        (f64::from(d.resolution_dpi.max(1.0)), f64::from(if along_x { d.size.width } else { d.size.height }))
+    });
+    let ppi = units.point_size.per_inch();
+    let ruler = units.rulers;
+
+    if let Some((n, unit)) = Unit::parse_length(t) {
+        Some(unit.unwrap_or(ruler).to_px(n, dpi, extent, ppi))
+    } else {
+        widgets::parse_num(t).map(|n| ruler.to_px(n, dpi, extent, ppi))
+    }
+}
+
+/// The percent a field's text gives ("10%", or a bare number while the rulers are in percent).
+/// Percent stays percent all the way to the engine, which takes it of each target, so a selected
+/// artboard smaller than the document gets its own share, not the document's.
+fn percent_of(text: &str, ruler: Unit) -> Option<f64> {
+    match Unit::parse_length(text) {
+        Some((n, Some(Unit::Percent))) => Some(n),
+        Some((n, None)) if ruler == Unit::Percent => Some(n),
+        Some(_) => None,
+        None if ruler == Unit::Percent => widgets::parse_num(text),
+        None => None,
+    }
+}
+
+fn format_stored_length(app: &PhotocraftApp, val: &Value, along_x: bool, optional: bool) -> Value {
+    match val {
+        Value::Number(n) => {
+            let px = n.as_f64().unwrap_or(0.0);
+            if optional && px <= 0.0 { Value::Null } else { json!(in_ruler_unit(app, px, along_x)) }
+        }
+        Value::String(s) => {
+            let t = s.trim();
+            if t.is_empty() {
+                if optional { Value::Null } else { json!(in_ruler_unit(app, 0.0, along_x)) }
+            } else if let Some(pct) = percent_of(t, ruler_unit(app)) {
+                if optional && pct <= 0.0 { Value::Null } else { json!(with_unit(&photocraft_engine::prefs::fmt_decimals(pct, FIELD_DECIMALS), Unit::Percent)) }
+            } else if let Some(px) = parse_length_str(t, app, along_x) {
+                if optional && px <= 0.0 { Value::Null } else { json!(in_ruler_unit(app, px, along_x)) }
+            } else {
+                json!(s)
+            }
+        }
+        _ => {
+            if optional {
+                Value::Null
+            } else {
+                json!(in_ruler_unit(app, 0.0, along_x))
+            }
+        }
+    }
+}
+
 /// Alt+Cancel (Reset): factory New Guide Layout values, not the last-used remembered layout.
 pub fn reset(app: &PhotocraftApp, f: &mut Map<String, Value>) {
     if !owns(f) {
@@ -51,10 +159,12 @@ pub fn reset(app: &PhotocraftApp, f: &mut Map<String, Value>) {
     f.insert("__preset".into(), json!("custom"));
     f.insert("width".into(), Value::Null);
     f.insert("height".into(), Value::Null);
-    let margin = f.get("margin").cloned().unwrap_or(json!(0));
-    if !margin.is_array() {
-        f.insert("margin".into(), json!([margin.clone(), margin.clone(), margin.clone(), margin]));
-    }
+    f.insert("gutter".into(), json!(in_ruler_unit(app, 20.0, true)));
+    f.insert("rowGutter".into(), json!(in_ruler_unit(app, 0.0, false)));
+    f.insert(
+        "margin".into(),
+        json!([in_ruler_unit(app, 0.0, false), in_ruler_unit(app, 0.0, true), in_ruler_unit(app, 0.0, false), in_ruler_unit(app, 0.0, true)]),
+    );
     f.insert("__preview".into(), json!(true));
 }
 
@@ -80,18 +190,93 @@ pub fn open(app: &mut PhotocraftApp) -> u64 {
     f.entry("__preset").or_insert_with(|| json!("custom"));
     f.entry("width").or_insert(Value::Null);
     f.entry("height").or_insert(Value::Null);
-    let margin = f.get("margin").cloned().unwrap_or(json!(0));
-    if !margin.is_array() {
-        f.insert("margin".into(), json!([margin.clone(), margin.clone(), margin.clone(), margin]));
+
+    // Format fields in active ruler unit when opening the dialog
+    if let Some(gutter) = f.get("gutter").cloned() {
+        f.insert("gutter".into(), format_stored_length(app, &gutter, true, false));
+    } else {
+        f.insert("gutter".into(), json!(in_ruler_unit(app, 20.0, true)));
     }
+    if let Some(row_gutter) = f.get("rowGutter").cloned() {
+        f.insert("rowGutter".into(), format_stored_length(app, &row_gutter, false, false));
+    } else {
+        f.insert("rowGutter".into(), json!(in_ruler_unit(app, 0.0, false)));
+    }
+    if let Some(width) = f.get("width").cloned() {
+        f.insert("width".into(), format_stored_length(app, &width, true, true));
+    }
+    if let Some(height) = f.get("height").cloned() {
+        f.insert("height".into(), format_stored_length(app, &height, false, true));
+    }
+
+    let margin = f.get("margin").cloned().unwrap_or(json!(0));
+    let mut margins = if let Value::Array(a) = margin { if a.len() == 4 { a } else { vec![json!(0); 4] } } else { vec![margin.clone(); 4] };
+    // Top, Left, Bottom, Right: Left and Right measure along x.
+    for (m, along_x) in margins.iter_mut().zip([false, true, false, true]) {
+        *m = format_stored_length(app, m, along_x, false);
+    }
+    f.insert("margin".into(), Value::Array(margins));
+
     for key in ["__previewGuides", "__previewParams", "__previewSource"] {
         f.remove(key);
     }
     app.ui.open_dialog(crate::state::DialogKind::Command, f)
 }
 
-/// Preserve legacy command parameter names for automation and remembered defaults.
+fn parse_length_value(val: Option<&Value>, app: Option<&PhotocraftApp>, along_x: bool, optional: bool) -> Value {
+    match val {
+        Some(Value::Number(n)) => {
+            if let Some(num) = n.as_f64() {
+                if optional && num <= 0.0 { Value::Null } else { json!(num) }
+            } else {
+                Value::Null
+            }
+        }
+        Some(Value::String(s)) => {
+            let t = s.trim();
+            if t.is_empty() {
+                if optional { Value::Null } else { json!(0.0) }
+            } else if let Some(pct) = percent_of(t, app.map_or(Unit::Pixels, ruler_unit)) {
+                if optional && pct <= 0.0 { Value::Null } else { json!(format!("{pct}%")) }
+            } else {
+                let (dpi, extent, ppi, ruler) = match app {
+                    Some(app) => {
+                        let units = &app.session.prefs().units_and_rulers;
+                        let (dpi, extent) = app.session.active().map_or((72.0, 1.0), |st| {
+                            let d = &st.doc;
+                            (f64::from(d.resolution_dpi.max(1.0)), f64::from(if along_x { d.size.width } else { d.size.height }))
+                        });
+                        (dpi, extent, units.point_size.per_inch(), units.rulers)
+                    }
+                    None => (72.0, 1.0, 72.0, Unit::Pixels),
+                };
+
+                if let Some((n, unit)) = Unit::parse_length(t) {
+                    let px = unit.unwrap_or(ruler).to_px(n, dpi, extent, ppi);
+                    if optional && px <= 0.0 { Value::Null } else { serde_json::Number::from_f64(px).map(Value::Number).unwrap_or(Value::Null) }
+                } else if let Some(n) = widgets::parse_num(t) {
+                    let px = ruler.to_px(n, dpi, extent, ppi);
+                    if optional && px <= 0.0 { Value::Null } else { serde_json::Number::from_f64(px).map(Value::Number).unwrap_or(Value::Null) }
+                } else {
+                    json!(s)
+                }
+            }
+        }
+        _ => {
+            if optional {
+                Value::Null
+            } else {
+                json!(0.0)
+            }
+        }
+    }
+}
+
 pub fn params(f: &Map<String, Value>) -> Value {
+    params_with(None, f)
+}
+
+pub fn params_with(app: Option<&PhotocraftApp>, f: &Map<String, Value>) -> Value {
     let mut p: Map<String, Value> = ["columns", "rows", "width", "height", "gutter", "rowGutter", "margin", "centerColumns", "clearExisting", "target"]
         .into_iter()
         .filter_map(|k| f.get(k).cloned().map(|v| (k.to_string(), v)))
@@ -103,17 +288,28 @@ pub fn params(f: &Map<String, Value>) -> Value {
     }
     if !on(f, "__marginEnabled", true) {
         p.insert("margin".into(), json!(0));
+    } else if let Some(margin_val) = f.get("margin") {
+        let parsed = match margin_val {
+            Value::Array(arr) if arr.len() == 4 => {
+                let top = parse_length_value(Some(&arr[0]), app, false, false);
+                let left = parse_length_value(Some(&arr[1]), app, true, false);
+                let bottom = parse_length_value(Some(&arr[2]), app, false, false);
+                let right = parse_length_value(Some(&arr[3]), app, true, false);
+                json!([top, left, bottom, right])
+            }
+            Value::Array(_) => json!(0),
+            other => {
+                let m = parse_length_value(Some(other), app, false, false);
+                json!([m.clone(), m.clone(), m.clone(), m])
+            }
+        };
+        p.insert("margin".into(), parsed);
     }
-    for key in ["width", "height"] {
-        if let Some(Value::String(s)) = p.get(key) {
-            let value = if s.trim().is_empty() {
-                Value::Null
-            } else {
-                widgets::parse_num(s).and_then(serde_json::Number::from_f64).map(Value::Number).unwrap_or_else(|| json!(s))
-            };
-            p.insert(key.into(), value);
-        }
-    }
+    p.insert("width".into(), parse_length_value(f.get("width"), app, true, true));
+    p.insert("height".into(), parse_length_value(f.get("height"), app, false, true));
+    p.insert("gutter".into(), parse_length_value(f.get("gutter"), app, true, false));
+    p.insert("rowGutter".into(), parse_length_value(f.get("rowGutter"), app, false, false));
+
     // A disabled axis must not be rejected for a stale width or gap typed before disabling it.
     for (key, size, gap) in [("columns", "width", "gutter"), ("rows", "height", "rowGutter")] {
         if p.get(key).and_then(Value::as_u64) == Some(0) {
@@ -133,7 +329,7 @@ fn calculate(app: &PhotocraftApp, f: &Map<String, Value>) -> Result<Guides, Stri
     if f.get("__document") != Some(&json!(st.doc.id)) {
         return Err("the guide layout belongs to another document".into());
     }
-    let params = params(f);
+    let params = params_with(Some(app), f);
     // Painting an unchanged dialog must not repeat the duplicate scans every frame.
     if f.get("__previewParams") == Some(&params)
         && f.get("__previewSource") == Some(&source(app))
@@ -156,13 +352,28 @@ pub fn confirm(app: &mut PhotocraftApp, f: &Map<String, Value>) -> Result<Value,
     // Colour is the existing global guide display preference, not document data.
     let color = rgb(color).ok_or("invalid guide color")?;
     let hex = format!("#{:02x}{:02x}{:02x}", color.r(), color.g(), color.b());
-    let result = app.run(COMMAND, params(f))?;
+    let params = params_with(Some(app), f);
+    // Lengths are remembered as the pixels they applied, so a bare "5" typed in px still means
+    // 5 px after the ruler unit changes; reopening shows them in the new unit. Percent stays
+    // percent, of whatever the next target is.
+    let mut remembered = f.clone();
+    for (key, along_x, optional) in [("width", true, true), ("height", false, true), ("gutter", true, false), ("rowGutter", false, false)] {
+        if let Some(v) = f.get(key) {
+            remembered.insert(key.into(), parse_length_value(Some(v), Some(app), along_x, optional));
+        }
+    }
+    if let Some(Value::Array(m)) = f.get("margin")
+        && m.len() == 4
+    {
+        let px = m.iter().zip([false, true, false, true]).map(|(v, along_x)| parse_length_value(Some(v), Some(app), along_x, false)).collect();
+        remembered.insert("margin".into(), Value::Array(px));
+    }
+    let result = app.run(COMMAND, params)?;
     // The preview is visible even when guides were hidden. Keep a committed layout visible too.
     app.ui.view.extras = true;
     app.ui.view.show.canvas_guides = true;
     app.ui.extras.guides = true;
     app.session.prefs.edit(|prefs| prefs.guides_grid_and_slices.guide_color = hex);
-    let mut remembered = f.clone();
     for key in [MARK, "__command", "__label", "__document", "__previewGuides", "__previewParams", "__previewSource"] {
         remembered.remove(key);
     }
@@ -190,39 +401,75 @@ fn check(ui: &mut egui::Ui, f: &mut Map<String, Value>, key: &str, label: &str, 
     value
 }
 
-fn number(ui: &mut egui::Ui, f: &mut Map<String, Value>, key: &str, name: &str, count: bool) {
+fn count_field(ui: &mut egui::Ui, f: &mut Map<String, Value>, key: &str, name: &str) {
     let mut value = f.get(key).and_then(Value::as_f64).unwrap_or(0.0) as f32;
-    if widgets::value_field(ui, &mut value, (if count { 1.0 } else { 0.0 })..=if count { 1000.0 } else { 300_000.0 }, if count { "" } else { "px" }, 68.0)
+    if widgets::value_field(ui, &mut value, 1.0..=1000.0, "", 68.0)
         .accessible_name(tl!(name))
         .changed()
         // A disabled field still clamps its value into range (a zero count to 1); writing that
         // back would switch the axis on through its `positive` fallback (#5625).
         && ui.is_enabled()
     {
-        f.insert(key.into(), if count { json!(value.round() as u64) } else { json!(value) });
+        f.insert(key.into(), json!(value.round() as u64));
     }
 }
 
-fn optional(ui: &mut egui::Ui, f: &mut Map<String, Value>, key: &str, label: egui::Id) {
-    let mut value = match f.get(key) {
-        Some(Value::String(s)) => s.clone(),
-        Some(v) if v.is_number() => v.to_string(),
-        _ => String::new(),
+/// Tab selects the text even while a mouse button is held; a click places the caret.
+fn should_select_all(response: &egui::Response, ui: &egui::Ui) -> bool {
+    response.gained_focus()
+        && (crate::field_tab::reached(ui.ctx(), response.id)
+            || (!response.clicked() && !response.dragged() && !ui.input(|i| i.pointer.any_click() || i.pointer.any_down())))
+}
+
+fn length_field(app: &PhotocraftApp, ui: &mut egui::Ui, f: &mut Map<String, Value>, key: &str, label: egui::Id, optional: bool, along_x: bool) {
+    let mut value = f.get(key).cloned().unwrap_or(Value::Null);
+    let response = unit_edit(app, ui, key, &mut value, optional, along_x, 68.0).labelled_by(label);
+    if f.get(key).unwrap_or(&Value::Null) != &value {
+        f.insert(key.into(), value);
+    }
+    if optional {
+        response.on_hover_text(tl!("Leave empty for automatic size"));
+    }
+}
+
+/// A length field that takes any unit. Its text is stored as typed and settles on lost focus.
+fn unit_edit(app: &PhotocraftApp, ui: &mut egui::Ui, id_salt: &str, value: &mut Value, optional: bool, along_x: bool, width: f32) -> egui::Response {
+    let mut text = match value {
+        Value::String(s) => s.clone(),
+        Value::Number(n) => {
+            let px = n.as_f64().unwrap_or(0.0);
+            if optional && px <= 0.0 { String::new() } else { in_ruler_unit(app, px, along_x) }
+        }
+        _ if optional => String::new(),
+        _ => in_ruler_unit(app, 0.0, along_x),
     };
     let t = Tokens::get(ui.ctx());
-    let response = ui
-        .add(egui::TextEdit::singleline(&mut value).id_salt(key).desired_width(60.0).font(crate::theme::mono(12.0)).background_color(t.field))
-        .labelled_by(label);
+    let response = ui.add(egui::TextEdit::singleline(&mut text).id_salt(id_salt).desired_width(width).font(crate::theme::mono(12.0)).background_color(t.field));
     if ui.is_enabled() {
         crate::field_tab::register(ui.ctx(), response.id);
     }
+    let ruler = ruler_unit(app);
     if response.gained_focus() {
-        crate::field_tab::select_all(ui.ctx(), response.id, &value);
+        let unit = text_unit(&text, ruler);
+        ui.ctx().data_mut(|d| d.insert_temp(response.id, unit));
+    }
+    if should_select_all(&response, ui) {
+        crate::field_tab::select_all(ui.ctx(), response.id, &text);
     }
     if response.changed() {
-        f.insert(key.into(), json!(value));
+        *value = json!(text);
     }
-    response.on_hover_text(tl!("Leave empty for automatic size"));
+    if response.lost_focus() {
+        let unit = ui.ctx().data_mut(|d| d.remove_temp::<Unit>(response.id)).unwrap_or(ruler);
+        // Leaving a field untouched keeps its stored value (an automatic size stays empty), so
+        // tabbing past it does not turn a named preset into Custom.
+        if let Some(normalized) = normalize_field_text(&text, app, along_x, optional, unit)
+            && normalized != text
+        {
+            *value = json!(normalized);
+        }
+    }
+    response
 }
 
 fn group<R>(ui: &mut egui::Ui, content: impl FnOnce(&mut egui::Ui) -> R) -> R {
@@ -230,7 +477,7 @@ fn group<R>(ui: &mut egui::Ui, content: impl FnOnce(&mut egui::Ui) -> R) -> R {
     egui::Frame::new().stroke(Stroke::new(1.0, t.field_border)).inner_margin(8).show(ui, |ui| ui.vertical(content).inner).inner
 }
 
-fn axis(ui: &mut egui::Ui, f: &mut Map<String, Value>, rows: bool) {
+fn axis(app: &PhotocraftApp, ui: &mut egui::Ui, f: &mut Map<String, Value>, rows: bool) {
     let (toggle, count, size, gap, title, size_label) = if rows {
         ("__rowsEnabled", "rows", "height", "rowGutter", tl!("Rows"), tl!("Height"))
     } else {
@@ -245,13 +492,13 @@ fn axis(ui: &mut egui::Ui, f: &mut Map<String, Value>, rows: bool) {
         ui.add_enabled_ui(enabled, |ui| {
             egui::Grid::new(count).spacing([8.0, 6.0]).show(ui, |ui| {
                 ui.label(tl!("Number"));
-                number(ui, f, count, "Number", true);
+                count_field(ui, f, count, "Number");
                 ui.end_row();
                 let size_label_resp = ui.label(size_label);
-                optional(ui, f, size, size_label_resp.id);
+                length_field(app, ui, f, size, size_label_resp.id, true, !rows);
                 ui.end_row();
-                ui.label(tl!("Spacing"));
-                number(ui, f, gap, "Spacing", false);
+                let gap_label_resp = ui.label(tl!("Spacing"));
+                length_field(app, ui, f, gap, gap_label_resp.id, false, !rows);
                 ui.end_row();
             });
         });
@@ -275,18 +522,26 @@ fn main_fields(app: &PhotocraftApp, ui: &mut egui::Ui, f: &mut Map<String, Value
             match preset.as_str() {
                 "five" | "eight" | "twelve" => {
                     let (cols, rows, gap) = match preset.as_str() {
-                        "five" => (5, 3, 0),
-                        "eight" => (8, 0, 20),
-                        _ => (12, 0, 24),
+                        "five" => (5, 3, 0.0),
+                        "eight" => (8, 0, 20.0),
+                        _ => (12, 0, 24.0),
                     };
                     for (k, v) in [
                         ("columns", json!(cols)),
                         ("rows", json!(rows)),
-                        ("gutter", json!(gap)),
-                        ("rowGutter", json!(0)),
+                        ("gutter", json!(in_ruler_unit(app, gap, true))),
+                        ("rowGutter", json!(in_ruler_unit(app, 0.0, false))),
                         ("width", Value::Null),
                         ("height", Value::Null),
-                        ("margin", json!([0, 0, 0, 0])),
+                        (
+                            "margin",
+                            json!([
+                                in_ruler_unit(app, 0.0, false),
+                                in_ruler_unit(app, 0.0, true),
+                                in_ruler_unit(app, 0.0, false),
+                                in_ruler_unit(app, 0.0, true)
+                            ]),
+                        ),
                         ("__columnsEnabled", json!(true)),
                         ("__rowsEnabled", json!(rows > 0)),
                         ("__marginEnabled", json!(true)),
@@ -328,24 +583,30 @@ fn main_fields(app: &PhotocraftApp, ui: &mut egui::Ui, f: &mut Map<String, Value
     });
     ui.add_space(10.0);
     ui.horizontal_top(|ui| {
-        axis(ui, f, false);
+        axis(app, ui, f, false);
         ui.add_space(4.0);
-        axis(ui, f, true);
+        axis(app, ui, f, true);
     });
     ui.add_space(10.0);
     group(ui, |ui| {
         let enabled = check(ui, f, "__marginEnabled", tl!("Margin"), true);
         let mut margins = f.get("margin").and_then(Value::as_array).cloned().unwrap_or_else(|| vec![json!(0); 4]);
+        if margins.len() != 4 {
+            margins = vec![json!(0); 4];
+        }
         ui.add_space(5.0);
         ui.add_enabled_ui(enabled, |ui| {
             ui.horizontal(|ui| {
-                for (value, label) in margins.iter_mut().zip([tl!("Top:"), tl!("Left:"), tl!("Bottom:"), tl!("Right:")]) {
+                let items = [
+                    (tl!("Top:"), "margin-top", false),
+                    (tl!("Left:"), "margin-left", true),
+                    (tl!("Bottom:"), "margin-bottom", false),
+                    (tl!("Right:"), "margin-right", true),
+                ];
+                for (value, (label, id_salt, along_x)) in margins.iter_mut().zip(items) {
                     ui.vertical(|ui| {
                         ui.label(label);
-                        let mut n = value.as_f64().unwrap_or(0.0) as f32;
-                        if widgets::value_field(ui, &mut n, 0.0..=300_000.0, "px", 64.0).accessible_name(label).changed() {
-                            *value = json!(n);
-                        }
+                        unit_edit(app, ui, id_salt, value, false, along_x, 64.0).accessible_name(label);
                     });
                 }
             });
@@ -367,7 +628,7 @@ fn main_fields(app: &PhotocraftApp, ui: &mut egui::Ui, f: &mut Map<String, Value
 
 /// Own the action rail as well as the body, so OK/Cancel/Preview follow Photoshop's arrangement.
 pub fn body(app: &PhotocraftApp, ui: &mut egui::Ui, f: &mut Map<String, Value>, interactive: bool) -> Option<bool> {
-    let before = (params(f), on(f, "__preview", true), f.get("color").cloned());
+    let before = (params_with(Some(app), f), on(f, "__preview", true), f.get("color").cloned());
     let mut outcome = None;
     ui.horizontal_top(|ui| {
         ui.vertical(|ui| {
@@ -390,7 +651,7 @@ pub fn body(app: &PhotocraftApp, ui: &mut egui::Ui, f: &mut Map<String, Value>, 
     match calculate(app, f) {
         Ok(guides) => {
             f.insert("__previewGuides".into(), json!(guides));
-            f.insert("__previewParams".into(), params(f));
+            f.insert("__previewParams".into(), params_with(Some(app), f));
             f.insert("__previewSource".into(), source(app));
         }
         Err(error) => {
@@ -401,7 +662,7 @@ pub fn body(app: &PhotocraftApp, ui: &mut egui::Ui, f: &mut Map<String, Value>, 
         outcome = Some(true);
     }
     // The canvas paints before the dialog. Schedule the frame that displays this draft edit.
-    if before != (params(f), on(f, "__preview", true), f.get("color").cloned()) {
+    if before != (params_with(Some(app), f), on(f, "__preview", true), f.get("color").cloned()) {
         ui.ctx().request_repaint();
     }
     outcome

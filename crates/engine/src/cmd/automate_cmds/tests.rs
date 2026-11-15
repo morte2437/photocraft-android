@@ -168,6 +168,83 @@ fn droplets_are_written_and_run() {
     assert!(s.execute("file.automate.createDroplet", json!({"path": path, "steps": [["bogus", {}]]})).is_err());
 }
 
+/// Names and indices choose the same action and omit its disabled steps.
+#[test]
+fn batch_and_droplets_use_the_named_actions_enabled_steps() {
+    let dir = tmp("named-actions");
+    let inputs = images(&dir, 1, 2, 1);
+    let mut s = Session::new();
+    let invert = crate::actions_cmds::Action::new("Invert", vec![("image.adjustments.invert".into(), json!({}))]);
+    let mut rotate = crate::actions_cmds::Action::new("Rotate", vec![("image.imageRotation.90cw".into(), json!({})), ("file.close".into(), json!({}))]);
+    rotate.disabled.insert(1);
+    s.actions.list = vec![invert, rotate];
+    for command in ["file.automate.batch", "file.automate.createDroplet"] {
+        for (i, action) in [json!("Rotate"), json!(1)].into_iter().enumerate() {
+            let output = format!("{dir}/{command}-{i}");
+            let p = json!({"action": action, "input": inputs, "output": output, "path": format!("{output}.pcdroplet"), "format": "png", "shim": false});
+            let mut result = s.execute(command, p).unwrap();
+            if command == "file.automate.createDroplet" {
+                let droplet: Value = serde_json::from_slice(&std::fs::read(result["path"].as_str().unwrap()).unwrap()).unwrap();
+                assert_eq!(droplet["action"]["steps"], json!([["image.imageRotation.90cw", {}]]));
+                // A droplet carries its chosen steps into a session with no saved actions.
+                result = Session::new().execute("file.automate.runDroplet", json!({"droplet": result["path"], "input": inputs})).unwrap();
+            }
+            assert_eq!(result["errors"], json!([]), "{command}: {result}");
+            let image = photocraft_codecs::decode(&std::fs::read(result["files"][0].as_str().unwrap()).unwrap()).unwrap();
+            assert_eq!(image.dimensions(), (1, 2), "{command}: Rotate runs and the disabled Close does not");
+        }
+    }
+}
+
+/// Explicit steps retain precedence, and invalid choices fail before any output is written.
+#[test]
+fn batch_and_droplets_keep_explicit_steps_and_reject_invalid_sources_before_writing() {
+    let dir = tmp("action-sources");
+    let inputs = images(&dir, 1, 2, 1);
+    let mut s = Session::new();
+    s.actions.list.push(crate::actions_cmds::Action::new("Invert", vec![("image.adjustments.invert".into(), json!({}))]));
+    for command in ["file.automate.batch", "file.automate.createDroplet"] {
+        for (i, source) in [
+            json!({"steps": [["image.imageRotation.90cw", {}]], "action": "Missing"}),
+            json!({"action": [["image.imageRotation.90cw", {}]]}),
+            json!({"steps": [], "action": "Invert"}),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let output = format!("{dir}/{command}-inline-{i}");
+            let mut p = json!({"input": inputs, "output": output, "path": format!("{output}.pcdroplet"), "format": "png", "shim": false});
+            p.as_object_mut().unwrap().extend(source.as_object().unwrap().clone());
+            let mut result = s.execute(command, p).unwrap();
+            if command == "file.automate.createDroplet" {
+                result = Session::new().execute("file.automate.runDroplet", json!({"droplet": result["path"], "input": inputs})).unwrap();
+            }
+            assert_eq!(result["errors"], json!([]), "{command}: {result}");
+            let image = photocraft_codecs::decode(&std::fs::read(result["files"][0].as_str().unwrap()).unwrap()).unwrap();
+            assert_eq!(image.dimensions(), if i == 2 { (2, 1) } else { (1, 2) });
+        }
+        for (i, source) in [
+            json!({"action": "Deleted"}),
+            json!({"action": 9}),
+            json!({"action": -1}),
+            json!({"steps": null, "action": "Invert"}),
+            json!({"steps": {}, "action": "Invert"}),
+            json!({"steps": [["bogus", {}]], "action": "Invert"}),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let output = format!("{dir}/{command}-rejected-{i}");
+            let path = format!("{output}.pcdroplet");
+            let mut p = json!({"input": inputs, "output": output, "path": path, "format": "png", "shim": false});
+            p.as_object_mut().unwrap().extend(source.as_object().unwrap().clone());
+            assert!(s.execute(command, p).is_err(), "{command}: {source}");
+            assert!(!std::path::Path::new(&output).exists(), "{command}: no output directory on rejection");
+            assert!(!std::path::Path::new(&path).exists(), "{command}: no droplet on rejection");
+        }
+    }
+}
+
 /// A droplet keeps the action's recorded saves, which mark the result as in Batch, so one made from
 /// an action ending in Save As and Close writes its files instead of failing on every one.
 #[test]
@@ -223,6 +300,7 @@ fn droplet_shim_passes_shell_metacharacters_as_a_literal_path() {
     assert_eq!(std::fs::read(&capture).unwrap(), expected.to_string_lossy().as_bytes());
 }
 
+/// Droplets retain transitive calls and effective Batch references across fresh or different sessions.
 #[test]
 fn droplets_carry_the_actions_their_play_steps_call() {
     use crate::actions_cmds::Action;
@@ -261,6 +339,80 @@ fn droplets_carry_the_actions_their_play_steps_call() {
     let r = fresh.execute("file.automate.runDroplet", json!({"droplet": looping, "input": [dir.clone()]})).unwrap();
     assert_eq!(r["errors"].as_array().unwrap().len(), inputs.len(), "a self-call fails instead of looping: {r}");
 
+    // Retain the copied action's flags as well as its steps.
+    s.actions.list[1].steps.push(("file.close".into(), json!({})));
+    s.actions.list[1].disabled.insert(1);
+    s.actions.list[1].dialogs.insert(0);
+    s.actions.list[1].set = Some("Captured".into());
+    s.actions.list.push(act(
+        "BatchLoop",
+        json!([["file.automate.batch", {"action": "BatchLoop", "input": [inputs[0]], "output": format!("{dir}/loop"), "format": "png"}]]),
+    ));
+    for (name, source, expected_names, error) in [
+        ("batch-name", json!({"action": "Rotate"}), &["Rotate"][..], None),
+        ("batch-index", json!({"action": 1}), &["Rotate"][..], None),
+        ("batch-transitive", json!({"action": "Outer"}), &["Rotate", "Outer"][..], None),
+        ("batch-explicit", json!({"steps": [["actions.play", {"action": 1, "note": "keep"}, "tail"]], "action": 3}), &["Rotate"][..], None),
+        ("batch-legacy", json!({"action": [{"id": "actions.play", "params": {"action": 1}, "tag": "keep"}]}), &["Rotate"][..], None),
+        (
+            "batch-objects",
+            json!({"steps": [
+            {"command": "actions.play", "id": "ignored", "params": {"action": 1}, "tag": "keep"},
+            "image.imageRotation.180", ["image.imageRotation.180"], {"id": "image.imageRotation.180"},
+            {"command": "image.imageRotation.180", "id": "actions.play", "params": {"action": 3}}
+        ], "action": 3}),
+            &["Rotate"][..],
+            None,
+        ),
+        ("batch-empty", json!({"steps": [], "action": 1}), &[][..], None),
+        ("batch-null", json!({"steps": null, "action": 1}), &[][..], Some("steps")),
+        ("batch-invalid", json!({"steps": {}, "action": 1}), &[][..], Some("steps")),
+        ("batch-invalid-command", json!({"steps": [{"command": null, "id": "actions.play", "params": {"action": 1}}]}), &[][..], Some("command")),
+        ("batch-missing", json!({"action": "Missing"}), &[][..], Some("no action named")),
+        ("batch-cycle", json!({"action": "BatchLoop"}), &["BatchLoop"][..], Some("recursive action call")),
+    ] {
+        let inner = format!("{dir}/inner-{name}");
+        let mut params = json!({"input": [inputs[0]], "output": inner, "format": "png", "note": {"action": 3}});
+        params.as_object_mut().unwrap().extend(source.as_object().unwrap().clone());
+        let mut expected = params.clone();
+        match name {
+            "batch-index" => expected["action"] = json!("Rotate"),
+            "batch-explicit" => expected["steps"][0][1]["action"] = json!("Rotate"),
+            "batch-legacy" => expected["action"][0]["params"]["action"] = json!("Rotate"),
+            "batch-objects" => expected["steps"][0]["params"]["action"] = json!("Rotate"),
+            _ => {}
+        }
+        let dp = make(&mut s, name, json!([["file.automate.batch", params]]));
+        let saved: Value = serde_json::from_slice(&std::fs::read(&dp).unwrap()).unwrap();
+        assert_eq!(saved["action"]["steps"][0][1], expected, "{name}: keep the effective source's shape and unrelated fields");
+        let names: Vec<&str> =
+            saved["calledActions"].as_array().map(|actions| actions.iter().map(|a| a["name"].as_str().unwrap()).collect()).unwrap_or_default();
+        assert_eq!(names, expected_names, "{name}: capture only effective dependencies in original list order");
+        if expected_names.is_empty() {
+            assert!(saved.get("calledActions").is_none(), "{name}: preserve deferred missing-target and legacy policy");
+        }
+        if let Some(captured) = saved["calledActions"].as_array().and_then(|actions| actions.iter().find(|a| a["name"] == "Rotate")) {
+            assert_eq!(*captured, json!(s.actions.list[1]), "{name}: preserve disabled/dialog/set flags");
+        }
+        for different in [false, true] {
+            let mut replay = Session::new();
+            if different {
+                replay.actions.list = vec![Action::new("Unrelated", Vec::new()), Action::new("Rotate", Vec::new())];
+            }
+            let r = replay
+                .execute("file.automate.runDroplet", json!({"droplet": dp, "input": [inputs[0]], "output": format!("{dir}/outer-{name}-{different}")}))
+                .unwrap();
+            if let Some(error) = error {
+                assert_eq!(r["files"], json!([]), "{name}: {r}");
+                assert!(r["errors"][0]["error"].as_str().unwrap().contains(error), "{name}: {r}");
+            } else {
+                assert_eq!(r["errors"], json!([]), "{name}/{different}: {r}");
+                let out = photocraft_codecs::decode(&std::fs::read(format!("{inner}/img0.png")).unwrap()).unwrap();
+                assert_eq!(out.dimensions(), if name == "batch-empty" { (40, 20) } else { (20, 40) }, "{name}/{different}");
+            }
+        }
+    }
+
     // Droplets written before `calledActions` still run.
     let old = format!("{dir}/old.pcdroplet");
     std::fs::write(
@@ -270,6 +422,105 @@ fn droplets_carry_the_actions_their_play_steps_call() {
     .unwrap();
     let r = fresh.execute("file.automate.runDroplet", json!({"droplet": old, "input": [dir.clone()]})).unwrap();
     assert_eq!(r["files"].as_array().unwrap().len(), inputs.len(), "{r}");
+}
+
+/// Embedded Batch lists own their references; a named source is still selected from the caller.
+#[test]
+fn droplets_preserve_batch_action_namespaces() {
+    use crate::actions_cmds::Action;
+    let dir = tmp("droplet-scopes");
+    let input = images(&dir, 1, 40, 20).remove(0);
+    for kind in ["inline", "named", "named-set", "mixed", "mixed-two", "caller-null"] {
+        let mut maker = Session::new();
+        let mut source = Action::new("Source", vec![("actions.play".into(), json!({"action": 1})), ("file.close".into(), json!({}))]);
+        source.disabled.insert(1);
+        source.dialogs.insert(0);
+        source.set = Some("Captured".into());
+        maker.actions.list = vec![Action::new("Gap", Vec::new()), Action::new("Outside", Vec::new()), source.clone()];
+        let embedded = vec![
+            Action::new("LocalGap", Vec::new()),
+            Action::new("Inside", vec![("image.imageRotation.90cw".into(), json!({}))]),
+            Action::new("Outside", Vec::new()),
+        ];
+        let inner = format!("{dir}/{kind}-inner");
+        let mut batch = json!({"input": [input], "output": inner, "format": "png", "calledActions": embedded});
+        if kind == "inline" || kind == "caller-null" {
+            batch["steps"] = json!([["actions.play", {"action": 1}]]);
+        } else {
+            batch["action"] = json!("Source");
+            if kind == "named-set" {
+                batch["set"] = json!("Captured");
+            }
+        }
+        if kind == "caller-null" {
+            maker.actions.list[1].steps.push(("image.imageRotation.90cw".into(), json!({})));
+            batch["calledActions"] = Value::Null;
+        }
+        let mut steps = Vec::new();
+        if kind.starts_with("mixed") {
+            steps.push(json!(["actions.play", {"action": "Source"}]));
+        }
+        steps.push(json!(["file.automate.batch", batch]));
+        let other = format!("{dir}/{kind}-other");
+        if kind == "mixed-two" {
+            let mut second = batch.clone();
+            second["output"] = json!(other);
+            second["calledActions"][1]["steps"] = json!([]);
+            steps.push(json!(["file.automate.batch", second]));
+        }
+        let path = maker
+            .execute(
+                "file.automate.createDroplet",
+                json!({"path": format!("{dir}/{kind}"), "steps": steps, "format": "png", "output": format!("{dir}/{kind}-out"), "shim": false}),
+            )
+            .unwrap()["path"]
+            .clone();
+        let saved: Value = serde_json::from_slice(&std::fs::read(path.as_str().unwrap()).unwrap()).unwrap();
+        if kind == "inline" {
+            assert_eq!(saved["action"]["steps"][0][1], batch, "embedded inline steps are unchanged");
+            assert!(saved.get("calledActions").is_none(), "embedded references do not capture enclosing actions");
+        } else if kind != "caller-null" {
+            let captured: Vec<Action> = serde_json::from_value(saved["calledActions"].clone()).unwrap();
+            assert_eq!(captured.last(), Some(&source), "one untouched source retains its references and flags");
+            assert_eq!(captured.len(), if kind.starts_with("mixed") { 3 } else { 1 });
+        }
+        let r = Session::new().execute("file.automate.runDroplet", json!({"droplet": path, "input": [input]})).unwrap();
+        assert_eq!(r["errors"], json!([]), "{kind}: {r}");
+        let out = photocraft_codecs::decode(&std::fs::read(format!("{inner}/img0.png")).unwrap()).unwrap();
+        assert_eq!(out.dimensions(), (20, 40), "{kind}");
+        if kind == "mixed-two" {
+            assert_eq!(photocraft_codecs::decode(&std::fs::read(format!("{other}/img0.png")).unwrap()).unwrap().dimensions(), (40, 20));
+        }
+    }
+}
+
+/// Untouched scoped variants count toward the existing 4096-record playback limit.
+#[test]
+fn droplet_scoped_variants_keep_the_existing_action_limit() {
+    use crate::actions_cmds::Action;
+    let dir = tmp("droplet-scope-limit");
+    let input = images(&dir, 1, 2, 1).remove(0);
+    for count in [4095, 4096] {
+        let mut maker = Session::new();
+        maker.actions.list = (0..count).map(|i| Action::new(format!("A{i}"), Vec::new())).collect();
+        let mut steps: Vec<_> = (0..count).map(|i| json!(["actions.play", {"action": i}])).collect();
+        steps.push(
+            json!(["file.automate.batch", {"action": 0, "calledActions": [], "input": [input], "output": format!("{dir}/{count}-inner"), "format": "png"}]),
+        );
+        let output = format!("{dir}/{count}-out");
+        let path = maker
+            .execute("file.automate.createDroplet", json!({"path": format!("{dir}/{count}"), "steps": steps, "output": output, "format": "png", "shim": false}))
+            .unwrap()["path"]
+            .clone();
+        let result = Session::new().execute("file.automate.runDroplet", json!({"droplet": path, "input": [input]}));
+        if count == 4095 {
+            assert_eq!(result.unwrap()["errors"], json!([]));
+            assert!(std::path::Path::new(&output).exists());
+        } else {
+            assert!(result.unwrap_err().to_string().contains("4096"));
+            assert!(!std::path::Path::new(&output).exists());
+        }
+    }
 }
 
 #[test]
@@ -528,4 +779,61 @@ fn scripts_nested_deeper_than_the_limit_fail() {
     assert_eq!(r["ok"], false, "{r}");
     assert!(r.to_string().contains("nested more than"), "{r}");
     assert_eq!(s.actions.script_depth, 0, "the depth is released");
+}
+
+/// A droplet captures only the actions its enabled steps can call: a disabled Play step in a
+/// called action does not add its target (nor count against the 4096-action limit).
+#[test]
+fn droplets_skip_actions_called_only_from_disabled_steps() {
+    let dir = tmp("droplet-disabled-calls");
+    let mut s = Session::new();
+    let mut top = crate::actions_cmds::Action::new(
+        "Top",
+        vec![("actions.play".into(), json!({"action": "Skipped"})), ("actions.play".into(), json!({"action": "Used"}))],
+    );
+    top.disabled.insert(0);
+    let used = crate::actions_cmds::Action::new("Used", vec![("image.adjustments.invert".into(), json!({}))]);
+    let skipped = crate::actions_cmds::Action::new("Skipped", vec![("image.imageRotation.90cw".into(), json!({}))]);
+    s.actions.list = vec![skipped, top, used];
+    let r =
+        s.execute("file.automate.createDroplet", json!({"path": format!("{dir}/D"), "steps": [["actions.play", {"action": "Top"}]], "shim": false})).unwrap();
+    let droplet: Value = serde_json::from_slice(&std::fs::read(r["path"].as_str().unwrap()).unwrap()).unwrap();
+    let names: Vec<&str> = droplet["calledActions"].as_array().unwrap().iter().map(|a| a["name"].as_str().unwrap()).collect();
+    assert_eq!(names, ["Top", "Used"], "{droplet}");
+    // The droplet still runs on its own: the enabled call resolves, the disabled one never plays.
+    let inputs = images(&dir, 1, 3, 2);
+    let run = Session::new().execute("file.automate.runDroplet", json!({"droplet": r["path"], "input": inputs, "output": format!("{dir}/out")})).unwrap();
+    assert_eq!(run["errors"], json!([]), "{run}");
+    let out = photocraft_codecs::decode(&std::fs::read(format!("{dir}/out/img0.png")).unwrap()).unwrap();
+    assert_eq!(out.dimensions(), (3, 2), "the disabled Rotate must not run");
+}
+
+/// A droplet saved with Override Open reads each dropped input through its recorded Open,
+/// not the file the Open recorded.
+#[test]
+fn droplets_forward_override_open_to_batch() {
+    let dir = tmp("droplet-override-open");
+    let inputs = images(&dir, 1, 6, 4);
+    let recorded = {
+        let mut s = Session::new();
+        s.execute("file.new", json!({"width": 2, "height": 3, "background": "#00ff00"})).unwrap();
+        let path = format!("{dir}/recorded.png");
+        crate::file_cmds::save_doc(&s.active().unwrap().doc, &path, None).unwrap();
+        path
+    };
+    for (override_open, size) in [(true, (6, 4)), (false, (2, 3))] {
+        let mut s = Session::new();
+        let out = format!("{dir}/out-{override_open}");
+        let r = s
+            .execute(
+                "file.automate.createDroplet",
+                json!({"path": format!("{dir}/D-{override_open}"), "steps": [["file.openAs", {"path": recorded, "as": "png"}]],
+                    "format": "png", "output": out, "overrideOpen": override_open, "shim": false}),
+            )
+            .unwrap();
+        let run = Session::new().execute("file.automate.runDroplet", json!({"droplet": r["path"], "input": [inputs[0]]})).unwrap();
+        assert_eq!(run["errors"], json!([]), "{run}");
+        let image = photocraft_codecs::decode(&std::fs::read(format!("{out}/img0.png")).unwrap()).unwrap();
+        assert_eq!(image.dimensions(), size, "overrideOpen {override_open}: {run}");
+    }
 }

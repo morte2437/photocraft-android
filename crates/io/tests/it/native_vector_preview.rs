@@ -2,11 +2,11 @@
 
 use std::sync::Arc;
 
+use craft_psd::PsdFile;
 use photocraft_color::{ColorMode, SampleType};
 use photocraft_doc::{Document, Layer, LayerContent, SmartObject, SmartSource, VectorPreview};
 use photocraft_geom::{Affine, Size};
 use photocraft_io::{ExportOptions, export, import, linked, smart_map, vector_preview};
-use photocraft_psd::PsdFile;
 use photocraft_raster::Surface;
 
 const PDF: &[u8] = b"%PDF-1.7\nopaque native source bytes\n%%EOF\n";

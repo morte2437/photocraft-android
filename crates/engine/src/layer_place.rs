@@ -17,6 +17,8 @@ pub enum Place {
     /// transform box, Paste, the Gradient tool's live gradient, video layers, Render and Vanishing
     /// Point drawing, a new frame): never inside a group with a lock of its own (all, pixels,
     /// transparency or position) that would refuse that edit; the layer goes above the group.
+    /// Never on an artboard its content is centred off, even beside a layer on that board: it goes
+    /// above the board.
     AutoEditable,
     /// Directly above the anchor, never inside it: a layer made from another layer, or the second
     /// and later of several new layers.
@@ -30,10 +32,20 @@ pub enum Place {
 /// parent's children (bottom to top). A missing or stale `anchor` means the top of the stack.
 pub fn insertion_point(doc: &Document, anchor: Option<LayerId>, layer: &Layer, place: Place) -> (LayerPath, usize) {
     let root_top = (Vec::new(), doc.layers.len());
-    let Some(path) = anchor.and_then(|a| doc.path_of(a)) else { return root_top };
+    // Beside a frame's image means beside the frame: the image slot stays whole.
+    let Some(path) = anchor.and_then(|a| doc.insertion_path(a)) else { return root_top };
     // An artboard stays at the top level: beside the anchor's top-level layer.
     let path = if layer.artboard().is_some() { path.get(..1).map(<[usize]>::to_vec).unwrap_or_default() } else { path };
     let (Some((&k, parent)), Some(target)) = (path.split_last(), doc.layer_at(&path)) else { return root_top };
+    // Beside a layer on an artboard, content placed off that board (Paste, Place, a Type or Shape
+    // click: centred off it) goes above the board at the top level, as it does with the board
+    // itself as the anchor ([`takes_new_layers`]): inside, the board would clip it away (a layer
+    // copied off every board, pasted with a layer on a board selected). The other new layers
+    // ([`Place::Auto`]) are empty or cover the canvas (a neutral fill), and stay on the board.
+    let editable_new = place == Place::AutoEditable;
+    if editable_new && let Some(board) = off_board(doc, &path, layer) {
+        return (Vec::new(), board + 1);
+    }
     let locks = &target.locks;
     let editable = !(locks.all || locks.pixels || locks.transparency || locks.position);
     match place {
@@ -57,6 +69,16 @@ pub fn insert_new(doc: &mut Document, anchor: Option<LayerId>, mut layer: Layer,
         let mut index = index.min(sib.len());
         if layer.artboard().is_some() {
             // Past the clipped layers above the slot, so their clipping mask stays whole.
+            while sib.get(index).is_some_and(|above| above.clipped) {
+                index += 1;
+            }
+            layer.clipped = false;
+        } else if place == Place::AutoEditable && index > 0 && sib.get(index - 1).is_some_and(|below| below.artboard().is_some()) {
+            // New content placed directly above an artboard (pasted off its board, or beside a
+            // board that doesn't take it): never clipped to it, where the board would clip it
+            // away, and past the clipped layers above the slot so their clipping mask stays
+            // whole, as a new artboard goes. A layer put [`Place::Above`] a board keeps its flag:
+            // the layers after a pasted board, a duplicate.
             while sib.get(index).is_some_and(|above| above.clipped) {
                 index += 1;
             }
@@ -91,17 +113,29 @@ pub(crate) fn centre(bounds: photocraft_geom::Rect) -> (i32, i32) {
 /// it for the canvas (Place, Paste, a Type or Shape click): elsewhere the board would clip it.
 fn takes_new_layers(target: &Layer, depth: usize, layer: &Layer) -> bool {
     let LayerContent::Group(g) = &target.content else { return false };
-    let on_board = |rect: photocraft_geom::Rect| {
-        crate::layer_multi_cmds::layer_bounds(layer).is_none_or(|b| {
-            let (cx, cy) = centre(b);
-            rect.contains(cx, cy)
-        })
-    };
     let open = match &g.artboard {
-        Some(board) => on_board(board.rect),
+        Some(board) => on_board(layer, board.rect),
         None => g.expanded,
     };
-    open && layer.artboard().is_none() && depth + subtree_depth(layer) <= MAX_GROUP_DEPTH
+    // A frame holds its image only (`layer.frame.set`/`setContent`), never new layers.
+    open && target.frame.is_none() && layer.artboard().is_none() && depth + subtree_depth(layer) <= MAX_GROUP_DEPTH
+}
+
+/// Is `layer`'s content centred on the board at `rect`? A layer with no content is (it can go
+/// anywhere).
+fn on_board(layer: &Layer, rect: photocraft_geom::Rect) -> bool {
+    crate::layer_multi_cmds::layer_bounds(layer).is_none_or(|b| {
+        let (cx, cy) = centre(b);
+        rect.contains(cx, cy)
+    })
+}
+
+/// The top-level index of the artboard holding the layer at `path` (inside it, not the board
+/// itself), when `layer`'s content is centred off that board.
+fn off_board(doc: &Document, path: &[usize], layer: &Layer) -> Option<usize> {
+    let (&top, inside) = path.split_first()?;
+    let board = doc.layers.get(top)?.artboard()?;
+    (!inside.is_empty() && !on_board(layer, board.rect)).then_some(top)
 }
 
 /// Group nesting inside `layer` itself: 0 for a layer or an empty group, as

@@ -11,16 +11,21 @@
 //! * [`rpc`]: a headless JSON-lines server (stdio or loopback TCP) with the
 //!   control protocol's envelope, used by `photocraft-cli serve`.
 //! * [`files`]: open/save any supported format, `.pcraft` natively.
+//! * [`agent_link`] and [`live`]: connecting agents to the desktop app without a terminal
+//!   (the ArtCraft Launcher's agents switch and plain `photocraft-cli mcp`).
 //!
 //! L6, no UI-toolkit dependencies.
 #![forbid(unsafe_code)]
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
+pub mod agent_link;
+pub mod app_dirs;
 pub mod args;
 pub mod bridge;
 pub mod budgets;
 pub mod files;
 pub mod headless;
+pub mod live;
 pub mod rpc;
 pub mod security;
 pub mod server;

@@ -12,9 +12,14 @@
 //! - dropped files are read asynchronously by `web::WebShell` and delivered through `Services::inbox`.
 //!
 //! URL query flags: `?cpu` forces the CPU canvas path (same as `PHOTOCRAFT_CPU_CANVAS=1`);
-//! `?webgl` forces the WebGL2 backend instead of WebGPU.
+//! `?webgl` forces the WebGL2 backend instead of WebGPU; `?free-mb=N` pretends only N MiB can be
+//! allocated, so the memory gates and the low-memory warning can be seen without gigabytes of
+//! images (diagnostics only).
 
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
+
+#[cfg(any(target_arch = "wasm32", test))]
+mod diagnostics;
 
 #[cfg(any(target_arch = "wasm32", test))]
 mod preset_bridge;
@@ -47,5 +52,23 @@ mod tests {
         assert!(hint.contains("failed to") && hint.contains("<a href=\"\">Reload</a>"), "{hint}");
         assert!(html.contains("animation: photocraft-stalled"), "the hint appears after a delay");
         assert!(!html.contains("<script"), "trunk injects the generated loader; the page has no script of its own");
+    }
+
+    /// A module that traps (an allocation it could not satisfy, or a panic) leaves the last frame
+    /// on screen. The page already holds the message, hidden, with a way to reload; Rust only
+    /// reveals it and fills in the detail line, so it works even when Rust can no longer build text.
+    #[test]
+    fn the_page_holds_a_hidden_stopped_message_with_a_reload_link() {
+        let html = include_str!("../index.html");
+        let (_, element) = html.split_once("<div id=\"photocraft_stopped\"").expect("a stopped-message element");
+        let (element, _) = element.split_once("</div>").expect("the element is closed");
+        assert!(element.trim_start().starts_with("hidden"), "hidden until a trap: {element}");
+        assert!(element.contains("role=\"alert\""), "{element}");
+        assert!(element.contains("<a href=\"\">Reload</a>"), "{element}");
+        assert!(element.contains("can't be recovered"), "says what is lost: {element}");
+        assert!(element.contains("id=\"photocraft_stopped_detail\""), "a line for the cause: {element}");
+        assert!(html.contains("#photocraft_stopped[hidden]"), "display: flex must not defeat the hidden attribute");
+        assert!(html.contains("pointer-events: auto"), "the link works over the canvas");
+        assert!(!html.contains("<script"), "still no script of its own");
     }
 }

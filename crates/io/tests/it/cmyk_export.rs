@@ -3,7 +3,7 @@
 
 use std::sync::Arc;
 
-use photocraft_cms::Builtin;
+use craft_cms::Builtin;
 use photocraft_codecs::ChannelLayout;
 use photocraft_color::{BlendMode, ColorMode, PixelFormat, SampleType};
 use photocraft_doc::{Document, Layer};
@@ -222,7 +222,7 @@ fn psd_merged_image_keeps_exact_inks() {
     m.blend = BlendMode::Multiply;
     d.layers.push(m);
     let r = export(&d, "a.psd", &ExportOptions::default()).unwrap_or_else(|e| panic!("{e}"));
-    let f = photocraft_psd::PsdFile::from_bytes(&r.bytes).unwrap_or_else(|e| panic!("{e}"));
+    let f = craft_psd::PsdFile::from_bytes(&r.bytes).unwrap_or_else(|e| panic!("{e}"));
     let planes = f.decode_merged().unwrap_or_else(|e| panic!("{e}"));
     let n = 12 * 8;
     // Planar, inverted (255 = no ink).

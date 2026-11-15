@@ -1,8 +1,8 @@
 use super::sampling::{AllLayers, sample_all_layers};
 use super::{
-    BrushSettings, Document, EngineError, Footprint, IndexedParallelIterator, LayerId, ParallelIterator, ParallelSliceMut, PixelFormat, Rect, Region, Result,
-    Session, Smudge, Stroke, StrokePoint, Surface, ToneRange, Value, alpha_index, apply_dab_stroke, bad, damage_json, dodge_burn, flag, from_rgba_into,
-    has_pixel_layer, json, local_blur, local_sharpen, num, parse_brush, run_stroke, sponge, string, to_rgba,
+    BlendMode, BrushSettings, Document, EngineError, Footprint, IndexedParallelIterator, LayerId, ParallelIterator, ParallelSliceMut, PixelFormat, Rect,
+    Region, Result, Session, Smudge, Stroke, StrokePoint, Surface, ToneRange, Value, alpha_index, apply_dab_stroke, bad, blend_from_str, damage_json,
+    dodge_burn, flag, from_rgba_into, has_pixel_layer, json, local_blur, local_sharpen, num, parse_brush, run_stroke, sponge, string, to_rgba,
 };
 
 // ---------------------------------------------------------------------------------------------
@@ -14,6 +14,76 @@ use super::{
 #[inline]
 fn per_dab(e: f32, spacing: f32) -> f32 {
     1.0 - (1.0 - e.clamp(0.0, 1.0)).powf(spacing.clamp(0.01, 1.0))
+}
+
+/// The dab spacing, as a share of the tip's diameter, at which the reference's Sharpen drags
+/// with Protect Detail were measured: each point of a drag got 4 dabs (#12938).
+const PROTECT_DETAIL_SPACING: f32 = 0.25;
+
+/// The share of a full Protect Detail dab that a dab of `radius` at `moved` px from the previous
+/// one applies: the first dab of a stroke (a click) is a full dab, and a drag adds up to the
+/// reference's 4 full dabs over each point whatever the spacing, so many overlapping dabs don't
+/// compound into black and white bands. It scales the strength itself rather than `1 − k` like
+/// [`per_dab`], which stays 1 for a hard tip at 100 %.
+#[inline]
+fn protect_detail_share(moved: Option<f32>, radius: f32) -> f32 {
+    moved.map_or(1.0, |m| (m / (2.0 * radius.max(0.5) * PROTECT_DETAIL_SPACING)).clamp(0.0, 1.0))
+}
+
+/// Tracks a Protect Detail stroke's dabs for [`protect_detail_share`].
+#[derive(Default)]
+pub(super) struct ProtectDetailShares {
+    /// The previous dab's centre and share.
+    prev: Option<(photocraft_geom::Point, f32)>,
+    /// The most coverage the dabs on the current centre have applied at each pixel of the rect.
+    covered: Option<(Rect, Vec<f32>)>,
+}
+
+impl ProtectDetailShares {
+    /// The share of a full dab that `fp` applies, and the coverage over `fp.rect` to apply it with.
+    ///
+    /// Dabs on one centre (the stamps of Scattering's Count with Scatter 0, or airbrush build-up
+    /// while the pointer is held still) apply the share of their step once at each pixel: a dab
+    /// adds only where its coverage exceeds what the dabs before it on that centre applied, so a
+    /// larger jittered stamp sharpens the ring only it covers, and repeats never compound.
+    pub(super) fn next(&mut self, fp: &Footprint) -> (f32, Vec<f32>) {
+        let c = fp.dab.center;
+        let share = match self.prev {
+            Some((p, s)) if p == c => s,
+            Some((p, _)) => {
+                self.covered = None;
+                protect_detail_share(Some((c.x - p.x).hypot(c.y - p.y) as f32), fp.dab.radius)
+            }
+            None => protect_detail_share(None, fp.dab.radius),
+        };
+        self.prev = Some((c, share));
+        let (rect, cov) = match self.covered.take() {
+            Some((rect, cov)) if rect.contains_rect(&fp.rect) => (rect, cov),
+            Some((old, old_cov)) => {
+                let rect = old.union(&fp.rect);
+                let mut cov = vec![0.0; rect.width() as usize * rect.height() as usize];
+                for y in old.y0..old.y1 {
+                    let (from, to) =
+                        (((y - old.y0) as usize) * old.width() as usize, ((y - rect.y0) as usize) * rect.width() as usize + (old.x0 - rect.x0) as usize);
+                    cov[to..to + old.width() as usize].copy_from_slice(&old_cov[from..from + old.width() as usize]);
+                }
+                (rect, cov)
+            }
+            None => (fp.rect, vec![0.0; fp.cov.len()]),
+        };
+        let mut cov = cov;
+        let (fw, rw) = (fp.rect.width() as usize, rect.width() as usize);
+        let mut fresh = vec![0.0; fp.cov.len()];
+        for y in fp.rect.y0..fp.rect.y1 {
+            let (from, to) = (((y - fp.rect.y0) as usize) * fw, ((y - rect.y0) as usize) * rw + (fp.rect.x0 - rect.x0) as usize);
+            for ((f, &a), done) in fresh[from..from + fw].iter_mut().zip(&fp.cov[from..from + fw]).zip(&mut cov[to..to + fw]) {
+                *f = (a - *done).max(0.0);
+                *done = done.max(a);
+            }
+        }
+        self.covered = Some((rect, cov));
+        (share, fresh)
+    }
 }
 
 /// Apply an RGB colour transform `f(rgb, strength)` to each covered pixel of a dab (through straight
@@ -47,7 +117,7 @@ fn color_dab(fmt: &PixelFormat, work: &mut Region, fp: &Footprint, strength: f32
 /// brush stroke, capped at full coverage, so Exposure caps a stroke the way Opacity caps a paint
 /// stroke: overlapping dabs and passes within one stroke don't compound the tone curve, and a
 /// new stroke builds on the last.
-fn tone_stroke(fmt: PixelFormat, toned: impl Fn([f32; 3]) -> [f32; 3] + 'static) -> DabEffect {
+fn tone_stroke(fmt: PixelFormat, toned: impl Fn([f32; 3]) -> [f32; 3] + Send + 'static) -> DabEffect {
     /// Side of the cells that remember, per touched pixel, the coverage applied so far and the
     /// original pixel (copied from the working pixels the first time a dab reaches it). Dense
     /// cells rather than a map per pixel: a map lookup per covered pixel made long strokes with
@@ -129,11 +199,22 @@ pub(super) enum DabTool {
     Tone { burn: bool, range: ToneRange, exposure: f32, protect: bool },
     Sponge { saturate: bool, vibrance: bool },
     Focus { sharpen: bool, strength: f32, protect: bool, sigma: f32 },
-    Smudge { strength: f32, finger: Option<[f32; 4]>, max_size: f32 },
+    Smudge { strength: f32, finger: Option<[f32; 4]>, max_size: f32, mode: BlendMode },
+}
+
+/// `paint.smudge`'s `mode` (#12959): the options bar's seven Painting Modes, Normal when absent.
+fn smudge_mode(p: &Value, cmd: &str) -> Result<BlendMode> {
+    use BlendMode::{Color, Darken, Hue, Lighten, Luminosity, Normal, Saturation};
+    let Some(v) = p.get("mode") else { return Ok(Normal) };
+    let named = v.as_str().and_then(blend_from_str).filter(|m| matches!(m, Normal | Darken | Lighten | Hue | Saturation | Color | Luminosity));
+    named.ok_or_else(|| {
+        let given = v.as_str().map_or_else(|| v.to_string(), str::to_owned);
+        bad(cmd, format!("unknown mode `{given}` (normal|darken|lighten|hue|saturation|color|luminosity)"))
+    })
 }
 
 /// One dab's edit of the working copy.
-pub(crate) type DabEffect = Box<dyn FnMut(&mut Region, &Footprint)>;
+pub(crate) type DabEffect = Box<dyn FnMut(&mut Region, &Footprint) + Send>;
 
 /// Pixels an effect reads beyond the dab it writes. Smudge's pickup is a fixed-size square,
 /// independent of pressure, roundness and the dab's current angle.
@@ -200,7 +281,8 @@ impl DabTool {
             }
             "paint.smudge" => {
                 let finger = flag(p, "fingerPainting", false).then_some(s.tools.foreground);
-                (Self::Smudge { strength: num(p, "strength", 50.0).clamp(1.0, 100.0) / 100.0, finger, max_size: stroke.brush.size }, "Smudge Tool")
+                let strength = num(p, "strength", 50.0).clamp(1.0, 100.0) / 100.0;
+                (Self::Smudge { strength, finger, max_size: stroke.brush.size, mode: smudge_mode(p, cmd)? }, "Smudge Tool")
             }
             o => return Err(bad(o, "not a sequential-dab tool")),
         })
@@ -209,6 +291,8 @@ impl DabTool {
     /// How far around each dab the effect reads (Blur and Sharpen read a neighbourhood).
     fn neighborhood(&self) -> DabNeighborhood {
         match self {
+            // Protect Detail sharpens against its own, wider Gaussian (#12938).
+            Self::Focus { sharpen: true, protect: true, .. } => DabNeighborhood::Halo((photocraft_algo::retouch::PROTECT_DETAIL_SIGMA * 3.0).ceil() as i32 + 1),
             Self::Focus { sigma, .. } => DabNeighborhood::Halo((sigma * 3.0).ceil() as i32 + 1),
             Self::Smudge { max_size, .. } => DabNeighborhood::Smudge(Smudge::sampling_radius(*max_size)),
             _ => DabNeighborhood::Halo(0),
@@ -224,11 +308,14 @@ impl DabTool {
             Self::Sponge { saturate, vibrance } => Box::new(move |work, fp| color_dab(&fmt, work, fp, 0.5, sp, |c, k| sponge(c, k, saturate, vibrance))),
             Self::Focus { sharpen, strength, protect, sigma } => {
                 let a = alpha_index(&fmt);
+                let mut shares = ProtectDetailShares::default();
                 Box::new(move |work, fp| {
                     let r = fp.rect.intersect(&work.rect);
-                    if r.is_empty() {
+                    let (share, fresh) = if sharpen && protect { shares.next(fp) } else { (1.0, Vec::new()) };
+                    if r.is_empty() || (sharpen && protect && (share <= 0.0 || fresh.iter().all(|&f| f <= 0.0))) {
                         return;
                     }
+                    let fresh_at = |x: i32, y: i32| fresh[(y - fp.rect.y0) as usize * fp.rect.width() as usize + (x - fp.rect.x0) as usize];
                     let (w, h, n) = (work.width(), work.height(), work.ch);
                     let win = ((r.x0 - work.rect.x0) as usize, (r.y0 - work.rect.y0) as usize, (r.x1 - work.rect.x0) as usize, (r.y1 - work.rect.y0) as usize);
                     let out = if sharpen { local_sharpen(&work.data, w, h, n, a, win, 1.0, protect) } else { local_blur(&work.data, w, h, n, a, win, sigma) };
@@ -241,7 +328,11 @@ impl DabTool {
                             return;
                         }
                         for x in r.x0..r.x1 {
-                            let k = per_dab(fp.at(x, y) * strength, sp);
+                            // Protect Detail: one click at 50 % does half of what 100 % does, and
+                            // a drag over a point adds up to the reference's 4 dabs (#12938).
+                            // Spread over `1/spacing` dabs (`per_dab`), a click did 7 % of it at
+                            // the default 10 % spacing.
+                            let k = if sharpen && protect { fresh_at(x, y) * strength * share } else { per_dab(fp.at(x, y) * strength, sp) };
                             if k <= 0.0 {
                                 continue;
                             }
@@ -255,19 +346,45 @@ impl DabTool {
                     });
                 })
             }
-            Self::Smudge { strength, finger, max_size } => {
+            Self::Smudge { strength, finger, max_size, mode } => {
                 let finger_px = finger.map(|fg| photocraft_raster::from_rgba(&fmt, fg));
+                // The Mode was measured in 8-bit RGB (#12959); other colour modes and depths smudge as Normal.
+                let measured = fmt.mode == photocraft_color::ColorMode::Rgb && fmt.sample == photocraft_color::SampleType::U8;
+                let mode = if measured { mode } else { BlendMode::Normal };
                 // Premultiplied mixing: transparent pixels carry no colour, so no dark fringes.
-                let mut sm = Smudge::new(strength, finger_px, max_size).with_alpha(alpha_index(&fmt));
+                let mut sm = Smudge::new(strength, finger_px, max_size).with_alpha(alpha_index(&fmt)).with_mode(mode);
                 Box::new(move |work, fp| sm.dab(work, fp))
             }
         }
     }
 }
 
+/// The reference application refuses a Dodge, Burn, Sponge, Blur, Sharpen or Smudge stroke in
+/// Indexed Color and Bitmap documents, with its alert's words (#12686, #12673, #13033, #12656,
+/// #12953, #12967); other modes (Multichannel and Duotone were not measured) paint as before. The
+/// live stroke checks this too, so it previews nothing there.
+fn mode_refusal(s: &Session, cmd: &str) -> Result<()> {
+    let tool = match cmd {
+        "paint.dodge" => "dodge tool",
+        "paint.burn" => "burn tool",
+        "paint.sponge" => "sponge tool",
+        "paint.blur" => "blur tool",
+        "paint.sharpen" => "sharpen tool",
+        "paint.smudge" => "smudge tool",
+        _ => return Ok(()),
+    };
+    let why = match s.active().map(|st| st.doc.mode) {
+        Some(photocraft_color::ColorMode::Indexed) => "it does not work with Indexed Color images (convert image to RGB Color mode to edit).",
+        Some(photocraft_color::ColorMode::Bitmap) => "it does not work with Bitmap images (convert image to Grayscale mode to edit).",
+        _ => return Ok(()),
+    };
+    Err(EngineError::Other(format!("Could not use the {tool} because {why}")))
+}
+
 /// Dodge, Burn, Sponge, Blur, Sharpen and Smudge: each dab edits a working copy in order
 /// (`apply_dab_stroke`). Blur, Sharpen and Smudge can sample all layers.
 pub(super) fn dab_cmd(s: &mut Session, p: &Value, cmd: &str) -> Result<Value> {
+    mode_refusal(s, cmd)?;
     let (stroke, id) = parse_brush(s, p, cmd)?;
     let (tool, label) = DabTool::parse(s, cmd, p, &stroke)?;
     let all = matches!(tool, DabTool::Focus { .. } | DabTool::Smudge { .. }) && sample_all_layers(p);
@@ -283,10 +400,11 @@ pub(super) fn dab_cmd(s: &mut Session, p: &Value, cmd: &str) -> Result<Value> {
         let fmt = surf.format();
         let mut effect = tool.effect(fmt, stroke.brush.spacing);
         let mut sampler = all.then(|| AllLayers::new(pre, fmt));
-        Ok(apply_dab_stroke(surf, &stroke, sel, lock, tool.neighborhood().halo(), |work, fp| match &mut sampler {
+        apply_dab_stroke(surf, &stroke, sel, lock, tool.neighborhood().halo(), |work, fp| match &mut sampler {
             Some(all) => all.dab(work, fp, |w, f| effect(w, f)),
             None => effect(work, fp),
-        }))
+        })
+        .map_err(|e| bad(cmd, e.to_string()))
     })?;
     let mut r = json!({ "damage": damage_json(dmg) });
     if from_live {
@@ -418,6 +536,7 @@ pub struct LiveDab {
 impl LiveDab {
     /// Start a live stroke of `cmd` from its params; their `points` are rendered.
     pub fn begin(s: &Session, cmd: &str, p: &Value) -> Result<Self> {
+        mode_refusal(s, cmd)?;
         has_pixel_layer(s).map_err(EngineError::Other)?;
         if sample_all_layers(p) {
             return Err(bad(cmd, "Sample All Layers strokes aren't previewed live"));
@@ -535,6 +654,15 @@ impl LiveDab {
         self.preview_tail = true;
         self.push(&[])?;
         Ok(self)
+    }
+
+    /// Mix the dabs back without the layer's transparency lock, for a tool that erases a locked
+    /// layer anyway (the Background Eraser). Call it before pushing any points: build the dab with
+    /// the stroke's points taken out, then [`Self::push`] them (as `live_background_eraser` does),
+    /// because points pushed before it were already mixed back with the lock.
+    pub(crate) fn unlocked(mut self) -> Self {
+        self.lock = false;
+        self
     }
 
     /// Everything the stroke has touched so far.
@@ -664,3 +792,31 @@ impl LiveDab {
         })
     }
 }
+
+#[cfg(test)]
+#[path = "dodge_refuses_indexed_tests.rs"]
+mod dodge_refuses_indexed_tests;
+
+#[cfg(test)]
+#[path = "sharpen_refuses_indexed_tests.rs"]
+mod sharpen_refuses_indexed_tests;
+
+#[cfg(test)]
+#[path = "burn_refuses_indexed_tests.rs"]
+mod burn_refuses_indexed_tests;
+
+#[cfg(test)]
+#[path = "sponge_refuses_indexed_tests.rs"]
+mod sponge_refuses_indexed_tests;
+
+#[cfg(test)]
+#[path = "blur_refuses_indexed_tests.rs"]
+mod blur_refuses_indexed_tests;
+
+#[cfg(test)]
+#[path = "smudge_refuses_indexed_tests.rs"]
+mod smudge_refuses_indexed_tests;
+
+#[cfg(test)]
+#[path = "smudge_mode_tests.rs"]
+mod smudge_mode_tests;

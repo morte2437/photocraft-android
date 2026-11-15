@@ -35,13 +35,15 @@
 //! coincident colour or opacity stops) returns [`Unsupported`];
 //! callers fall back to the CPU compositor.
 //!
-//! [`CameraRawDevelop`] (`camera_raw.rs`) is a separate pass, not part of the compositor: Camera
-//! Raw's per-pixel develop stages for the dialog's preview, built the first time the dialog opens.
+//! [`CameraRawDevelop`] (`camera_raw.rs`, `camera_raw_tone.rs`) is separate from the compositor:
+//! Camera Raw's develop for the dialog's preview (every stage but Detail), built the first time
+//! the dialog opens.
 #![forbid(unsafe_code)]
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
 pub mod bounds;
 mod camera_raw;
+mod camera_raw_tone;
 mod fx;
 pub mod health;
 pub mod plan;
@@ -59,6 +61,7 @@ use photocraft_geom::{Rect, TILE_SIZE, TileCoord};
 use photocraft_raster::{Surface, Tile};
 
 pub use camera_raw::{CAMERA_RAW_SHADER, CameraRawDevelop};
+pub use camera_raw_tone::{CAMERA_RAW_FILTERS_SHADER, CAMERA_RAW_TONE_SHADER};
 pub use health::{DeviceHealth, Fault};
 pub use plan::{Kernel, Plan, Role, Unsupported, plan};
 pub use timing::{GpuTimer, GpuTiming};
@@ -141,6 +144,7 @@ mod paging;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod readback;
 mod setup;
+pub use setup::{BuildFailure, BuildFailureKind};
 mod textures;
 
 #[cfg(test)]
@@ -166,6 +170,21 @@ pub use readback::{ReadbackError, render_bands, render_to_vec, render_to_vec_sta
 use textures::TexKind;
 use textures::{CachedPattern, FxEntry, FxKey, ResKey, Resident, Tex};
 pub use textures::{ChunkOut, Stats};
+
+/// Stable fingerprint of the compositor WGSL source, for invalidating cached build failures.
+/// Uses 64-bit FNV-1a over the exact embedded source bytes.
+pub fn shader_fingerprint() -> u64 {
+    fnv1a(SHADER.as_bytes())
+}
+
+fn fnv1a(bytes: &[u8]) -> u64 {
+    let mut hash = 0xcbf29ce484222325_u64;
+    for byte in bytes {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x00000100000001b3);
+    }
+    hash
+}
 
 #[cfg(test)]
 mod tests;

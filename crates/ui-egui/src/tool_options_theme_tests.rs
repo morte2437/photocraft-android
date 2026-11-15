@@ -95,3 +95,57 @@ fn every_theme_shows_the_crop_options() {
         assert!(h.state().ui.tool_options.crop_ratio.is_empty(), "{theme:?}: Clear empties the ratio");
     }
 }
+
+/// The bar's controls (not their captions) as `(label, rect)`, left to right.
+fn controls_in_order(h: &Harness<'_, PhotocraftApp>) -> Vec<(String, egui::Rect)> {
+    let mut v: Vec<(String, egui::Rect)> = h
+        .root()
+        .children_recursive()
+        .filter(|n| n.accesskit_node().role() != egui::accesskit::Role::Label)
+        .filter_map(|n| Some((n.accesskit_node().label()?.trim_end_matches(':').to_string(), n.rect())))
+        .collect();
+    v.sort_by(|a, b| a.1.left().total_cmp(&b.1.left()));
+    v
+}
+
+/// #9784: Photoshop's painting tools show Opacity right after Mode, as the Pro themes do. The
+/// other themes used to put Hardness between them for the Brush and Eraser.
+#[test]
+fn every_theme_puts_opacity_right_after_mode() {
+    for tool in [Tool::Brush, Tool::Eraser, Tool::Pencil, Tool::CloneStamp] {
+        for theme in ThemeKind::ALL {
+            let found = controls_in_order(&options_bar(theme, tool));
+            let names: Vec<&str> = found.iter().map(|(l, _)| l.as_str()).collect();
+            let mode = names.iter().position(|l| *l == "Mode").unwrap_or_else(|| panic!("{theme:?} {tool:?}: no Mode control in {names:?}"));
+            assert_eq!(names.get(mode + 1), Some(&"Opacity"), "{theme:?} {tool:?}: Opacity follows Mode in {names:?}");
+            assert!(found[mode].1.right() <= found[mode + 1].1.left(), "{theme:?} {tool:?}: Mode and Opacity don't overlap: {found:?}");
+            if matches!(tool, Tool::Brush | Tool::Eraser) && !crate::theme::Tokens::for_kind(theme).pro {
+                let size = names.iter().position(|l| *l == "Size").unwrap_or_else(|| panic!("{theme:?} {tool:?}: no Size control in {names:?}"));
+                assert_eq!(names.get(size + 1), Some(&"Hardness"), "{theme:?} {tool:?}: Hardness stays right after Size: {names:?}");
+                assert!(size + 1 < mode, "{theme:?} {tool:?}: Size and Hardness come before Mode: {names:?}");
+            }
+        }
+    }
+}
+
+/// #9784 moved the Hardness field beside Size outside the Pro themes. It still follows the
+/// Eraser's Mode: a Pencil or Block eraser is always hard (Photoshop), so Hardness is disabled
+/// there and enabled in Brush mode.
+#[test]
+fn the_eraser_hardness_field_follows_its_mode_outside_pro() {
+    for theme in ThemeKind::ALL.into_iter().filter(|k| !crate::theme::Tokens::for_kind(*k).pro) {
+        for (mode, enabled) in [("brush", true), ("pencil", false), ("block", false)] {
+            let mut h = options_bar(theme, Tool::Eraser);
+            h.state_mut().ui.tool_options.eraser_mode = mode.into();
+            h.run_steps(3);
+            let disabled: Vec<bool> = h
+                .root()
+                .children_recursive()
+                .filter(|n| n.accesskit_node().role() != egui::accesskit::Role::Label && n.accesskit_node().label().as_deref() == Some("Hardness"))
+                .map(|n| n.accesskit_node().is_disabled())
+                .collect();
+            assert!(!disabled.is_empty(), "{theme:?} {mode}: the Hardness field is shown");
+            assert!(disabled.iter().all(|d| *d != enabled), "{theme:?} {mode}: Hardness enabled = {enabled}, found disabled = {disabled:?}");
+        }
+    }
+}

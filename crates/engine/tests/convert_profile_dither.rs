@@ -1,6 +1,6 @@
 //! Opt-in Profile dithering preserves representation, alpha, wide paths and atomic refusal.
 
-use photocraft_cms::{Builtin, Intent, Transform};
+use craft_cms::{Builtin, Intent, Transform};
 use photocraft_color::{ColorMode, PixelFormat, SampleType};
 use photocraft_doc::{Document, Layer, LayerContent};
 use photocraft_engine::Session;
@@ -42,7 +42,7 @@ fn pixels(doc: &Document) -> &Surface {
 fn dither_rounds_fractional_colors_without_bias_or_alpha_noise() {
     let transform = Transform::new(Builtin::Srgb.profile(), Builtin::LinearSrgb.profile(), Intent::RelativeColorimetric, false).unwrap();
     let mut fractional = [0.0; 3];
-    transform.eval_fast(&GRAY[..3], &mut fractional);
+    transform.eval_fast(&GRAY[..3], &mut fractional).unwrap();
     assert!((fractional[0] * 255.0 - 55.04443).abs() < 0.02, "the CMS fixture must have a fractional destination value");
     let before = document(Size::new(256, 256), Surface::with_default(PixelFormat::RGBA8, &GRAY), SampleType::U8);
     let ordinary = converted(before.clone(), params(json!(false)));

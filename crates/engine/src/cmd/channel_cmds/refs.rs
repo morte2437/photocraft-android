@@ -26,6 +26,11 @@ pub fn parse_ref(v: &Value, doc: &Document) -> Option<ChanRef> {
     match v {
         Value::Number(n) => n.as_u64().map(|i| ChanRef::Alpha(i as usize)),
         Value::Object(o) => {
+            if o.len() == 1
+                && let Some(name) = o.get("name").and_then(Value::as_str)
+            {
+                return doc.channels.iter().position(|c| c.name == name).map(ChanRef::Alpha);
+            }
             if let Some(name) = o.get("color").and_then(Value::as_str) {
                 let names = color_names(mode);
                 let k = names.iter().position(|n| n.eq_ignore_ascii_case(name))?;
@@ -88,10 +93,23 @@ pub(super) fn native_pixels(doc: &Document, layer: Option<LayerId>) -> Result<(V
     let r = doc.bounds();
     let fmt = doc.pixel_format();
     let n = fmt.channels();
+    // The source is read as dense samples over the whole canvas, whatever tiles it stores, then
+    // returned as `n` native f32 samples per pixel. Refuse a canvas past the working budget
+    // before reading (an empty canvas can be 300000 px a side).
+    let out = (n as u64).saturating_mul(4);
     match layer {
         Some(id) => {
             let l = doc.layer(id).ok_or(EngineError::NoLayer(id))?;
-            let s = l.surface().ok_or_else(|| EngineError::Other(format!("layer \"{}\" has no pixels", l.name)))?;
+            let s = match l.surface() {
+                Some(s) => s,
+                None => {
+                    if let LayerContent::Shape(shape) = &l.content {
+                        return Ok((photocraft_vector::render_shape(shape, fmt, r).read_region(r), n));
+                    }
+                    return Err(EngineError::Other(format!("layer \"{}\" has no pixels", l.name)));
+                }
+            };
+            crate::allocation::check_dense(r, (s.channels() as u64).saturating_mul(4).saturating_add(out), "reading this channel source")?;
             if s.format() == fmt {
                 return Ok((s.read_region(r), n));
             }
@@ -100,6 +118,8 @@ pub(super) fn native_pixels(doc: &Document, layer: Option<LayerId>) -> Result<(V
             Ok((raw.chunks_exact(sf.channels()).flat_map(|p| from_rgba(&fmt, to_rgba(&sf, p))).collect(), n))
         }
         None => {
+            // The composite is straight RGBA f32.
+            crate::allocation::check_dense(r, 16u64.saturating_add(out), "reading this channel source")?;
             let buf = photocraft_compose::render(doc, r);
             Ok((buf.px.iter().flat_map(|p| from_rgba(&fmt, *p)).collect(), n))
         }
@@ -139,6 +159,13 @@ fn ref_planes(doc: &Document, layer: Option<LayerId>, active: Option<LayerId>, r
     let colors = color_count(doc);
     Ok(match r {
         ChanRef::Composite | ChanRef::Color(_) => {
+            // After `native_pixels` returns its `n` samples per pixel, the colour planes (and for
+            // one channel the toned plane) are built beside them: check that peak first, as
+            // `native_pixels` only checks its own.
+            let n = doc.pixel_format().channels() as u64;
+            let toned = u64::from(matches!(r, ChanRef::Color(_)));
+            let planes = (colors as u64).saturating_add(toned).saturating_mul(4);
+            crate::allocation::check_dense(area, n.saturating_mul(4).saturating_add(planes), "reading this channel source")?;
             let (px, n) = native_pixels(doc, layer)?;
             let planes: Vec<Vec<f32>> = (0..colors).map(|c| px.chunks_exact(n).map(|p| p[c]).collect()).collect();
             match r {
@@ -176,7 +203,7 @@ fn ref_planes(doc: &Document, layer: Option<LayerId>, active: Option<LayerId>, r
                             .map(|p| p[3])
                             .collect(),
                     ],
-                    // Adjustment and fill layers cover the whole canvas.
+                    // Groups, adjustment and fill layers cover the whole canvas.
                     _ => vec![vec![1.0; area.width() as usize * area.height() as usize]],
                 },
             }
@@ -231,9 +258,28 @@ pub(super) fn source(s: &Session, p: &Value, cmd: &str, gray: bool) -> Result<Ve
     if st.doc.size != target.doc.size {
         return Err(bad(cmd, format!("source document \"{}\" is {}×{}; it must match the target size", st.doc.name, st.doc.size.width, st.doc.size.height)));
     }
-    let r = p.get("channel").map_or(Some(ChanRef::Composite), |v| parse_ref(v, &st.doc)).ok_or_else(|| bad(cmd, "unknown `channel`"))?;
+    let r = if p.get("channel") == Some(&serde_json::json!({"targeted": true})) {
+        // Resolve on replay, before the calculation creates a channel. A string selector would
+        // collide with an existing alpha named "targeted".
+        match st.channel_view.target {
+            super::view::ChannelTarget::Color(k) if st.channel_view.selected_colors.len() <= 1 => ChanRef::Color(k),
+            super::view::ChannelTarget::Alpha(i) => ChanRef::Alpha(i),
+            super::view::ChannelTarget::Composite if color_count(&st.doc) == 1 => ChanRef::Composite,
+            _ => return Err(bad(cmd, "the source must target one colour or alpha channel")),
+        }
+    } else {
+        p.get("channel").map_or(Some(ChanRef::Composite), |v| parse_ref(v, &st.doc)).ok_or_else(|| bad(cmd, "unknown `channel`"))?
+    };
     let layer = source_layer(&st.doc, p, cmd)?;
-    let mut planes = if gray { vec![gray_plane(&st.doc, layer, st.active_layer, r)?] } else { ref_planes(&st.doc, layer, st.active_layer, r)? };
+    let mut planes = if r == ChanRef::Transparency && p.get("layer").is_some_and(|v| v == "merged") {
+        // An explicit merged transparency source reads all visible layers. An omitted layer
+        // retains the existing active-layer transparency behavior.
+        vec![photocraft_compose::render(&st.doc, st.doc.bounds()).px.iter().map(|p| p[3]).collect()]
+    } else if gray {
+        vec![gray_plane(&st.doc, layer, st.active_layer, r)?]
+    } else {
+        ref_planes(&st.doc, layer, st.active_layer, r)?
+    };
     // Guard every caller (`.remove(0)` / `src[0]`) against an empty source.
     if planes.is_empty() {
         return Err(bad(cmd, "the source has no channels"));
@@ -296,7 +342,11 @@ pub(crate) fn source_spec(p: &Value, key: &str, prefix: &str) -> Option<Value> {
     for (k, field) in [("document", "Document"), ("layer", "Layer"), ("channel", "Channel"), ("invert", "Invert")] {
         match p.get(format!("{prefix}{field}")) {
             None | Some(Value::Null) => {}
-            Some(Value::String(s)) if s.is_empty() || (k == "layer" && s == "merged") => {}
+            Some(Value::String(s))
+                if s.is_empty()
+                    || (k == "layer"
+                        && s == "merged"
+                        && !p.get(format!("{prefix}Channel")).and_then(Value::as_str).is_some_and(|channel| channel.eq_ignore_ascii_case("transparency"))) => {}
             Some(v) => {
                 m.insert(k.into(), v.clone());
             }

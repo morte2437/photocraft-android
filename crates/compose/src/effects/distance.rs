@@ -158,7 +158,9 @@ impl Dt1Scratch {
 pub(super) fn edt_nearest(inside: &[bool], w: usize, h: usize) -> (Vec<f32>, Vec<u32>) {
     const INF: f32 = 1e20;
     let total = w.saturating_mul(h);
-    if total != inside.len() || total > u32::MAX as usize {
+    // No pixels: nothing to transform, and the scratch below is sized from the larger
+    // dimension, which a zero-by-huge plane would still allocate.
+    if total != inside.len() || total > u32::MAX as usize || total == 0 {
         return (vec![INF; inside.len()], vec![0; inside.len()]);
     }
     let n = w.max(h);

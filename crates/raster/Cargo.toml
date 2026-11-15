@@ -15,10 +15,18 @@ crc32fast = "1"
 lz4_flex = { version = "0.11", default-features = false, features = ["std", "safe-encode", "safe-decode"] }
 
 # Native only: converting a region's tiles is independent per tile, so it runs on all cores;
-# sysinfo reads the physical RAM size for the memory limit and the scratch volume's free space.
+# sysinfo reads the physical RAM size for the memory limit.
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 rayon = { workspace = true }
+sysinfo = { version = "=0.40.1", default-features = false, features = ["system"] }
+
+# macOS reports capacity including purgeable space only through sysinfo's volume properties.
+[target.'cfg(target_os = "macos")'.dependencies]
 sysinfo = { version = "=0.40.1", default-features = false, features = ["system", "disk"] }
+
+# statvfs on the scratch directory.
+[target.'cfg(unix)'.dependencies]
+rustix = { version = "1.1", default-features = false, features = ["std", "fs"] }
 
 # Available physical memory and commit headroom (memory/system.rs) through winsafe's safe
 # `GlobalMemoryStatusEx` wrapper.

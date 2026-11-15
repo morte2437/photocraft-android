@@ -42,8 +42,13 @@ fn enabled(app: &PhotocraftApp, cmd: &str) -> bool {
     if cmd == "window.panel.close" {
         return !app.session.prefs().workspace_locked;
     }
-    // An open Free Transform owns the history (see `panels::history`).
-    app.ui.transform.is_none() && app.session.is_enabled(cmd)
+    // An open Free Transform owns the history (see `panels::history`), and a drawn crop frame
+    // holds its jumps back (`crop_ui::holds_history`). A Pen path being drawn steps back anchor
+    // by anchor (`vector_ui::pen_history_enabled`).
+    if let Some(on) = crate::vector_ui::pen_history_enabled(app, cmd) {
+        return on;
+    }
+    app.ui.transform.is_none() && !crate::crop_ui::holds_history(app, cmd) && app.session.is_enabled(cmd)
 }
 
 /// Draw the History items of the panel menu and run the one clicked.
@@ -63,8 +68,11 @@ pub fn panel_menu(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
     let Some(cmd) = clicked else { return };
     ui.close();
     let (cmd, params) = resolve(cmd, snapshot);
-    // History Options… opens its dialog, as the menu bar's command does.
-    let result = crate::history_options_ui::menu(app, cmd, &params).unwrap_or_else(|| app.run(cmd, params));
+    // History Options… opens its dialog, as the menu bar's command does. Step Backward/Forward
+    // over a Pen path step it as Edit › Undo/Redo do (`vector_ui::pen_history_step`).
+    let result = crate::history_options_ui::menu(app, cmd, &params)
+        .or_else(|| crate::vector_ui::pen_history_step(app, cmd).map(|r| r.map(|_| Value::Null)))
+        .unwrap_or_else(|| app.run(cmd, params));
     if let Err(e) = result {
         app.ui.status = e;
         app.ui.status_error = true;
@@ -156,6 +164,46 @@ mod tests {
         for label in ["Step Backward", "New Snapshot…", "Delete", "Clear History", "New Document"] {
             assert!(is_disabled(&h, label), "{label}");
         }
+    }
+
+    /// Step Backward after a Pen path was closed gives it back to the Pen, open, rather than
+    /// deleting it; Step Forward closes it again (#6619), as Edit › Undo and Redo do.
+    #[test]
+    fn steps_over_a_finished_pen_path_give_it_back_to_the_pen() {
+        let mut app = app();
+        app.ui.tool = crate::state::Tool::Pen;
+        for (x, y) in [(10.0, 10.0), (50.0, 10.0), (50.0, 40.0), (10.0, 10.0)] {
+            crate::vector_ui::pen_down(&mut app, x, y, false);
+            crate::vector_ui::pen_up(&mut app);
+        }
+        assert!(app.ui.pen.is_none(), "the path is closed");
+        let mut h = harness(app);
+        click(&mut h, "Step Backward");
+        assert_eq!(h.state().ui.pen.as_ref().map(|p| p.knots.len()), Some(3), "the open path is back on the Pen");
+        assert!(h.state().session.active().unwrap().doc.work_path.is_none());
+        click(&mut h, "Step Forward");
+        assert!(h.state().ui.pen.is_none());
+        assert!(h.state().session.active().unwrap().doc.work_path.as_ref().unwrap().subpaths[0].closed);
+    }
+
+    /// A drawn crop frame greys the items that move the document under it (#9285).
+    #[test]
+    fn jumps_wait_for_a_drawn_crop_frame() {
+        let mut app = app();
+        app.ui.tool = crate::state::Tool::Crop;
+        app.ui.crop_rect = Some([4.0, 4.0, 40.0, 30.0]);
+        app.crop.default_frame = false;
+        app.session.execute("history.stepBackward", json!({})).unwrap();
+        let mut h = harness(app);
+        for label in ["Step Backward", "Step Forward", "Delete"] {
+            assert!(is_disabled(&h, label), "{label}");
+        }
+        assert!(!is_disabled(&h, "New Snapshot…"), "a snapshot leaves the document as it is");
+        h.state_mut().crop.default_frame = true;
+        h.run_steps(2);
+        assert!(!is_disabled(&h, "Step Backward"), "the tool's own frame around the canvas holds nothing back");
+        click(&mut h, "Step Backward");
+        assert_eq!(states(&h), (2, 2));
     }
 
     #[test]

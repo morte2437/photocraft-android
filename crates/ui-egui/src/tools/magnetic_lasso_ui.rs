@@ -6,8 +6,11 @@
 //! often at a higher Frequency. A click fastens a point; ⌥-click draws a straight segment and
 //! ⌥-drag a freehand one. ⌫ or Delete removes the last fastening point. Clicking the first point,
 //! a double-click or ↩ closes the border along the edges (⌥ with a straight segment); Esc cancels.
-//! [ and ] narrow or widen the detection width by 1 px. As in Photoshop, the border follows the
-//! active layer's pixels (the composite for a layer without pixels of its own).
+//! [ and ] narrow or widen the detection width by 1 px. The border follows the edges of the visible
+//! composite, whichever layer is active (hidden layers add none); documents that are not RGB keep
+//! following the active layer's own pixels. In a non-RGB document an active group or adjustment
+//! layer has no pixel surface of its own, so the tool follows the composite then instead of that
+//! layer's pixels (`pixel_layer` and `read` in `photocraft_engine::magnetic_cmds`).
 //!
 //! The border closes through `select.magneticLasso` with `"trace": false`: the selection is exactly
 //! the outline drawn, in one history step, and an action replays that outline.
@@ -55,6 +58,8 @@ pub struct Runtime {
     source: Option<EdgeSource>,
     /// Pointer moves were batched (`PhotocraftApp::defer_live_stroke`): trace once at the end.
     pending: bool,
+    /// The mouse button is down (pressed in this tool, not yet released): points fasten closer.
+    held: bool,
 }
 
 /// Detection settings from the options bar, for an event with pen `pressure`.
@@ -68,12 +73,26 @@ fn settings(app: &PhotocraftApp, pressure: f32) -> Settings {
     Settings::new(width, o.magnetic_contrast / 100.0)
 }
 
-/// How far the border runs before a point fastens by itself (document px): 8 screen points at
-/// Frequency 100, 98 at 0, 47 at the default 57.
-fn spacing(app: &PhotocraftApp) -> f64 {
+/// How far the border runs before a point fastens by itself (document px), as the reference
+/// application measures it (#11687). The stored spacing is `floor(40 - 0.35 x Frequency)`: 40 at
+/// Frequency 0, 20 at the default 57, 5 at 100.
+///
+/// - Button held: the stored value in document px, whatever the zoom (so on screen it grows with
+///   the zoom: 40 px at 200 %, 60 at 300 %). Below 100 % the reference is uneven (about 8 to 10
+///   screen px at Frequency 57) and no rule was pinned; the stored document value is kept.
+/// - Button up: `4 x stored + 4` screen points at 100 % and above (164, 84 and 24), and half of
+///   that below 100 %, at any zoom, so it is divided by the zoom into document px.
+fn spacing(app: &PhotocraftApp, held: bool) -> f64 {
     let f = app.ui.tool_options.magnetic_frequency;
     let f = if f.is_finite() { f64::from(f.clamp(0.0, 100.0)) } else { 57.0 };
-    (8.0 + (100.0 - f) * 0.9) / f64::from(app.point_zoom().max(0.01))
+    let stored = (40.0 - 0.35 * f).floor();
+    if held {
+        return stored;
+    }
+    let zoom = f64::from(app.point_zoom().max(0.01));
+    let screen = 4.0 * stored + 4.0;
+    let screen = if zoom < 1.0 { screen / 2.0 } else { screen };
+    screen / zoom
 }
 
 /// Within this distance of the first point (document px), a click closes the border.
@@ -104,14 +123,24 @@ fn trace(app: &mut PhotocraftApp, from: [f64; 2], to: [f64; 2], guide: &[[f64; 2
 
 /// Pointer events while the Magnetic Lasso is the tool (it takes them all).
 pub fn pointer(app: &mut PhotocraftApp, ev: ToolEvent, mods: Modifiers) -> bool {
+    // A release ends the held-button spacing whoever takes it (the temporary Move included).
+    if matches!(ev, ToolEvent::Up { .. }) {
+        app.magnetic.held = false;
+    }
     // ⌘ held makes it the Move tool (`hold_keys::cmd_moves`): nothing to take then.
     if app.active_tool() != Tool::MagneticLasso {
         return false;
     }
     match ev {
-        ToolEvent::Down { x, y, pressure } if x.is_finite() && y.is_finite() => down(app, [x, y], pressure, mods),
+        ToolEvent::Down { x, y, pressure } if x.is_finite() && y.is_finite() => {
+            down(app, [x, y], pressure, mods);
+            app.magnetic.held = true;
+        }
         ToolEvent::Move { x, y, pressure } if x.is_finite() && y.is_finite() => moved(app, [x, y], pressure),
-        ToolEvent::Up { .. } => end_freehand(app),
+        ToolEvent::Up { .. } => {
+            app.magnetic.held = false;
+            end_freehand(app);
+        }
         _ => {}
     }
     true
@@ -175,7 +204,7 @@ fn moved(app: &mut PhotocraftApp, p: [f64; 2], pressure: f32) {
         return;
     }
     let s = settings(app, pressure);
-    let step = (spacing(app) / 2.0).max(1.0);
+    let step = (spacing(app, app.magnetic.held) / 2.0).max(1.0);
     let last = app.ui.magnetic.trail.last().copied().unwrap_or(p);
     // A long jump (a fast flick, automation) is walked in steps, so points keep fastening along it.
     let n = ((dist(last, p) / step).ceil() as usize).clamp(1, 256);
@@ -217,7 +246,7 @@ fn extend_trail(app: &mut PhotocraftApp, q: [f64; 2], s: Settings) {
 fn follow(app: &mut PhotocraftApp, q: [f64; 2], s: Settings, fasten: bool) {
     extend_trail(app, q, s);
     let target = snap(app, q, s);
-    let every = spacing(app);
+    let every = spacing(app, app.magnetic.held);
     for _ in 0..64 {
         let Some(&from) = app.ui.magnetic.path.last() else { return };
         let guide = app.ui.magnetic.trail.clone();
@@ -365,8 +394,15 @@ pub fn replaces_selection(app: &PhotocraftApp) -> bool {
     app.ui.magnetic.active() && app.ui.magnetic.mode == "replace"
 }
 
-/// Once a frame: a border left behind by a tool or document switch is dropped.
-pub fn frame(app: &mut PhotocraftApp) {
+/// Once a frame of a document canvas (`primary_down`: its primary pointer button is down; `active_canvas`:
+/// it is the canvas of the active document, the one that owns a press in progress): a border left behind by a tool or document switch is dropped.
+pub fn frame(app: &mut PhotocraftApp, primary_down: bool, active_canvas: bool) {
+    // The button is up: the held-button spacing ends even when the release went to the temporary
+    // Move (Ctrl pressed during the drag) and never reached this tool. Only the active canvas
+    // says so: another window's button being up says nothing about the drag in this one.
+    if active_canvas && !primary_down {
+        app.magnetic.held = false;
+    }
     let m = &app.ui.magnetic;
     if m.active() && (app.ui.tool != Tool::MagneticLasso || app.session.active().map(|d| d.doc.id.0) != Some(m.doc)) {
         cancel(app);
@@ -375,7 +411,7 @@ pub fn frame(app: &mut PhotocraftApp) {
 
 /// Keys while the Magnetic Lasso is the tool: ↩ closes the border along the edges (⌥↩ straight),
 /// Esc cancels it, ⌫ / Delete remove the last fastening point, and [ / ] change the detection width
-/// by 1 px. Returns whether a key was taken.
+/// by 1 px (Shift+[ / Shift+] jump to 1 / 256 px). Returns whether a key was taken.
 pub fn keys(app: &mut PhotocraftApp, ctx: &egui::Context) -> bool {
     if app.ui.tool != Tool::MagneticLasso {
         return false;
@@ -399,6 +435,17 @@ pub fn keys(app: &mut PhotocraftApp, ctx: &egui::Context) -> bool {
             return true;
         }
     }
+    // Shift+[ / Shift+] jump to the limits; they come first because the plain keys match with Shift held too.
+    let w = &mut app.ui.tool_options.magnetic_width;
+    // On a US layout the backend may report Shift+[ as the logical `{` key (egui's `OpenCurlyBracket`) with Shift set; a bare `{` (Programmer Dvorak) is left alone.
+    if pressed(Modifiers::SHIFT, Key::OpenBracket) || pressed(Modifiers::SHIFT, Key::OpenCurlyBracket) {
+        *w = 1.0;
+        return true;
+    }
+    if pressed(Modifiers::SHIFT, Key::CloseBracket) || pressed(Modifiers::SHIFT, Key::CloseCurlyBracket) {
+        *w = 256.0;
+        return true;
+    }
     let step = if pressed(Modifiers::NONE, Key::OpenBracket) {
         -1.0
     } else if pressed(Modifiers::NONE, Key::CloseBracket) {
@@ -406,7 +453,6 @@ pub fn keys(app: &mut PhotocraftApp, ctx: &egui::Context) -> bool {
     } else {
         return false;
     };
-    let w = &mut app.ui.tool_options.magnetic_width;
     *w = if w.is_finite() { (w.round() + step).clamp(1.0, 256.0) } else { 10.0 };
     true
 }
@@ -437,16 +483,23 @@ pub fn draw(app: &PhotocraftApp, painter: &egui::Painter, xf: &ViewXform, hover:
     }
 }
 
-/// The cursor over the canvas: a crosshair; Preferences › Cursors › Other Cursors › Precise also
-/// shows the detection width around it.
+/// The cursor over the canvas: the tool's icon with its top-left tip on the point; Preferences ›
+/// Cursors › Other Cursors › Precise shows the detection width around a crosshair instead, and
+/// Caps Lock swaps the preference either way, as in Photoshop (#11690).
 pub fn cursor(app: &PhotocraftApp, painter: &egui::Painter, p: Pos2, zoom: f32) -> egui::CursorIcon {
-    if app.session.prefs().cursors.other == photocraft_engine::prefs::OtherCursor::Precise {
-        let r = (app.ui.tool_options.magnetic_width.clamp(1.0, 256.0) * zoom).max(2.0);
-        painter.circle_stroke(p, r + 0.5, Stroke::new(1.0, Color32::from_black_alpha(140)));
-        painter.circle_stroke(p, r, Stroke::new(1.0, Color32::from_white_alpha(220)));
+    if !crate::canvas::precise_other_cursor(app) {
+        // The icon's lasso tip is at (1.8, 3.6) of its 24-unit box.
+        crate::icons::cursor(painter.ctx(), crate::icons::tool_icon(Tool::MagneticLasso), p, vec2(1.8, 3.6) / 24.0, 22.0);
+        return egui::CursorIcon::None;
     }
+    let r = (app.ui.tool_options.magnetic_width.clamp(1.0, 256.0) * zoom).max(2.0);
+    painter.circle_stroke(p, r + 0.5, Stroke::new(1.0, Color32::from_black_alpha(140)));
+    painter.circle_stroke(p, r, Stroke::new(1.0, Color32::from_white_alpha(220)));
     egui::CursorIcon::Crosshair
 }
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod caps_lock_cursor_tests;

@@ -4,10 +4,16 @@
 //!
 //! Like Photoshop, both turn a Background layer into a normal layer ("Layer 0") first, since the
 //! Background can't hold transparency. The Magic Eraser paints the background colour on other
-//! layers with locked transparency; the Background Eraser refuses them. Both respect the selection,
-//! work in the layer's own colour model and depth, and are one undo step per click / stroke.
+//! layers with locked transparency; the Background Eraser erases them to transparency and leaves
+//! the lock on. Both respect the selection, work in the layer's own colour model and depth, and are
+//! one undo step per click / stroke.
+//!
+//! The Magic Eraser refuses Indexed Color and Bitmap documents with the reference's alerts
+//! ([`MAGIC_ERASER_INDEXED_ERROR`] and [`MAGIC_ERASER_BITMAP_ERROR`], #12032), before it samples
+//! anything, so a refused click leaves the document exactly as it was.
 
 use photocraft_algo::selection as sel;
+use photocraft_color::{ColorMode, SampleType};
 use photocraft_doc::{Document, Layer, LayerContent, LayerId};
 use photocraft_geom::Rect;
 use photocraft_paint::Stroke;
@@ -77,6 +83,28 @@ fn damage(s: &mut Session, dmg: Rect, erased: bool) -> Value {
     json!({ "erased": erased, "damage": [dmg.x0, dmg.y0, dmg.width(), dmg.height()] })
 }
 
+/// The reference's alert for a Magic Eraser click in an Indexed Color document (#12032), measured:
+/// one alert with an OK button. The UI shows this text through `tl!` (English is the catalog
+/// source); the command returns it as its error.
+pub const MAGIC_ERASER_INDEXED_ERROR: &str =
+    "Could not use the magic eraser because it does not work with Indexed Color images (convert image to RGB Color mode to edit).";
+/// The same alert for a Bitmap document (#12032), which points at Grayscale instead.
+pub const MAGIC_ERASER_BITMAP_ERROR: &str =
+    "Could not use the magic eraser because it does not work with Bitmap images (convert image to Grayscale mode to edit).";
+
+/// The alert `doc` gets instead of a Magic Eraser click, or `None` when the click may erase
+/// (#12032). Indexed Color and Bitmap are the two measured refusals, at every bit depth; Duotone
+/// and Multichannel are not measured and keep erasing, as do RGB, Grayscale, CMYK and Lab.
+/// The text is exactly what `paint.magicEraser` answers with, so the tool can refuse the press with
+/// what the command would refuse.
+pub fn magic_eraser_refusal(doc: &Document) -> Option<&'static str> {
+    match doc.mode {
+        ColorMode::Indexed => Some(MAGIC_ERASER_INDEXED_ERROR),
+        ColorMode::Bitmap => Some(MAGIC_ERASER_BITMAP_ERROR),
+        _ => None,
+    }
+}
+
 /// `paint.magicEraser`: erase the wand region around `(x, y)`.
 fn magic_eraser(s: &mut Session, p: &Value) -> Result<Value> {
     const CMD: &str = "paint.magicEraser";
@@ -87,6 +115,13 @@ fn magic_eraser(s: &mut Session, p: &Value) -> Result<Value> {
     let tolerance = number(p, CMD, "tolerance", 32.0, 0.0..=255.0)? as f32;
     let opacity = number(p, CMD, "opacity", 100.0, 1.0..=100.0)? as f32 / 100.0;
     let (anti_alias, contiguous, sample_all) = (flag(p, "antiAlias", true), flag(p, "contiguous", true), flag(p, "sampleAllLayers", false));
+    // #12032: an Indexed Color or a Bitmap document gets the reference's alert before anything is
+    // sampled or edited, so the click changes nothing: no pixels, no selection, no History step,
+    // and the Background stays a Background. The tool refuses the press with this same text
+    // (`eraser_ui::click`), which is why the check belongs to the command.
+    if let Some(msg) = s.active().and_then(|st| magic_eraser_refusal(&st.doc)) {
+        return Err(EngineError::Other(msg.into()));
+    }
     let id = active_pixel_layer(s, p, CMD)?;
     {
         let d = s.active().ok_or(EngineError::NoDocument)?;
@@ -105,7 +140,10 @@ fn magic_eraser(s: &mut Session, p: &Value) -> Result<Value> {
         let surf = d.doc.layer(id).and_then(Layer::surface).ok_or(EngineError::NoLayer(id))?;
         (d.doc.bounds(), sel::rgba8_image(surf, d.doc.bounds()))
     };
-    let region = sel::wand_region(&img, area, (x, y), tolerance, contiguous, anti_alias);
+    // The reference's colour distance is measured for 8-bit RGB only (#11995).
+    let rgb8 = s.active().is_some_and(|d| d.doc.mode == ColorMode::Rgb && d.doc.depth == SampleType::U8);
+    let distance = if rgb8 { sel::ColorDistance::Spread } else { sel::ColorDistance::LargestChannel };
+    let region = sel::wand_region_by(&img, area, (x, y), tolerance, contiguous, anti_alias, None, distance);
     drop(img);
     let Some(region) = region else { return Ok(damage(s, Rect::EMPTY, false)) };
     let bg = s.tools.background;
@@ -128,40 +166,50 @@ fn magic_eraser(s: &mut Session, p: &Value) -> Result<Value> {
     Ok(damage(s, dmg, true))
 }
 
-/// The stroke, settings and layer of a `paint.backgroundEraser` (shared by the command and its
-/// live preview), after the same checks.
-fn background_eraser_setup(s: &Session, p: &Value) -> Result<(Stroke, BgEraseSettings, LayerId)> {
+/// The reference application's alert for a colour-channel target that isn't the composite (#12488).
+const CHANNEL_TARGET_REFUSED: &str = "Could not use the background eraser because the target channels do not cover the composite.";
+
+/// The stroke, settings, layer and colour-channel target of a `paint.backgroundEraser` (shared by
+/// the command and its live preview), after the same checks.
+fn background_eraser_setup(s: &Session, p: &Value) -> Result<(Stroke, BgEraseSettings, LayerId, Option<crate::color_channels::ColorChannels>)> {
     const CMD: &str = "paint.backgroundEraser";
     let pts = crate::brush_cmds::parse_points(p, CMD)?;
     if pts.iter().any(|q| !q.x.is_finite() || !q.y.is_finite() || q.x.abs() > 1e7 || q.y.abs() > 1e7) {
         return Err(bad(CMD, "`points` must be finite canvas coordinates"));
     }
     let brush = crate::brush_cmds::resolve_brush(s, p, CMD)?;
+    // The inks a colour was picked as, for a CMYK document (#12352).
+    let picked = |c: [f32; 4]| s.tools.picked_cmyk([c[0], c[1], c[2]]).map(|k| ([c[0], c[1], c[2]], k));
     let bs = BgEraseSettings {
         sampling: enum_param(p, CMD, "sampling", Sampling::Continuous, "continuous|once|backgroundSwatch")?,
         limits: enum_param(p, CMD, "limits", Limits::Contiguous, "discontiguous|contiguous|findEdges")?,
-        tolerance: number(p, CMD, "tolerance", 50.0, 0.0..=100.0)? as f32 / 100.0,
+        tolerance: number(p, CMD, "tolerance", 50.0, 1.0..=100.0)? as f32 / 100.0,
         protect_foreground: flag(p, "protectForegroundColor", false),
         foreground: s.tools.foreground,
         background: s.tools.background,
+        foreground_cmyk: picked(s.tools.foreground),
+        background_cmyk: picked(s.tools.background),
     };
     let id = active_pixel_layer(s, p, CMD)?;
     let d = s.active().ok_or(EngineError::NoDocument)?;
     let l = d.doc.layer(id).ok_or(EngineError::NoLayer(id))?;
+    // Lock transparent pixels is no refusal: the reference application erases to transparency
+    // anyway and leaves the lock on.
     if let Some(e) = pixels_locked(&d.doc, l) {
         return Err(e);
     }
-    if d.doc.effective_locks(id).transparency && !d.doc.is_background(id) && crate::color_channels::target(s, p)?.is_none() {
-        return Err(EngineError::Other(format!("Could not use the Background Eraser because the transparency of layer \"{}\" is locked", l.name)));
+    let colors = crate::color_channels::target(s, p)?;
+    // Measured: one colour channel of an RGB document. Other partial sets keep erasing those channels.
+    if d.doc.mode == ColorMode::Rgb && colors.is_some_and(|c| c.len() == 1) {
+        return Err(EngineError::Other(CHANNEL_TARGET_REFUSED.into()));
     }
-    Ok((Stroke { brush, points: pts }, bs, id))
+    Ok((Stroke { brush, points: pts }, bs, id, colors))
 }
 
 /// `paint.backgroundEraser`: a stroke erasing colours similar to the sampled one.
 fn background_eraser(s: &mut Session, p: &Value) -> Result<Value> {
     const CMD: &str = "paint.backgroundEraser";
-    let (stroke, bs, id) = background_eraser_setup(s, p)?;
-    let colors = crate::color_channels::target(s, p)?;
+    let (stroke, bs, id, colors) = background_eraser_setup(s, p)?;
     let bg = s.tools.background;
     let dmg = s.edit("Background Eraser", |doc, _| {
         let selection = doc.selection.clone();
@@ -172,9 +220,10 @@ fn background_eraser(s: &mut Session, p: &Value) -> Result<Value> {
         let surf = l.surface_mut().ok_or_else(|| bad(CMD, "not a pixel layer"))?;
         if let Some(colors) = colors {
             let effect = selected_background_effect(surf, &bs, colors, bg);
-            Ok(photocraft_paint::retouch::apply_dab_stroke(surf, &background_eraser_stroke(&stroke), selection.as_ref(), false, 0, effect))
+            photocraft_paint::retouch::apply_dab_stroke(surf, &background_eraser_stroke(&stroke), selection.as_ref(), false, 0, effect)
+                .map_err(|e| bad(CMD, e.to_string()))
         } else {
-            Ok(apply_background_eraser(surf, &stroke, &bs, selection.as_ref()))
+            apply_background_eraser(surf, &stroke, &bs, selection.as_ref()).map_err(|e| bad(CMD, e.to_string()))
         }
     })?;
     Ok(damage(s, dmg, true))
@@ -226,27 +275,34 @@ fn selected_background_effect(
 /// preview at the last point is the committed result.
 pub fn live_background_eraser(s: &Session, p: &Value) -> Result<crate::retouch_cmds::LiveDab> {
     const CMD: &str = "paint.backgroundEraser";
-    let (stroke, bs, id) = background_eraser_setup(s, p)?;
+    let (stroke, bs, id, colors) = background_eraser_setup(s, p)?;
     let mut doc = (*s.active().ok_or(EngineError::NoDocument)?.doc).clone();
     doc.layer(id).ok_or(EngineError::NoLayer(id))?;
-    let colors = crate::color_channels::target(s, p)?;
     let bg = s.tools.background;
     if colors.is_none() {
         crate::extra_cmds::background_to_layer(&mut doc, id);
     }
-    let stroke = background_eraser_stroke(&stroke);
+    let mut stroke = background_eraser_stroke(&stroke);
+    // The commit mixes back without the transparency lock (a locked layer is erased too, and a
+    // channel target leaves alpha alone), so the preview does as well; the points go in once the
+    // lock is off.
+    let points = std::mem::take(&mut stroke.points);
     if let Some(colors) = colors {
-        return crate::retouch_cmds::LiveDab::with_effect_on(doc, CMD, &json!({"target":colors.params()}), stroke, Some(id), 0, |pre| {
+        let mut live = crate::retouch_cmds::LiveDab::with_effect_on(doc, CMD, &json!({"target":colors.params()}), stroke, Some(id), 0, |pre| {
             selected_background_effect(pre, &bs, colors, bg)
         })?
-        .with_tail_preview();
+        .unlocked();
+        live.push(&points)?;
+        return live.with_tail_preview();
     }
-    crate::retouch_cmds::LiveDab::with_effect_on(doc, CMD, &json!({}), stroke, Some(id), 0, |pre| match background_eraser_effect(pre, &bs) {
+    let mut live = crate::retouch_cmds::LiveDab::with_effect_on(doc, CMD, &json!({}), stroke, Some(id), 0, |pre| match background_eraser_effect(pre, &bs) {
         Some(effect) => Box::new(effect),
         // No alpha: the commit erases nothing either.
         None => Box::new(|_: &mut photocraft_paint::retouch::Region, _: &photocraft_paint::retouch::Footprint| {}),
     })?
-    .with_tail_preview()
+    .unlocked();
+    live.push(&points)?;
+    live.with_tail_preview()
 }
 
 /// Eraser-group command specs.
@@ -257,7 +313,7 @@ pub fn specs() -> Vec<CommandSpec> {
             label: "Magic Eraser",
             menu: &[],
             shortcut: None,
-            params: r##"{"x":px,"y":px,"tolerance":0..255=32,"antiAlias":bool=true,"contiguous":bool=true,"sampleAllLayers":bool=false,"opacity":1..100=100}"##,
+            params: r##"{"x":px,"y":px,"tolerance":0..255=32,"antiAlias":bool=true,"contiguous":bool=true,"sampleAllLayers":bool=false,"opacity":1..100=100} (one undo step; a click off the canvas erases nothing and records no step; refused with the tool's alert and nothing changes: an Indexed Color document answers "Could not use the magic eraser because it does not work with Indexed Color images (convert image to RGB Color mode to edit).", a Bitmap document "Could not use the magic eraser because it does not work with Bitmap images (convert image to Grayscale mode to edit)."; Duotone and Multichannel erase as before)"##,
             enabled: has_pixel_layer,
             run: magic_eraser,
             journal: true,
@@ -267,7 +323,7 @@ pub fn specs() -> Vec<CommandSpec> {
             label: "Background Eraser",
             menu: &[],
             shortcut: None,
-            params: r##"{"points":[[x,y,pressure?],…],"size":px?,"hardness":0..1?,"brush":{…}?,"preset":name?,"sampling":"continuous|once|backgroundSwatch"="continuous","limits":"discontiguous|contiguous|findEdges"="contiguous","tolerance":0..100=50,"protectForegroundColor":bool=false,"seed":u64?}"##,
+            params: r##"{"points":[[x,y,pressure?],…],"size":px?,"hardness":0..1?,"brush":{…}?,"preset":name?,"sampling":"continuous|once|backgroundSwatch"="continuous","limits":"discontiguous|contiguous|findEdges"="contiguous","tolerance":1..100=50,"protectForegroundColor":bool=false,"seed":u64?}"##,
             enabled: has_pixel_layer,
             run: background_eraser,
             journal: true,
@@ -276,4 +332,15 @@ pub fn specs() -> Vec<CommandSpec> {
 }
 
 #[cfg(test)]
+mod magic_eraser_mode_refusal_tests;
+#[cfg(test)]
+mod magic_eraser_tolerance_tests;
+#[cfg(test)]
 mod tests;
+#[cfg(test)]
+#[path = "background_eraser_transparency_lock_tests.rs"]
+mod transparency_lock_tests;
+
+#[cfg(test)]
+#[path = "background_eraser_channel_target_tests.rs"]
+mod channel_target_tests;

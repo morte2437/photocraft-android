@@ -43,11 +43,18 @@ fn eraser_on_background_paints_background_colour_at_every_depth_and_mode() {
             erase(&mut s, json!({})).unwrap_or_else(|e| panic!("{mode}/{depth}: {e}"));
             let got = layer_px(&s, 20, 10);
             assert_eq!(got[3], 1.0, "{mode}/{depth}: the Background stays opaque");
-            // Exactly what the Brush paints with the background colour (CMYK and Gray documents
-            // hold the colour converted into their mode).
-            let mut brush = doc(mode, depth);
-            brush.execute("paint.stroke", json!({"points": [[2, 10], [38, 10]], "size": 8, "hardness": 1.0, "color": "#ff0000"})).unwrap();
-            assert!(close(got, layer_px(&brush, 20, 10)), "{mode}/{depth}: got {got:?}");
+            if mode == "gray" {
+                // A Gray document takes the background swatch through the sRGB tone curve, as the
+                // reference's Eraser paints it (#11940): pure red is grey 130. The Brush's own
+                // conversion of a colour into Gray was not measured and stays as it was.
+                assert!(close(got, [0.51, 0.51, 0.51, 1.0]), "{mode}/{depth}: got {got:?}");
+            } else {
+                // Exactly what the Brush paints with the background colour (CMYK documents hold
+                // the colour converted into their mode).
+                let mut brush = doc(mode, depth);
+                brush.execute("paint.stroke", json!({"points": [[2, 10], [38, 10]], "size": 8, "hardness": 1.0, "color": "#ff0000"})).unwrap();
+                assert!(close(got, layer_px(&brush, 20, 10)), "{mode}/{depth}: got {got:?}");
+            }
             assert!(!close(got, before), "{mode}/{depth}: the stroke shows");
             if mode == "rgb" {
                 assert!(close(got, [1.0, 0.0, 0.0, 1.0]), "{mode}/{depth}: got {got:?}");

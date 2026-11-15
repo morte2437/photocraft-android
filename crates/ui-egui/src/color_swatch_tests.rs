@@ -94,7 +94,8 @@ fn note_and_count_colours_open_the_color_picker() {
         app.ui.tool = Tool::Count;
         app.run("count.newGroup", json!({})).unwrap();
     });
-    pick(&mut h, "Color");
+    // The Count swatch is "Count group color", its picker "Color Picker (Count Color)" (#11765).
+    assert_eq!(pick(&mut h, "Count group color"), crate::color_picker_ui::title_for("Count Color"));
     let st = h.state().session.active().unwrap();
     let m = &st.doc.measurement;
     let g = &m.count_groups[m.active_count_group];

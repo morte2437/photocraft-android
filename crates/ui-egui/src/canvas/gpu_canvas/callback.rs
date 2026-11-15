@@ -162,6 +162,7 @@ impl CallbackTrait for CanvasCallback {
         Vec::new()
     }
 
+    /// Draw this view's visible tiles inside the clipped canvas.
     fn paint(&self, info: egui::PaintCallbackInfo, pass: &mut wgpu::RenderPass<'static>, resources: &CallbackResources) {
         let Some(res) = resources.get::<Resources>() else { return };
         if !res.health.is_ok() {
@@ -176,7 +177,7 @@ impl CallbackTrait for CanvasCallback {
         // Work in whole-screen pixel coordinates; the scissor does the clipping.
         pass.set_viewport(0.0, 0.0, sw as f32, sh as f32, 0.0, 1.0);
         pass.set_scissor_rect(clip.left_px.max(0) as u32, clip.top_px.max(0) as u32, clip.width_px as u32, clip.height_px as u32);
-        pass.set_bind_group(0, &view.bind_group, &[]);
+        pass.set_bind_group(0, &view.bind_group, &[0]);
         if self.params.shadow {
             pass.set_pipeline(&res.shadow_pipeline);
             pass.draw(0..6, 0..1);
@@ -200,7 +201,7 @@ impl CallbackTrait for CanvasCallback {
             if x1 < cx0 || y1 < cy0 || x0 > cx1 || y0 > cy1 {
                 continue;
             }
-            pass.set_bind_group(1, &t.bind_group, &[]);
+            pass.set_bind_group(1, &t.bind_group, &[0]);
             pass.draw(0..6, 0..1);
         }
     }

@@ -24,6 +24,7 @@ pub mod effects;
 pub mod fill_layout;
 pub mod filter_mask;
 pub mod gradient_fill;
+pub mod lut_rows;
 pub mod masks;
 pub mod multichannel;
 pub mod native;
@@ -32,6 +33,7 @@ pub mod pattern;
 pub mod proxy;
 pub mod psblend;
 pub mod shape_split;
+pub mod smart_mix;
 mod uniform;
 pub mod viewport;
 
@@ -64,8 +66,8 @@ use ctx::{Ctx, prepare_effects};
 use ctx::{LayerKeys, PREPARE_DEPTH, effect_layers, prepare_tones};
 use extents::mask_vals;
 pub use extents::{
-    change_bounds, change_bounds_in, composite_bounds, effect_outline, effect_source_bounds, effects_frame, hard_shape_bounds, layer_bounds, paint_bounds,
-    relayout_damage, shape_bounds, soft_shape_frame, transparent_outside,
+    Ancestors, Placement, adjustment_reach, change_bounds, change_bounds_in, composite_bounds, effect_outline, effect_source_bounds, effects_frame,
+    hard_shape_bounds, layer_bounds, layer_change_bounds, paint_bounds, relayout_damage, shape_bounds, siblings_of, soft_shape_frame, transparent_outside,
 };
 #[cfg(test)]
 use extents::{mask_k, shapeless_stroke_bounds, trim_to_painted};
@@ -74,7 +76,9 @@ pub use fx_cache::{
 };
 #[cfg(test)]
 use fx_cache::{effect_maps, effect_region, fx_region_bytes};
-pub use reduced::{PROXY_THUMBNAIL_PIXELS, render_reduced, render_reduced_damage, render_reduced_rect, thumbnail, thumbnail_buffer, thumbnail_size};
+pub use reduced::{
+    PROXY_THUMBNAIL_PIXELS, render_reduced, render_reduced_damage, render_reduced_rect, thumbnail, thumbnail_buffer, thumbnail_proxy, thumbnail_size,
+};
 #[cfg(test)]
 use reduced::{ReducedStats, render_reduced_in_bands, render_reduced_with};
 use render::in_blend_space;
@@ -82,8 +86,8 @@ use render::in_blend_space;
 use render::render_tiled_with;
 pub(crate) use render::visible_layers;
 pub use render::{
-    BAND_PIXELS, MAX_RENDER_PIXELS, band_rows_for, cmyk_space, composite_to_surface, flatten, flatten_to_surface, render, render_bands, render_layer,
-    render_layer_in, render_tiled,
+    BAND_PIXELS, MAX_RENDER_PIXELS, band_rows_for, cmyk_space, composite_to_surface, composite_to_surface_with_interrupt, flatten, flatten_to_surface, render,
+    render_bands, render_layer, render_layer_in, render_tiled,
 };
 
 /// Straight-alpha RGBA float buffer covering a rectangle.

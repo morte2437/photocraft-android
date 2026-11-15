@@ -3,7 +3,7 @@
 PhotoCraft loads and saves action sets in the reference application's `.atn` format: Load Actions and
 Save Actions in the Actions panel menu, `actions.load` / `actions.save` for agents, and
 `photocraft batch --actions set.atn` on the command line. Reading and writing the file lives in
-`photocraft-psd` (`crates/psd/src/atn.rs`, version 16 sets, exact round trip); the mapping between the
+`craft-psd` (`crates/psd/src/atn.rs`, version 16 sets, exact round trip); the mapping between the
 application's events and PhotoCraft commands lives in `photocraft-engine`
 (`crates/engine/src/cmd/atn_cmds/`, table `EVENTS` in `events.rs`).
 
@@ -25,12 +25,30 @@ share the outer action's entry, and a failing or Stop step keeps the completed
 prefix. A play with no document change adds no entry and preserves redo.
 `actions.setHistory {"singleState":false}` restores per-step history. The option
 is saved as `actions.createSingleHistoryState` in preferences and defaults to true
-when loading older preferences. It is separate from Playback Options' performance
-modes; the Playback Options dialog can use the same setting when #5212 lands.
+when loading older preferences.
+
+The Actions panel menu's **Playback Options…** (enabled with nothing selected) sets it together
+with the performance mode: Accelerated (default), Step by Step, or Pause For 1 to 60 whole
+seconds, saved as `actions.performance` (`accelerated` / `step` / `pause`) and
+`actions.pauseSeconds` and set by `actions.setPlayback`. Measured 2026-11-05: one Play plays the
+whole action in every mode; Step by Step waits about 1.15 s between steps and Pause For adds its
+seconds to that, with no wait before the first step or after the last; with the history option on
+it is still one `Action: <name>` state. PhotoCraft waits 1 s plus Pause For's seconds and redraws
+between steps; Esc and the panel's Stop button end the play there keeping the applied steps (the
+reference application's Stop does the same). Agents, the CLI and Batch always play at once.
+Pause For Audio Annotation (Mac only) is not offered.
 
 Step-dialog confirmation joins the original play only while its document and
 history still match the paused state. Cancel keeps the completed prefix; an
 intervening edit or document switch prevents the stale dialog from applying.
+A Stop step (`Stop`, `Msge` message, `Cntn` Allow Continue) with its dialog toggle on shows a
+window titled Message with the recorded text and Continue (the default) and Stop, or Stop alone
+without Allow Continue; Stop keeps the steps already applied. With the toggle off the step ends
+playback silently, whatever `Cntn` says. Insert Stop… turns the toggle on. Confirming a dialog
+inside a called action (Play Action step) finishes that action and then continues each caller after
+its call, as one history state. Agents and headless playback keep the engine's rule: Allow Continue
+continues, otherwise the step fails. Measured 2026-11-05.
+
 Batch and droplets group each processed document independently under the action's
 name and use the same saved option.
 Existing non-linear History ordering and visibility options continue to apply.
@@ -68,7 +86,12 @@ row; the action still adds only one Undo entry.
 | (string ID only) | collapseAllGroupsEvent | Collapse All Groups | `layer.setExpanded` |
 | `ClrB` | colorBalance | Color Balance | `image.adjustments.colorBalance` |
 | `ClrR` | colorRange | Color Range | `select.colorRange` |
+| (string ID only) | colorLookup | Color Lookup (embedded 3D LUT forms) | `image.adjustments.colorLookup` |
+| `Btch` | batch | Batch (supported folder and naming forms) | `file.automate.batch` |
+| `CrtD` | (no string ID) | Create Droplet (destination Folder with Override Action "Save As"; other forms stay kept steps) | `file.automate.createDroplet` |
+| (string ID only) | shapeBlur | Shape Blur (custom shape by installed ID) | `filter.blur.shapeBlur` |
 | (string ID only) | cafWorkspace | Content-Aware Fill | `edit.contentAwareFill` |
+| (string ID only) | perspectiveWarpTransform | Perspective Warp (indexed layout and warp planes) | `edit.perspectiveWarp` |
 | `Cntc` | contract | Contract | `select.modify.contract` |
 | `CnvM` | convertMode | Convert Mode | `image.mode.rgb`, `image.mode.grayscale`, `image.mode.cmyk`, `image.mode.lab`, `image.mode.multichannel`, `image.mode.bits8`, `image.mode.bits16`, `image.mode.bits32`, `image.mode.bitmap` |
 | (string ID only) | convertToProfile | Convert to Profile | `edit.convertToProfile` |
@@ -124,7 +147,8 @@ row; the action still adds only one Undo entry.
 | `CtTL` | cutToLayer | Layer Via Cut | `layer.new.layerViaCut` |
 | `LnsF` | lensFlare | Lens Flare | `filter.render.lensFlare` |
 | `Lvls` | levels | Levels | `image.adjustments.levels`, `image.autoTone`, `image.autoContrast` |
-| `Mk  ` | make | Make | `layer.layerStyle.createLayer`, `layer.new.layer`, `layer.new.group`, `layer.groupLayers`, `layer.duplicate`, `layer.new.layerViaCopy`, `layer.new.layerViaCut`, `layer.newFillLayer.solidColor`, `layer.newFillLayer.pattern`, `layer.newAdjustmentLayer.levels`, `layer.newAdjustmentLayer.curves`, `layer.newAdjustmentLayer.hueSaturation`, `layer.newAdjustmentLayer.brightnessContrast`, `layer.newAdjustmentLayer.threshold`, `layer.newAdjustmentLayer.posterize`, `layer.newAdjustmentLayer.invert`, `layer.newAdjustmentLayer.colorBalance`, `layer.newAdjustmentLayer.vibrance`, `layer.newAdjustmentLayer.exposure`, `layer.newAdjustmentLayer.photoFilter`, `layer.newAdjustmentLayer.blackWhite`, `layer.newAdjustmentLayer.channelMixer`, `layer.newAdjustmentLayer.selectiveColor`, `layer.newAdjustmentLayer.gradientMap`, `layer.layerMask.revealAll`, `layer.layerMask.hideAll`, `layer.layerMask.revealSelection`, `layer.layerMask.hideSelection`, `file.new`, `file.newFromClipboard`, `history.newSnapshot`, `type.convertToShape`, `type.createWorkPath` |
+| `Mk  ` | make | Make | `image.calculations`, `layer.layerStyle.createLayer`, `layer.new.layer`, `layer.new.group`, `layer.groupLayers`, `layer.new.frameFromLayers` (Layer › New › Frame from Layers), `layer.duplicate`, `layer.new.layerViaCopy`, `layer.new.layerViaCut`, `layer.newFillLayer.solidColor`, `layer.newFillLayer.pattern`, `layer.newFillLayer.gradient`, `layer.newAdjustmentLayer.levels`, `layer.newAdjustmentLayer.curves`, `layer.newAdjustmentLayer.hueSaturation`, `layer.newAdjustmentLayer.brightnessContrast`, `layer.newAdjustmentLayer.threshold`, `layer.newAdjustmentLayer.posterize`, `layer.newAdjustmentLayer.invert`, `layer.newAdjustmentLayer.colorBalance`, `layer.newAdjustmentLayer.vibrance`, `layer.newAdjustmentLayer.exposure`, `layer.newAdjustmentLayer.photoFilter`, `layer.newAdjustmentLayer.blackWhite`, `layer.newAdjustmentLayer.channelMixer`, `layer.newAdjustmentLayer.selectiveColor`, `layer.newAdjustmentLayer.gradientMap`, `layer.layerMask.revealAll`, `layer.layerMask.hideAll`, `layer.layerMask.revealSelection`, `layer.layerMask.hideSelection`, `file.new`, `file.newFromClipboard`, `history.newSnapshot`, `type.convertToShape`, `type.createWorkPath` |
+| `Mk  ` | make | Make | `image.calculations`, `layer.layerStyle.createLayer`, `layer.new.layer`, `layer.new.group`, `layer.groupLayers`, `layer.duplicate`, `layer.new.layerViaCopy`, `layer.new.layerViaCut`, `layer.newFillLayer.solidColor`, `layer.newFillLayer.pattern`, `layer.newFillLayer.gradient`, `layer.newAdjustmentLayer.levels`, `layer.newAdjustmentLayer.curves`, `layer.newAdjustmentLayer.hueSaturation`, `layer.newAdjustmentLayer.brightnessContrast`, `layer.newAdjustmentLayer.threshold`, `layer.newAdjustmentLayer.posterize`, `layer.newAdjustmentLayer.invert`, `layer.newAdjustmentLayer.colorBalance`, `layer.newAdjustmentLayer.vibrance`, `layer.newAdjustmentLayer.exposure`, `layer.newAdjustmentLayer.photoFilter`, `layer.newAdjustmentLayer.blackWhite`, `layer.newAdjustmentLayer.channelMixer`, `layer.newAdjustmentLayer.selectiveColor`, `layer.newAdjustmentLayer.gradientMap`, `layer.layerMask.revealAll`, `layer.layerMask.hideAll`, `layer.layerMask.revealSelection`, `layer.layerMask.hideSelection`, `file.new`, `file.newFromClipboard`, `history.newSnapshot`, `type.convertToShape`, `type.createWorkPath`, `layer.new.artboard` (Layer › New › Artboard), `layer.new.artboardFromLayers` (Layer › New › Artboard from Layers) |
 | (string ID only) | animationFramesFromLayers | Make Frames from Layers |  |
 | (string ID only) | matchColor | Match Color | `image.adjustments.matchColor` |
 | `Mxm ` | maximum | Maximum | `filter.other.maximum` |
@@ -167,7 +191,7 @@ row; the action still adds only one Undo entry.
 | (string ID only) | smartBrushWorkspace | Select and Mask | `select.refineEdge` |
 | (string ID only) | autoCutout | Select Subject | `select.subject` |
 | `SlcC` | selectiveColor | Selective Color | `image.adjustments.selectiveColor` |
-| `setd` | set | Set | `select.all`, `select.deselect`, `select.reselect`, `select.loadSelection`, `select.rect`, `select.lasso`, `select.editInQuickMaskMode`, `tools.setColors`, `layer.setProps`, `layer.renameLayer`, `layer.setLabelColor`, `layer.setAdjustment`, `layer.fill.pattern.set`, `layer.new.layerFromBackground`, `layer.layerStyle.blendingOptions`, `layer.smartFilter.blendingOptions` |
+| `setd` | set | Set | `select.all`, `select.deselect`, `select.reselect`, `select.loadSelection`, `select.rect`, `select.lasso`, `select.editInQuickMaskMode`, `tools.setColors`, `layer.setProps`, `layer.renameLayer`, `layer.setLabelColor`, `layer.setAdjustment`, `layer.fill.pattern.set`, `gradient.fill.set`, `layer.new.layerFromBackground`, `layer.layerStyle.blendingOptions`, `layer.smartFilter.blendingOptions`, `image.analysis.setMeasurementScale` (Set Measurement Scale › Custom) |
 | (string ID only) | adaptCorrect | Shadows/Highlights | `image.adjustments.shadowsHighlights` |
 | `Shrp` | sharpen | Sharpen | `filter.sharpen.sharpen` |
 | `ShrE` | sharpenEdges | Sharpen Edges | `filter.sharpen.sharpenEdges` |
@@ -192,6 +216,8 @@ row; the action still adds only one Undo entry.
 | (string ID only) | ungroupLayersEvent | Ungroup Layers | `layer.ungroupLayers` |
 | `UnsM` | unsharpMask | Unsharp Mask | `filter.sharpen.unsharpMask` |
 | (string ID only) | updatePlacedLayer | Update Smart Objects | `layer.smartObjects.updateModifiedContent` |
+| (string ID only) | applyImageStackPluginRenderer | Smart Object Stack Mode | `layer.smartObjects.stackMode.*` (eleven measured modes) |
+| (string ID only) | imageStackConvertSmartObject | Stack Mode: None | `layer.smartObjects.stackMode.none` |
 | (string ID only) | vibrance | Vibrance | `image.adjustments.vibrance` |
 | `Wave` | wave | Wave | `filter.distort.wave` |
 | `ZgZg` | zigZag | ZigZag | `filter.distort.zigZag` |
@@ -206,11 +232,15 @@ row; the action still adds only one Undo entry.
 | (string ID only) | placedLayerUpdateAllModified | Update All Modified Content | `layer.smartObjects.updateAllModifiedContent` |
 | (string ID only) | rasterizeAll | Rasterize All Layers | `layer.rasterize.allLayers` |
 | (string ID only) | addBlankVideoLayer | New Blank Video Layer | `layer.videoLayers.newBlankVideoLayer` |
+| (string ID only) | insertBlankFrame | Insert Blank Frame | `layer.videoLayers.insertBlankFrame` |
+| (string ID only) | duplicateFrame | Duplicate Frame | `layer.videoLayers.duplicateFrame` |
+| (string ID only) | deleteFrame | Delete Frame | `layer.videoLayers.deleteFrame` |
 | (string ID only) | isolateLayers | Isolate Layers | `select.isolateLayers` |
 | (string ID only) | textLoadDefaultTypeStyles | Load Default Type Styles | `type.loadDefaultTypeStyles` |
 | (string ID only) | textSaveDefaultTypeStyles | Save Default Type Styles | `type.saveDefaultTypeStyles` |
 | (string ID only) | recordMeasurements | Record Measurements | `image.analysis.recordMeasurements` |
 | (string ID only) | CropPhotosAuto0001 | Crop and Straighten Photos | `file.automate.cropAndStraightenPhotos` |
+| (string ID only) | 3caa3434-cb67-11d1-bc43-0060b0a13dc4 | Fit Image (script event; pixel box sides) | `file.automate.fitImage` |
 | (string ID only) | placedLayerExportContents | Export Contents | `layer.smartObjects.exportContents` |
 | (string ID only) | placedLayerConvertToLinked | Convert to Linked | `layer.smartObjects.convertToLinked` |
 | (string ID only) | placedLayerRelinkToFile | Relink to File | `layer.smartObjects.relinkToFile` |
@@ -244,6 +274,20 @@ options are refused on export. Playback uses the native command's preconditions
 and current state. Isolate Layers toggles the panel view; type defaults remain
 session settings; Record Measurements uses the current measurement configuration.
 
+Layer › New › Frame from Layers is a Make with `null` = the class
+`framedGroupSection`, `From` = the layer by name and `Nm  ` = the frame's name. It
+plays as `layer.new.frameFromLayers` on that layer, and the frame fits that
+layer's bounds whatever is selected. The dialog's width and height are not in the
+step. `layerSectionStart` and `layerSectionEnd` are ids of the recording session:
+a loaded step saves back its recorded descriptor, session ids included, while it
+still frames the same layer with the same name, and a step recorded in PhotoCraft
+writes `null`, `From` and `Nm  ` (only for a name that isn't blank) without them. A
+native step without a layer of its own frames the selected layers and writes
+`From` = the target layer, a form the recordings don't show. Another `From`, a
+repeated or extra key, or a value of another type stays a kept step; a native step
+with a layer by id, or with the group options the command passes on (colour, mode,
+opacity), refuses export.
+
 Link Layers plays as the toggle the reference application performs (played twice on the same
 layers it links, then unlinks them; see the measurements below). Unlink is explicit and
 idempotent: it keeps an already unlinked selection unlinked and clears singleton link groups.
@@ -257,13 +301,42 @@ identity, and is omitted on save under the normalization rule below. Undecodable
 paths or extra keys keep the entire step. File access happens at playback; a
 missing or unusable file reports the native command's error.
 
+Stack Mode uses the active Smart Object. For `applyImageStackPluginRenderer`,
+the measured `imageStackPlugin` class selects the mode; the localized `Nm  `
+label is preserved on save. Stack Mode: None uses
+`imageStackConvertSmartObject` with no settings. Save preserves whether an
+imported None step had an empty descriptor or no descriptor. Unknown classes,
+extra settings and unrecognized descriptor forms stay as kept steps. Native
+steps with explicit layer targets cannot be exported to these forms.
+
+Insert Blank Frame, Duplicate Frame and Delete Frame use the active video layer
+and current playhead. They take no settings. Extra keys or unrecognized
+descriptor metadata stay as kept steps. Save retains whether the recorded item
+had an empty descriptor or no descriptor.
+
 Convert Type to Shape retains Make's `contentLayer` class reference and `Usng`
 target `textLayer` reference; it does not export a separate `convertToShape`
 event. Other Make mappings, including Solid Color and Pattern fills, are unchanged.
-Shape Blur maps only the measured radius form (`Rds ` pixels, 5–1000; omitted
-radius uses the native factory value 10). Later dialog forms carrying
-`customShape` or `keyOriginType` remain kept. Native explicit shape choices cannot
-be saved as radius-only descriptors; no custom asset lookup or new kernel is added.
+Shape Blur maps the measured radius form (`Rds ` pixels, 5–1000; omitted
+radius uses the native factory value 10) and the recorded custom-shape form below.
+Custom-shape playback requires the asset selected by its ID to be installed.
+Other unsupported dialog fields or origin values remain kept. Native explicit
+shape choices cannot be saved as radius-only descriptors.
+
+Layer › New › Artboard and Layer › New › Artboard from Layers are a Make with
+`null` = the class `artboardSection`. With `artboardRect` (`Top `, `Left`,
+`Btom`, `Rght`: doubles holding whole pixels, a board of positive size in the
+32-bit range) the step plays as `layer.new.artboard` with that `rect`; with `From`
+= the target layer it plays as `layer.new.artboardFromLayers` on the selected
+layers, at their bounds. `Nm  ` is the board's name. `layerSectionStart` and
+`layerSectionEnd` are ids of the recording session: a loaded step saves back its
+recorded descriptor, session ids included, while it still makes the same board,
+and a step recorded in PhotoCraft writes the other keys without them (`Nm  ` only
+for a name of its own). Both or neither of `artboardRect` and `From`, another
+`From` target, a repeated or extra key, or a value of another type stays a kept
+step. The step records no background, preset or size of the dialog's own, so a
+native step that sets one of those, takes the Background into the first board, or
+(New Artboard) has no position of its own refuses export.
 
 Crop and Straighten Photos executes the native scan operation once, creating one
 document per photo found inside the selection and leaving the source unchanged.
@@ -272,6 +345,52 @@ inherited group state, and remains unavailable for Indexed Color documents.
 The separate `CropPhotos0001` helper remains a complete kept Photoshop step.
 Playback stops at that enabled helper before subsequent duplicate/crop steps can
 run. This covers the parent event, not complete recordings with generated helpers.
+
+Fit Image is the script event `3caa3434-cb67-11d1-bc43-0060b0a13dc4` that follows
+the Image Size step it runs, which stays a step of its own. `Wdth` and
+`Hght` (pixel unit floats above 0) and `limit` (Don't Enlarge) play as
+`file.automate.fitImage`. With `limit` true it leaves a document that already fits
+unchanged; with `limit` false it enlarges a smaller document to fit the box.
+The descriptor's class is `cjsp` with an empty class name (measured, in two UI
+languages). `Msge` is the script's own text, not a setting: the reference plays the
+step the same with the recorded text, an empty one, unrelated text or the key
+removed, so the three-key form without `Msge` maps too. A loaded step saves back
+with its recorded descriptor (message or none, class, key order), and once its
+settings change it saves them into that descriptor. A step recorded in PhotoCraft
+saves class `cjsp` and an empty `Msge`. Another unit, a side of 0, a repeated `Msge`,
+a missing `Wdth`, `Hght` or `limit`, or an extra key stays a kept step. A native
+step with a missing or 0 side (the document's own size) or a resampling method
+other than the default refuses export, because the event has no key for it.
+
+Set Measurement Scale › Custom is a Set of the target document's `measurementScale`
+property. `T   ` holds `pixelLength` (a long above 0), `logicalLength` (a double
+above 0) and `logicalUnits` (text that isn't blank), and the step plays as
+`image.analysis.setMeasurementScale` with preset `custom`. A loaded step saves back
+its recorded descriptor while it still sets the same scale. A step recorded in
+PhotoCraft writes `T   ` with class `measurementScale`, since the recordings don't
+pin that class down. Another target, another value type, a missing or extra key, or
+a value the native command refuses stays a kept step. A native step that reads the
+scale, resets it to the default, leaves a value to the current scale or has a
+fractional pixel length refuses export. Place Scale Marker (a script step) stays a
+kept step.
+
+### Perspective Warp recordings
+
+`perspectiveWarpTransform` maps Layout and Warp to one `edit.perspectiveWarp`
+step. It warps a raster layer in place or adds a Perspective Warp Smart Filter to
+a Smart Object. The active layer, a named layer or the Background can be the
+recorded target.
+
+The recorded fields are `null` (layer target), `Md  ` (`perspectiveWarpMode`:
+`warp`), `referenceRect` (pixel rectangle), `vertices`, `warpedVertices` (document
+pixel points), and `quads` (four indices per plane). Unchanged steps save the
+original descriptor, including its reference rectangle, vertex order and shared
+indices. Playback uses the recorded document-pixel coordinates. A native export
+requires an explicit reference rectangle and representable planes.
+
+Unsupported targets, modes, units, degenerate quads and meshes with different
+corner sharing stay kept steps. Export refuses a changed recorded mesh if the
+stored descriptor no longer describes it.
 
 ### Content-Aware Fill recordings
 
@@ -349,7 +468,7 @@ This is another implemented subset of #10723, not support for its remaining even
   remain independent of translated names; ordinary layer-name references remain names.
 - Close without `Svng` preserves the unanswered save choice. Headless playback refuses to discard a
   changed document. Native `file.close` still defaults to discard; `save: "ask"` opts into this policy.
-- Photo Filter converts recorded Lab colours through `photocraft-cms`.
+- Photo Filter converts recorded Lab colours through `craft-cms`.
 - Direct Vibrance and Gradient Map save as the string events `vibrance` and `gradientMapEvent`.
   Stroke Outside uses `StrL.Otsd`, group Pass Through uses `BlnM.passThrough`, Canvas Size extension
   colours use `FrgC` and `Clr `, and Absolute Colorimetric intent uses `Inte.AClr`.
@@ -406,6 +525,191 @@ supported-event count and the measured unmapped reference.
 | String ID | Label |
 |---|---|
 | animationFramesFromLayers | Make Frames from Layers |
+
+### Calculations through Make Channel
+
+The recorded `Nw  ` class `Chnl` with an `Usng` object of class `Clcl` maps to
+`image.calculations`, creating a new alpha channel in one undoable edit. The
+supported object writes `T   `, explicit `Clcl` (`Clcn`), optional `Scl ` (double
+1..2), optional `Ofst` (integer -255..255), then `Src2` in recorded order.
+Colour-channel enumerations, literal alpha-channel names, single targeted colour
+or alpha channels, explicit merged transparency, and optional merged or named layers retain their identities.
+An omitted layer uses the native source document's existing merged-image semantics.
+
+The nested types are corroborated by firsthand ScriptListener output for
+[Add with target and Green](https://community.adobe.com/questions-712/combining-channels-1103103).
+The later [transparency recording](https://community.adobe.com/questions-712/generating-an-alpha-channel-for-document-1102257)
+corroborates the Make/Clcl structure but omits the blend key. Omitted blends,
+other transparency and mask sources, other-document references, unknown settings and
+unrepresented reference forms remain whole preserved steps. Composite, multiple
+colour and mask targets fail before mutation when a supported step requests the
+current channel. These limits remain open under #10705; fresh Photoshop pixel
+parity has not been measured.
+
+### Custom and Fibers dialog filters
+
+Custom uses the mapping from [#10631 by @hectorviov](https://github.com/storytold/photocraft/pull/10631),
+revision `4ed3f5b5911e2dc50655fc68cd44da68dab7c219`. It retains the 25 integer
+kernel cells, scale 1..9999 and offset -9999..9999. Fibers uses the corresponding
+part of [#10620](https://github.com/storytold/photocraft/pull/10620), revision
+`33ee38b43165610b295e91f8b99841c591cf97b8`, with the now-measured variance and
+strength limits 1..64. Its seed retains all 32 bits. Both native commands already
+support these ranges. Custom requires all 25 kernel cells; omitted scale and offset
+use 1 and 0. Fibers defaults to variance 16 and strength 4 and captures an omitted seed
+once for later playback and save. Unrepresented types, duplicate fields, settings or
+values that would clamp stay complete preserved steps; export refuses native settings
+that the recorded form cannot retain.
+
+### Color Lookup with an embedded LUT
+
+Recorded `colorLookup` steps with a `3DLUT` lookup type, a declared CUBE/3DL/LOOK
+format, embedded file bytes, a file name and an explicit dither flag map to
+`image.adjustments.colorLookup`. The existing LUT parsers read the original bytes,
+including UTF-16 LOOK files. The recorded path is metadata; playback uses the
+embedded file and does not read that path. The native command also accepts
+`dataEncoding:"base64"` and `lutFormat:"cube|3dl|look"` for embedded files whose
+names do not identify their format. Existing text input remains supported.
+
+Save retains the original key order, types, names and file bytes. The recorded
+metadata template excludes the file data, so the action does not store a second
+copy of a large LUT. Unrepresented native option changes refuse export. Abstract
+and device-link profiles, nonempty ICC processing data, unknown formats and
+unknown settings remain complete preserved steps; these parts of #10705 remain
+unfinished. The native command continues to refuse non-default input domains.
+Nonlinear 3DL input shapers use Hector Villarreal's existing #9170 implementation
+for #8982. Shapers the parser cannot retain stay complete preserved steps.
+PSD-specific LUT Data Order and Table Order handling is separately tracked by
+#9126 and #9218.
+
+### Shape Blur with a recorded custom shape
+
+The measured `shapeBlur` form contains a pixel radius, a `customShape` object
+with `"Nm  "` and `Idnt` text, and optionally the recorded `keyOriginType` value 9.
+The nested object class is corroborated by
+[ag-psd's public descriptor definitions](https://github.com/Agamnentzar/ag-psd/blob/master/src/descriptor.ts).
+The ID selects the installed shape even after a rename. If that asset is absent,
+playback fails without applying a blur; it never substitutes a shape with
+the same name. CSH libraries use the backend of
+[@jonathanwxh-cell's #5493](https://github.com/storytold/photocraft/pull/5493),
+ported from revision `43920ab7804cd386b91b319b33a2a8d0832d4d91` with its bounded
+reader and import tests. Imported IDs retain their exact text. Empty IDs become
+anonymous presets usable by name; repeated IDs resolve only when all matching
+presets have identical geometry. Conflicting geometry fails ID lookup.
+
+The native command rasterizes the selected vector shape as a normalized coverage
+kernel, retaining its aspect ratio and orientation. This follows the
+[documented use of custom shape presets as blur kernels](https://helpx.adobe.com/ee/photoshop/using/filter-effects-reference.html).
+It also accepts `shapeName` or portable `shapePath` geometry. Smart Filters keep
+the vector geometry so native saves can render without the preset library.
+The built-in shape choices keep their existing kernel path. Fresh Photoshop
+pixel parity has not been measured.
+
+Unknown fields, other origin values and unrepresented descriptor forms remain
+whole preserved steps. Export refuses native-only geometry and target changes
+that the recorded form cannot carry. The shared event dispatch also retains current main's radius-only recordings;
+installed custom-shape references use the bounded converter above.
+
+### Batch naming and the existing Batch command
+
+The Batch mapping builds on [#7170 by @HirthikBalaji](https://github.com/storytold/photocraft/pull/7170),
+with original revision `ee4966260b08506336b2d8aac64488a754ca5171` retained in the
+commit history. It is adapted to the current command modules and Batch runner,
+including named actions, set-qualified references, recursion limits and output
+protection. The serial-letter conversion alone comes from
+[#4579 by @FabioLissi](https://github.com/storytold/photocraft/pull/4579), revision
+`720a1e4b9c6fac398d2b892bdfe7a3ffc849f4ea`; its broader CLI and UI changes are
+not included.
+
+Structured `namingComponents` represent every component in the measured Batch
+table, plus literal text. `Strt` is inside `fileNamingRules`. The three compatibility
+flags are retained and checked before output is written. Unknown components,
+types and settings keep the entire step. The original descriptor also retains
+its field order and metadata when unedited.
+
+The component sequence determines the complete filename, including an extension
+only when a component supplies it. The encoded image format is independent of
+that name: a literal `.jpg` on a PNG input still writes PNG data. Dates use chrono
+and the native Batch command's existing UTC date.
+Serial letters count from the first input independently of the numeric starting
+serial, as [Adobe documents](https://helpx.adobe.com/photoshop/desktop/automate-tasks/process-a-batch-of-files/batch-and-droplet-processing-options.html).
+Native templates retain current main's complete-filename tokens and flat output;
+recorded folder steps use flat structured output. Explicit structured naming can
+retain relative subfolders when flatOutput is false. Recorded/structured folder steps retain duplicate output refusal; ordinary
+native Batch keeps current main's later-file-wins behavior. Image Processor and
+other callers retain their existing collision guards.
+
+Recorded folder steps set `includeNonImages`: ordinary non-image files and
+unsupported RAW extensions become per-file errors instead of being skipped or
+opened through an embedded preview. Native folder inputs still select images
+only by default; explicit file arrays are unchanged. Without an error log,
+recorded steps also set `stopOnError`: the first failed input is reported,
+earlier outputs stay saved and later inputs are not processed. Native Batch
+continues by default. Export requires both recorded policies to preserve them.
+Any reported file error fails a recorded Batch step, so its parent action does
+not run later steps. Parent failures retain the child's saved files and per-file
+errors, including when an outer Batch fails. A direct scripting call still
+returns the collected file results successfully, as measured in the reference
+application.
+
+Save and Close support builds on
+[#10026 by @edaldridgePersonal](https://github.com/storytold/photocraft/pull/10026)
+(revision b96be5300cfa7308f832362fe46295af6895cf91). Recorded SvAn true writes each
+successful result to the same source path and format. Existing Save snapshots
+remain usable after a recorded Close; a failed save leaves that source intact.
+Folder remains the native default. Naming fields affect Folder output only.
+Save and Close keeps TIFF layers by default; explicit tiffLayers false is
+refused when it would lose layer data. TIFF color modes the writer cannot
+preserve are refused. Existing Folder save defaults are unchanged.
+
+Save and Close assumes that other processes do not modify or replace its inputs
+during the batch. The source-data checks do not provide concurrent-write protection.
+
+Save and Close refuses format conversion, sources already open in the caller,
+and a result from a different document. An input must have an encoder for its
+exact extension; import-only/unknown/extensionless inputs require Save As and
+fail instead of producing guessed sibling files. Caller documents and editing
+state stay unchanged.
+
+Override Open starts each input without a document and redirects executed Open
+steps to that input, preserving their represented native options. Called actions,
+conditionals and scripts share that input binding; nested Batch runs keep their
+own binding. Authorization sees the redirected path before opening. No executed
+Open is a per-file failure. Save and Close accepts only a document opened from
+that input or its recorded Save snapshot, including after Close.
+
+The Open ATN converter admits only its represented path field. Richer recorded
+Open settings remain complete steps; native format/decoder options execute but
+are refused on ATN export until their wire representation is supported. This does
+not claim parity for unrepresented Open options. Native Batch keeps automatic
+opening when overrideOpen is false or omitted.
+
+Suppress Color Profile Warnings applies a private snapshot of the caller's color
+and import settings to each scratch input without profile questions. Import
+warnings and the applied color-policy report remain in the Batch result's
+`notices`; file errors still follow the selected error policy. Caller settings
+are not changed. Defaults and recorded Open decoder options remain effective.
+This does not suppress fidelity warnings.
+
+Suppress File Open Options uses the caller's RAW defaults and supported prior
+XMP settings without a dialog. Sensor-stage adjustments use the RAW developer,
+followed by remaining Camera Raw adjustments and the selected workflow profile,
+depth and Smart Object setting. Unsupported prior settings fail the input rather
+than being ignored; this includes absolute white balance, lens and geometry data.
+Only a regular XMP sidecar beside the named RAW file is read; embedded DNG
+settings are not represented. Implicit sidecar reads require a trusted session
+because gated sessions have no sidecar read capability. An unsuppressed profile
+question fails this noninteractive input; Suppress Color Profile Warnings is a
+separate option. Neither source nor XMP is rewritten by opening. This is the
+supported subset, not complete prior-XMP parity.
+
+This maps supported text-path folder forms. Alias bytes, open-document sources
+and error logs remain preserved steps. Save and Close with unrepresented
+override combinations also remains preserved. For an
+admitted recorded Save As configuration, native preflight refuses unrepresented
+save routing: override requires a directly represented Save step,
+and an action with Save steps cannot follow their original destinations without
+override. Unsupported filename rewrites are refused, not guessed. These limits
+remain open under #10705; this is not full Batch parity.
 
 ### Supported direct adjustment settings
 
@@ -508,6 +812,21 @@ differences that do not change what a step does.
   `forceNotify`) and default flags (`MkVs` false, `Adjs` false) are not written back.
 - An adjustment layer's values equal to the defaults are not written back (other values are).
 - Colours are kept as 8-bit values (51.0031 becomes 51); gradient names become "Custom".
+- A loaded Gradient Fill Make or Set (`gradientLayer`) saves back as the recorded descriptor until
+  it is edited. Otherwise it is written from the params: `#rrggbb` stops on 1/4096 locations and
+  whole-percent midpoints; a Set also needs its transparency stops, as the event replaces the whole
+  gradient. Midpoint k is the `Mdpn` of stop k + 1 (the first stop's is 50). A Noise gradient,
+  smoothness below 100 %, a non-classic interpolation, a transparency midpoint, a midpoint outside
+  5..95 %, transparency stops out of range or out of order, and a Set without transparency stops stay
+  Photoshop steps.
+- Blend If (`Blnd` in a layer Set) loads as `layer.layerStyle.blendingOptions`. With only the
+  Blending Options dialog's keys (`Opct`, `fillOpacity`, `Md  `, `Blnd`, the Advanced checkboxes, and
+  the `Lefx` = {`Scl `} its OK records on a layer without effects) the Set is one step and saves back
+  as one Set; with any other key, those go through `layer.setProps`. Slider values are whole levels
+  0..255 in order, `SrcB`/`Srcl`/`SrcW`/`Srcm` for This Layer and `DstB`/`Dstl`/`DstW`/`Dstt` for
+  Underlying Layer (black low, black high, white low, white high; measured in the dialog). The gray
+  channel saves as `Chnl.Gry`; a `Chnl.Cmps` entry loads as gray and saves as `Gry`, as the
+  application's own dialog writes it back.
 - Levels and Curves write the composite as `Chnl.Cmps` (the application skips `Ordn.Trgt`, #8543).
 
 ### Classic Gradient recordings
@@ -722,7 +1041,7 @@ the recorded steps back from the saved Actions panel. Ranges come from the dialo
 |---|---|---|
 | Custom (`Cstm`) | `Scl ` long 1..9999, `Ofst` long -9999..9999, `Mtrx` list of 25 longs -999..999 | Without the dialog the step needs all 25 cells, or the application fails. |
 | Fibers (`Fbrs`) | `Vrnc` long 1..64, `Strg` long 1..64, `RndS` long (seed) | |
-| Displace (`Dspl`) | `HrzS`, `VrtS` long -999..999; `DspM` (`StrF` stretch to fit, or tile); `UndA` (`RptE` repeat edge pixels, or wrap around); `DspF` alias: path of the displacement map (.psd) | The map file is chosen after OK. |
+| Displace (recorded `displace`) | `HrzS` and `VrtS` long -999..999, `DspM.StrF` (stretch to fit), `UndA.RptE` (repeat edge pixels), and `DspF` as `Pth ` | A later Windows recording measured the `txtu` path to the PSD map chosen after OK. |
 | Color Lookup (`colorLookup`) | `lookupType` (`colorLookupType`: `3DLUT`, abstract, device link); `Nm  ` text: the file's path; `Dthr` bool; `profile` raw data (ICC); `LUTFormat` (`LUTFormatType`, e.g. `LUTFormatLOOK`); `LUT3DFileData` raw data: the LUT file itself; `LUT3DFileName` text | The LUT travels inside the step. |
 | Shape Blur (`shapeBlur`) | `Rds ` pixels 5..1000; `customShape` object (`Nm  ` text, `Idnt` text: the shape's id); `keyOriginType` long (9) | |
 | Lighting Effects (`lightFilterLightingEffects`) | `k3DLights` list of lights (`Nm  `, colour `Rd  `/`Grn `/`Bl  ` 0..1, `hots`, `FlOf`, `shdw`, attenuation keys, `Type`, `ison`, `key3DMatrix` raw + floats, `X   `/`Y   `/`Z   `, target `tarx`/`tary`/`tarz`, `key3DPosition`), `key3DCurrentCameraPosition`, `Glos`, `Mtrl`, `Exps`, `AmbB`, `AmbC` RGB, `BmpA`, `BmpC` (texture channel by name, localised: "Ohne" = none), `Wdth`, `Hght` | A dialog-less run returns nothing; only a recording shows the keys. |
@@ -736,10 +1055,7 @@ the recorded steps back from the saved Actions panel. Ranges come from the dialo
 | Convert Mode, several layers, "Don't Flatten" | `T   ` as a **class** (`Grys`), `Fltt` false, `Rstr` false | With `Fltt` and `Rstr` the step plays without the flatten question. |
 | New Group with a colour | `Usng` (`Clr ` label), `layerSectionStart`, `layerSectionEnd`, top-level `Nm  ` | |
 | Shear (`Shr `) | `ShrP` list of `Pnt ` (`Hrzn`, `Vrtc` doubles), `UndA` (`WrpA` wrap around, `RptE` repeat edge pixels), `ShrS` long, `ShrE` long | The dialog writes whole numbers: `Hrzn` -64..63 (dragging past the grid clamps), `Vrtc` 1..128 with the first point at 1 and the last at 128; dragging a point out of the grid deletes it. `ShrS` is 0 and `ShrE` the last point's index (count - 1). Script runs take any value unclamped and crashed on far-off `ShrE`/`ShrS` or a first `Vrtc` below 1. |
-| Gradient tool, default mode | two steps: Make (`null` = class `contentLayer`, `Usng` = `Type` gradient layer object) then Set (`null` = `contentLayer` target, `T   ` = the same object plus `Algn` false) | The object: `Dthr`, `gradientsInterpolationMethod`, `Angl` angle, `Type`, `Scl ` percent, `Ofst` (`Hrzn`, `Vrtc` percent), `Grad`. The new tool makes a gradient fill layer; Make holds the first click, Set the finished drag. |
-| Perspective Warp (`perspectiveWarpTransform`) | `null` = layer target, `Md  ` (`perspectiveWarpMode`: `warp`), `referenceRect` rectangle in pixels, `vertices` list of points in pixels (the layout quad), `warpedVertices` (the same points after warping), `quads` list of `indices` (4 vertex indexes each) | Layout and warp are one step. |
 | Print (`print`) then Print One Copy (`printOneCopy`) | `print`: `null` = reference `printOutput` property of the target document; `printOutput` (`PstS`, `Inte`, `printSixteenBit`, `printerName` text, `printProofSetup`), `printViewProofSetup`, `printOutputOptions` (caption, marks, `Bckg` colour, `BrdT`, `Bld `, `Rslt`, `vectorData`, `PgPs`, `Left`, `Top `, `Scl `, crop rectangle), `osSpecificPrintInfo` raw data, `Cptn` text. `printOneCopy` has no keys. | Pressing Print in the dialog records both steps. |
-| Create Droplet (`CrtD`) | `In  ` alias: the droplet file; `Fldr` bool (include subfolders); `Usng` reference to the action; then the Batch keys below (destination, file naming, error log) when set | The same settings as Batch, with the droplet file instead of a source folder. |
 | Sky Replacement (`skyReplacement`) | `shiftEdge` double, `borderSmoothness` long (fade edge, default 50), `Brgh` long, `temperature` long, `harmonizationOpacity` long (35), `foregroundLightingOpacity` long, `lightingMode` blend mode (`Mltp`), `edgeLightingOpacity` long (70), `skyReplacementOutput` (`skyReplacementOutputToNewSheets` new layers, …), `Idnt` text (the sky preset's id), `Nm  ` text (its name), `File` alias (the sky image) | Scale and Flip are **not** in the step: with 150 % and Flip on, the returned keys were the same. `foregroundLightingOpacity` is computed from the sky (44 and 29 for two skies). Without a chosen sky the dialog returns no keys. |
 
 **Not recordable:** Edit > Purge (no step is recorded; this version's Purge menu has Clipboard,
@@ -861,7 +1177,7 @@ Item, Insert Stop, Insert Conditional, Insert Path; Action Options, Playback Opt
 Recording; Clear All Actions, Reset Actions, Load Actions, Replace Actions, Save Actions; the bundled sets
 (Commands, Frames, Image Effects, LAB Black & White Technique, Production, Star Trails, Text Effects,
 Textures, Video Actions); Close, Close Tab Group. Playback Options: Accelerated, Step by Step, Pause For
-1..60 seconds.
+1..60 seconds, Create a single history state (see Action playback history).
 
 How two menu entries record: **Insert Menu Item** records the chosen menu command's own event with no
 descriptor (Image > Image Size gives an `imageSize` step without settings; playback opens its dialog).
@@ -1559,8 +1875,8 @@ No parameters: the step carries an empty descriptor.
 
 | Key | String ID | Type | Unit | Default | Allowed |
 |---|---|---|---|---|---|
-| `Vrnc` | (none) | integer |  | 16 | not clamped in the step (values are returned unchanged); limits pending, see "Events that need a step recorded through their dialog" |
-| `Strg` | strengthPlugin | integer |  | 4 | not clamped in the step (values are returned unchanged); limits pending, see "Events that need a step recorded through their dialog" |
+| `Vrnc` | (none) | integer |  | 16 | 1 .. 64 (measured in the dialog); out-of-range steps are kept whole |
+| `Strg` | strengthPlugin | integer |  | 4 | 1 .. 64 (measured in the dialog); out-of-range steps are kept whole |
 | `RndS` | randomSeed | integer |  | random | any 32-bit integer; a new random value per recording |
 
 #### Lens Flare
@@ -1583,7 +1899,7 @@ Nested values as recorded (defaults):
 
 ### Group C: The Distort filters (Pinch, Polar Coordinates, Shear, Spherize, Twirl, Wave, ZigZag)
 
-The seven Distort events below map to PhotoCraft's `filter.distort.*` commands for their documented supported forms, including complete Shear curves. Displace needs a displacement map file and is listed separately at the end.
+The Distort events below map to PhotoCraft's `filter.distort.*` commands for their documented supported forms, including complete Shear curves and the recorded Windows Displace form.
 
 #### Pinch
 
@@ -1690,7 +2006,11 @@ Nested values as recorded (defaults):
 
 #### Displace
 
-Displace reads a displacement map from a file chosen in a dialog; record one step and add its keys (file path form) before implementing.
+The TEXT event `displace` with descriptor class `null` maps to `filter.distort.displace`.
+
+The measured Windows recording uses `HrzS` and `VrtS` (32-bit integers, −999 to 999), `DspM.StrF` (stretch to fit), `UndA.RptE` (repeat edge pixels), and `DspF` (`Pth `, a `txtu` header with little-endian length and a NUL-terminated UTF-16LE path). Import preserves the map path as text. Playback opens the map through the native Displace command.
+
+Alias paths, other enum values, and malformed or incomplete descriptors stay as kept Photoshop steps. So does a map path a document may not name (a network share, a device, a URL or a relative path): playing a shared action file never opens it. Export supports the measured path and settings for a pixel target.
 
 ### Group D: The Stylize and Pixelate filters
 

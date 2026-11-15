@@ -38,7 +38,7 @@ fn lens_flare_dialog_centre_is_a_slider_from_0_to_1_defaulting_to_the_middle() {
 fn color_settings_working_spaces_list_installed_profiles_of_their_space() {
     // #6323: a press condition installed in the system can be the CMYK working space, as in
     // Photoshop's Color Settings; each working-space menu lists only profiles of its space.
-    use photocraft_cms::{ColorSpace, ProfileClass};
+    use craft_cms::{ColorSpace, ProfileClass};
     let p = |path: &str, class, color_space| InstalledProfile { path: path.into(), description: path.to_uppercase(), class, color_space };
     let installed = [
         p("gracol.icc", ProfileClass::Output, ColorSpace::Cmyk),
@@ -90,6 +90,34 @@ fn display_names_are_not_split_like_camel_case_keys() {
     assert_eq!(source_label("centerX"), "Center X");
 }
 
+#[test]
+fn indexed_matte_tool_seeds_use_document_encoded_rgb() {
+    use craft_cms::Transform;
+
+    let mut session = photocraft_engine::Session::new();
+    session.color.settings.working_rgb = "display-p3".into();
+    session.execute("file.new", json!({"width": 2, "height": 2, "background": "transparent"})).unwrap();
+    session.execute("edit.assignProfile", json!({"profile": "adobe-rgb-compat"})).unwrap();
+    session.execute("tools.setColors", json!({"foreground": "#3366cc", "background": "#cc6633"})).unwrap();
+    let app = PhotocraftApp::new(session, crate::Services::default());
+    let mut fields = Map::new();
+    indexed_matte_defaults(&app, &mut fields);
+
+    let doc = app.session.active().unwrap().doc.clone();
+    let source = app.session.color.working(ColorMode::Rgb);
+    let destination = photocraft_engine::color_cmds::document_profile(&doc);
+    let transform = Transform::new(&source, &destination, app.session.color.settings.intent(), app.session.color.settings.bpc).unwrap();
+    for (key, input) in [(INDEXED_MATTE_FOREGROUND, [0.2, 0.4, 0.8]), (INDEXED_MATTE_BACKGROUND, [0.8, 0.4, 0.2])] {
+        let mut output = [0.0; 16];
+        transform.eval(&input, &mut output).unwrap();
+        let expected = crate::color_picker_ui::hex([output[0], output[1], output[2]]);
+        assert_eq!(fields.get(key).and_then(Value::as_str), Some(expected.as_str()), "{key}");
+        assert_eq!(
+            indexed_matte_seed(&fields, if key == INDEXED_MATTE_FOREGROUND { "foreground" } else { "background" }),
+            crate::color_picker_ui::parse_hex(&expected)
+        );
+    }
+}
 /// Convert to Profile's and Proof Setup's `bpc` read "Bpc": spelled out.
 #[test]
 fn black_point_compensation_is_spelled_out() {
@@ -100,19 +128,22 @@ fn key() -> FilterPreviewKey {
     FilterPreviewKey {
         doc: photocraft_doc::DocId(7),
         revision: 11,
+        sources: Vec::new(),
         dialog: 3,
         active: Some(photocraft_doc::LayerId(2)),
         target: Default::default(),
         command: "filter.blur.gaussianBlur".into(),
         params: json!({"radius": 4.0}),
         k: 1,
+        tool_colors: ([0.0, 0.0, 0.0, 1.0], [1.0; 4]),
     }
 }
 
 #[test]
 fn same_target_ignores_parameters_but_nothing_else() {
     // A drag only changes the parameters, and that must not hide the finished frame.
-    let base = key();
+    let mut base = key();
+    base.sources = vec![(photocraft_doc::DocId(9), 1)];
     let mut moved = base.clone();
     moved.params = json!({"radius": 40.0});
     assert!(base.same_target(&moved));
@@ -122,12 +153,17 @@ fn same_target_ignores_parameters_but_nothing_else() {
     for break_it in [
         |k: &mut FilterPreviewKey| k.doc = photocraft_doc::DocId(8),
         |k: &mut FilterPreviewKey| k.revision = 12,
+        |k: &mut FilterPreviewKey| k.sources[0].0 = photocraft_doc::DocId(10),
+        |k: &mut FilterPreviewKey| k.sources[0].1 = 2,
+        |k: &mut FilterPreviewKey| k.sources.clear(),
         |k: &mut FilterPreviewKey| k.dialog = 4,
         |k: &mut FilterPreviewKey| k.active = Some(photocraft_doc::LayerId(5)),
         |k: &mut FilterPreviewKey| k.active = None,
         |k: &mut FilterPreviewKey| k.target = photocraft_engine::channel_cmds::ChannelTarget::LayerMask,
         |k: &mut FilterPreviewKey| k.command = "filter.blur.motionBlur".into(),
         |k: &mut FilterPreviewKey| k.k = 2,
+        |k: &mut FilterPreviewKey| k.tool_colors.0 = [0.2, 0.4, 0.8, 1.0],
+        |k: &mut FilterPreviewKey| k.tool_colors.1 = [0.8, 0.4, 0.2, 1.0],
     ] {
         let mut other = base.clone();
         break_it(&mut other);
@@ -478,6 +514,86 @@ fn indexed_counts_are_integer_json_while_dither_amounts_keep_their_decimals() {
     assert_eq!(params["amount"].as_f64(), Some(37.5));
 }
 
+/// The Color Lookup dialog's own fields run the command: `fileName` used to be filled with `0`
+/// (no dialog kind for `text?`, so every OK failed) and `lutFormat` with `cube`, which made a
+/// .3dl file from the LUT folder fail to parse.
+#[test]
+fn color_lookup_dialog_defaults_run_a_3dl_file() {
+    let tmp = tempfile::tempdir().unwrap();
+    let path = tmp.path().join("inverse.3dl");
+    let mut lut = String::from("3DMESH\nMesh 1 12\n0 512 1023\n");
+    for r in 0..3 {
+        for g in 0..3 {
+            for b in 0..3 {
+                let v = [r, g, b].map(|c| 4095 - 4095 * c / 2);
+                lut.push_str(&format!("{} {} {}\n", v[0], v[1], v[2]));
+            }
+        }
+    }
+    std::fs::write(&path, lut).unwrap();
+    let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({"width": 4, "height": 4, "background": "#000000"})).unwrap();
+    let id = open(&mut app, COLOR_LOOKUP).unwrap();
+    let mut f = app.ui.dialog_mut(id).unwrap().fields.clone();
+    app.run(COLOR_LOOKUP, params_of(&f)).unwrap();
+    f.insert("file".into(), json!(path.to_str().unwrap()));
+    app.run(COLOR_LOOKUP, params_of(&f)).unwrap();
+    let px = app.session.active().unwrap().doc.layers[0].surface().unwrap().read_region(photocraft_geom::Rect::new(0, 0, 1, 1));
+    assert!(px[0] > 0.99 && px[1] > 0.99 && px[2] > 0.99, "black through the inverse .3dl is white: {px:?}");
+}
+
+/// #9754: Image › Adjustments › Color Lookup lists the LUT folder's files, and one picked from
+/// it is applied through `file`.
+#[test]
+fn color_lookup_dialog_lists_and_applies_lut_folder_files() {
+    let tmp = tempfile::tempdir().unwrap();
+    let path = tmp.path().join("film.cube");
+    std::fs::write(&path, "LUT_3D_SIZE 2\n0 0 0\n1 0 0\n0 1 0\n1 1 0\n0 0 1\n1 0 1\n0 1 1\n1 1 1\n").unwrap();
+    let path = path.to_str().unwrap().to_string();
+    let key = format!("{}{path}", crate::adjust_ui::FOLDER_LUT);
+    let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
+    app.run("prefs.set", json!({"path": "fileHandling.lutFolder", "value": tmp.path().to_str().unwrap()})).unwrap();
+    app.run("file.new", json!({"width": 16, "height": 12})).unwrap();
+    let id = open(&mut app, COLOR_LOOKUP).unwrap();
+    let mut f = app.ui.dialog_mut(id).unwrap().fields.clone();
+    assert_eq!(f[LUT_FOLDER], json!(tmp.path().to_str().unwrap()));
+    // The menu's folder scan runs on a worker thread: draw until it has finished.
+    let ctx = egui::Context::default();
+    for _ in 0..500 {
+        if !crate::adjust_ui::folder_luts(tmp.path().to_str().unwrap(), &ctx).is_empty() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    assert_eq!(crate::adjust_ui::folder_luts(tmp.path().to_str().unwrap(), &ctx), [("film.cube".to_string(), path.clone())]);
+
+    // Picking the folder file: `file` is set and `lut` stays a valid built-in value.
+    let lut = pick_folder_lut(&mut f, key.clone(), false);
+    f.insert("lut".into(), json!(lut));
+    assert_eq!((&f["lut"], &f["file"]), (&json!("none"), &json!(path)));
+    // Drawn again, the menu keeps showing it (and so keeps it).
+    ctx.run_ui(Default::default(), |ui| body(ui, &mut f)).textures_delta.clear();
+    assert_eq!((&f["lut"], &f["file"]), (&json!("none"), &json!(path)));
+    app.run(COLOR_LOOKUP, params_of(&f)).unwrap();
+
+    // Leaving it for a built-in look drops the file, so the look applies.
+    assert_eq!(pick_folder_lut(&mut f, "warm".into(), true), "warm");
+    assert_eq!(f["file"], json!(""));
+    // A picked file that has left the folder since (no longer in the scan) still shows as its
+    // entry, so leaving it for a built-in look still drops the file.
+    assert_eq!(pick_folder_lut(&mut f, key.clone(), false), "none");
+    let was_folder = shows_folder_lut(&f, "none", &[]);
+    assert!(was_folder);
+    assert_eq!(pick_folder_lut(&mut f, "warm".into(), was_folder), "warm");
+    assert_eq!(f["file"], json!(""));
+    assert!(!f.contains_key(FOLDER_LUT_PICK));
+    // A path typed into File isn't touched by a built-in pick.
+    f.insert("file".into(), json!(path));
+    assert!(!shows_folder_lut(&f, "none", &[]));
+    assert_eq!(pick_folder_lut(&mut f, "cool".into(), false), "cool");
+    assert_eq!(f["file"], json!(path));
+}
+
 /// #7400: Lens Blur's Source lists the document's alpha channels, by name, each choosable even
 /// when two share a name; `depthChannel` is set through that menu, not shown as a field, and
 /// like the other references it isn't remembered, so a remembered `channel` source opens as None.
@@ -653,10 +769,354 @@ fn smart_displace_preview_uses_the_map_document() {
             photocraft_engine::channel_cmds::ChannelTarget::Composite,
             &documents,
             &ColorSettings::default(),
+            None,
         )
         .unwrap_or_else(|| panic!("map {map}: no preview"));
         assert!(photocraft_compose::render(&preview, doc.bounds()).px == want, "map {map}: the preview differs from what OK applies");
     }
+}
+
+/// #10839: Layer is a visible choice tied to Source, never a remembered or name-based reference.
+#[test]
+fn match_color_source_layer_picker_keeps_references_with_the_source() {
+    use egui_kittest::Harness;
+    use egui_kittest::kittest::{NodeT, Queryable};
+    use photocraft_doc::{Color, ColorMode, Layer, SampleType, Size};
+
+    let mut source = Document::with_background("reference", Size::new(16, 16), ColorMode::Rgb, SampleType::U8, Color::WHITE);
+    source.layers[0].name = "Sample".into();
+    let bottom = source.layers[0].id;
+    source.layers.push(Layer::raster("Sample", source.pixel_format()));
+    let top = source.layers[1].id;
+    // A different document can contain copied layer IDs. Changing Source must still reset Layer.
+    let mut other = Document::with_background("other reference", source.size, source.mode, source.depth, Color::WHITE);
+    other.layers = source.layers.clone();
+    let mut session = photocraft_engine::Session::new();
+    session.add_document(source, None);
+    session.add_document(other, None);
+    session.execute("file.new", json!({"width": 16, "height": 16})).unwrap();
+    let mut app = PhotocraftApp::new(session, Default::default());
+    let id = open(&mut app, "image.adjustments.matchColor").unwrap();
+    let fields = app.ui.dialog_mut(id).unwrap().fields.clone();
+    let mut h = Harness::builder().with_size(egui::vec2(700.0, 700.0)).build_ui_state(body, fields);
+    PhotocraftApp::setup_context(&h.ctx, Default::default());
+    h.run_steps(2);
+    assert!(h.get_by_role_and_label(egui::accesskit::Role::ComboBox, "Source Layer").accesskit_node().is_disabled());
+    assert!(!h.state().contains_key("sourceLayer"), "None starts with no layer reference");
+    h.get_by_role_and_label(egui::accesskit::Role::ComboBox, "Source").click();
+    h.run_steps(2);
+    h.get_by_label("reference").click();
+    h.run_steps(2);
+    assert!(!h.get_by_role_and_label(egui::accesskit::Role::ComboBox, "Source Layer").accesskit_node().is_disabled());
+    h.get_by_role_and_label(egui::accesskit::Role::ComboBox, "Source Layer").click();
+    h.run_steps(2);
+    assert_eq!(h.get_all_by_label("Sample").count(), 2, "duplicate names remain distinct choices");
+    h.get_all_by_label("Sample").nth(1).unwrap().click();
+    h.run_steps(2);
+    assert_eq!(h.state()["sourceLayer"], json!(bottom), "the bottom layer is identified by ID");
+    h.get_by_role_and_label(egui::accesskit::Role::ComboBox, "Source").click();
+    h.run_steps(2);
+    h.get_by_label("other reference").click();
+    h.run_steps(2);
+    assert!(!h.state().contains_key("sourceLayer"), "new source returns to Merged even with copied IDs");
+    h.get_by_role_and_label(egui::accesskit::Role::ComboBox, "Source Layer").click();
+    h.run_steps(2);
+    h.get_all_by_label("Sample").next().unwrap().click();
+    h.run_steps(2);
+    assert_eq!(h.state()["sourceLayer"], json!(top));
+    // Merged explicitly removes the layer parameter rather than serializing a layer name.
+    h.get_by_role_and_label(egui::accesskit::Role::ComboBox, "Source Layer").click();
+    h.run_steps(2);
+    h.get_by_label("Merged").click();
+    h.run_steps(2);
+    assert!(!h.state().contains_key("sourceLayer"));
+    h.state_mut().insert("sourceLayer".into(), json!(u64::MAX));
+    h.run_steps(2);
+    assert_eq!(h.state()["sourceLayer"], json!(u64::MAX), "drawing does not change an unavailable reference");
+    h.get_by_role_and_label(egui::accesskit::Role::ComboBox, "Source Layer").click();
+    h.run_steps(2);
+    h.get_by_label("Merged").click();
+    h.run_steps(2);
+    assert!(!h.state().contains_key("sourceLayer"), "the user can explicitly choose Merged");
+    h.get_by_role_and_label(egui::accesskit::Role::ComboBox, "Source").click();
+    h.run_steps(2);
+    h.get_by_label("None").click();
+    h.run_steps(2);
+    assert_eq!(h.state()["source"], json!(-1));
+    assert!(!h.state().contains_key("sourceLayer"));
+    assert!(h.get_by_role_and_label(egui::accesskit::Role::ComboBox, "Source Layer").accesskit_node().is_disabled());
+    let mut fields = h.state().clone();
+    fields.insert("source".into(), json!(0));
+    fields.insert("sourceLayer".into(), json!(bottom));
+    remember(&mut app, "image.adjustments.matchColor", &fields);
+    let reopened = open(&mut app, "image.adjustments.matchColor").unwrap();
+    let fields = &app.ui.dialog_mut(reopened).unwrap().fields;
+    assert_eq!(fields["source"], json!(-1));
+    assert!(!fields.contains_key("sourceLayer"), "source references are never remembered");
+}
+
+/// Selected-layer and merged sources must agree between proxy preview and OK at every depth,
+/// without editing the reference document; Cancel, Undo and invalid IDs preserve the target.
+#[test]
+fn match_color_source_layer_preview_and_ok_edit_only_the_target() {
+    use photocraft_doc::{Color, ColorMode, Layer, SampleType, Size};
+    use photocraft_geom::Rect;
+    let command = "image.adjustments.matchColor";
+    for depth in [SampleType::U8, SampleType::U16, SampleType::F32] {
+        let area = Rect::new(0, 0, 32, 32);
+        let mut source = Document::with_background("reference", Size::new(32, 32), ColorMode::Rgb, depth, Color::WHITE);
+        source.layers[0].surface_mut().unwrap().fill_rect(area, &[0.1, 0.3, 0.9, 1.0]);
+        let source_layer = source.layers[0].id;
+        let mut cover = Layer::raster("cover", source.pixel_format());
+        cover.surface_mut().unwrap().fill_rect(area, &[0.9, 0.2, 0.1, 1.0]);
+        source.layers.push(cover);
+        let mut target = Document::with_background("texture", source.size, source.mode, depth, Color::WHITE);
+        target.layers[0].surface_mut().unwrap().fill_rect(area, &[0.8, 0.6, 0.3, 1.0]);
+        target.layers[0].surface_mut().unwrap().fill_rect(Rect::new(0, 0, 16, 32), &[0.4, 0.3, 0.15, 1.0]);
+        let mut same_document_reference = Layer::raster("same-document reference", target.pixel_format());
+        same_document_reference.surface_mut().unwrap().fill_rect(area, &[0.1, 0.3, 0.9, 1.0]);
+        target.layers.push(same_document_reference);
+        let mut session = photocraft_engine::Session::new();
+        session.add_document(source.clone(), None);
+        session.add_document(target.clone(), None);
+        session.select_layer(target.layers[0].id).unwrap();
+        let mut app = PhotocraftApp::new(session, Default::default());
+        let documents: Vec<_> = app.session.documents().iter().map(|d| d.doc.clone()).collect();
+        let original = target.layers[0].surface().unwrap().read_region(area);
+        for (source_index, layer, blue) in [(0, Some(source_layer), true), (0, None, false), (1, Some(target.layers[0].id), false), (1, None, true)] {
+            let id = open(&mut app, command).unwrap();
+            let fields = &mut app.ui.dialog_mut(id).unwrap().fields;
+            fields.insert("source".into(), json!(source_index));
+            if let Some(layer) = layer {
+                fields.insert("sourceLayer".into(), json!(layer));
+            }
+            let params = params_of(fields);
+            let preview = preview_document_for_target(
+                &target,
+                Some(target.layers[0].id),
+                command,
+                &params,
+                2,
+                None,
+                photocraft_engine::channel_cmds::ChannelTarget::Composite,
+                &documents,
+                &ColorSettings::default(),
+                None,
+            )
+            .unwrap();
+            let shown = preview.layers[0].surface().unwrap().pixel(12, 8);
+            assert_eq!(shown[2] > shown[0], blue, "{depth:?}: selected layer and merged have different colours: {shown:?}");
+            assert_eq!(app.session.active().unwrap().history.past_len(), 0, "preview is non-destructive");
+            crate::dialogs::cancel(&mut app, id).unwrap();
+            assert_eq!(app.session.active().unwrap().doc.layers[0].surface().unwrap().read_region(area), original);
+            let id = open(&mut app, command).unwrap();
+            app.ui.dialog_mut(id).unwrap().fields.extend(params.as_object().unwrap().clone());
+            crate::dialogs::confirm(&mut app, id).unwrap();
+            let st = app.session.active().unwrap();
+            let got = st.doc.layers[0].surface().unwrap().pixel(24, 16);
+            assert!((0..4).all(|c| (shown[c] - got[c]).abs() < 1.0 / 255.0 + 1e-4), "{depth:?}: preview {shown:?}, OK {got:?}");
+            assert_eq!(st.doc.id, target.id, "source selection must not switch the active target");
+            assert_eq!(st.history.past_len(), 1);
+            assert_eq!(app.session.documents()[0].doc.layers[0].surface().unwrap().read_region(area), source.layers[0].surface().unwrap().read_region(area));
+            app.run("edit.undo", json!({})).unwrap();
+            assert_eq!(app.session.active().unwrap().doc.layers[0].surface().unwrap().read_region(area), original);
+        }
+        assert!(app.run(command, json!({"source": 0, "sourceLayer": u64::MAX})).is_err());
+        assert_eq!(app.session.active().unwrap().doc.layers[0].surface().unwrap().read_region(area), original);
+        assert_eq!(app.session.active().unwrap().history.past_len(), 0, "invalid layer does not add history");
+        assert_eq!(*app.session.documents()[0].doc, source, "neither source layer was edited");
+        // None with unchanged controls remains a no-op, and does not need a source layer.
+        let id = open(&mut app, command).unwrap();
+        crate::dialogs::confirm(&mut app, id).unwrap();
+        let got = app.session.active().unwrap().doc.layers[0].surface().unwrap().read_region(area);
+        assert!(got.iter().zip(&original).all(|(a, b)| (a - b).abs() < 2e-6), "None preserves colour within floating-point conversion precision");
+    }
+}
+
+/// Send an actual control-protocol request and require its synchronous reply.
+fn match_color_control(app: &mut PhotocraftApp, ctx: &egui::Context, method: &str, params: Value) -> Value {
+    let (request, _) = crate::control::ControlRequest::new(method, params);
+    let crate::control::Outcome::Done(reply) = crate::control::handle(app, ctx, &request) else { panic!("{method} should finish immediately") };
+    reply
+}
+
+#[test]
+fn match_color_refuses_a_changed_destination_without_closing() {
+    let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), Default::default());
+    for _ in 0..2 {
+        app.run("file.new", json!({"width": 8, "height": 8})).unwrap();
+    }
+    let original = app.session.active().unwrap().active_layer.unwrap();
+    app.run("layer.new.layer", json!({"name": "Other"})).unwrap();
+    let other = app.session.active().unwrap().active_layer.unwrap();
+    app.session.select_layer(original).unwrap();
+    let ctx = egui::Context::default();
+    let id = open(&mut app, MATCH_COLOR).unwrap();
+    let history: Vec<_> = app.session.documents().iter().map(|st| st.history.past_len()).collect();
+    let forged = json!((app.session.documents()[0].doc.id, app.session.documents()[0].active_layer));
+    assert_eq!(match_color_control(&mut app, &ctx, "ui.dialog.set", json!({"dialog": id, "field": MATCH_COLOR_DESTINATION, "value": forged}))["ok"], false);
+
+    let refuse = |app: &mut PhotocraftApp, index| {
+        assert!(crate::canvas::ensure_filter_preview(app, index, &ctx).is_none());
+        assert!(crate::dialogs::confirm(app, id).unwrap_err().contains("destination changed"));
+        assert!(app.ui.dialog_mut(id).is_some(), "refusal leaves the dialog open");
+        assert_eq!(app.session.active_index(), Some(index), "refusal does not navigate");
+        assert_eq!(app.session.documents().iter().map(|st| st.history.past_len()).collect::<Vec<_>>(), history);
+    };
+    match_color_control(&mut app, &ctx, "ui.window.open", json!({"document": 0}));
+    refuse(&mut app, 0);
+    match_color_control(&mut app, &ctx, "ui.window.open", json!({"document": 1}));
+    app.session.select_layer(other).unwrap();
+    refuse(&mut app, 1);
+
+    app.session.select_layer(original).unwrap();
+    assert_eq!(match_color_control(&mut app, &ctx, "ui.dialog.set", json!({"dialog": id, "field": "layer", "value": other}))["ok"], true);
+    refuse(&mut app, 1);
+    assert_eq!(match_color_control(&mut app, &ctx, "ui.dialog.set", json!({"dialog": id, "field": "layer", "value": original}))["ok"], true);
+    assert!(crate::dialogs::confirm(&mut app, id).is_ok());
+}
+
+#[test]
+fn match_color_explicit_unavailable_source_layer_is_refused_with_or_without_a_frame() {
+    for render in [false, true] {
+        let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), Default::default());
+        for _ in 0..2 {
+            app.run("file.new", json!({"width": 8, "height": 8})).unwrap();
+        }
+        let ctx = egui::Context::default();
+        PhotocraftApp::setup_context(&ctx, Default::default());
+        let id = open(&mut app, MATCH_COLOR).unwrap();
+        let missing = u64::MAX;
+        for (field, value) in [("source", json!(0)), ("sourceLayer", json!(missing))] {
+            assert_eq!(match_color_control(&mut app, &ctx, "ui.dialog.set", json!({"dialog": id, "field": field, "value": value}))["ok"], true);
+        }
+        if render {
+            // Force a source-choice refresh as well as drawing the layer picker.
+            app.session.set_active(0);
+            app.session.execute("layer.new.layer", json!({"name": "New source layer"})).unwrap();
+            app.session.set_active(1);
+            ctx.run_ui(Default::default(), |ui| crate::dialogs::show(&mut app, ui.ctx())).textures_delta.clear();
+            assert_eq!(app.ui.dialog_mut(id).unwrap().fields["sourceLayer"], json!(missing));
+            assert!(crate::canvas::ensure_filter_preview(&mut app, 1, &ctx).is_none());
+        }
+        let expected = app.session.execute(MATCH_COLOR, json!({"source": 0, "sourceLayer": missing})).unwrap_err().to_string();
+        assert_eq!(crate::dialogs::confirm(&mut app, id).unwrap_err(), expected);
+        assert_eq!(app.session.active().unwrap().history.past_len(), 0);
+    }
+}
+
+/// Exercise actual nested command dialogs, rather than mutating the source behind the UI's gates.
+fn match_color_after_source_change(change: &str) {
+    use photocraft_doc::{Color, ColorMode, Layer, SampleType, Size};
+    use photocraft_geom::Rect;
+    let area = Rect::new(0, 0, 8, 8);
+    let make = |name| Document::with_background(name, Size::new(8, 8), ColorMode::Rgb, SampleType::U8, Color::WHITE);
+    let mut source = make("reference");
+    source.layers[0].surface_mut().unwrap().fill_rect(area, &[0.9, 0.2, 0.1, 1.0]);
+    let mut reference = Layer::raster("blue reference", source.pixel_format());
+    reference.surface_mut().unwrap().fill_rect(area, &[0.1, 0.3, 0.9, 1.0]);
+    let reference_id = reference.id;
+    source.layers.push(reference);
+    let mut target = make("target");
+    target.layers[0].surface_mut().unwrap().fill_rect(area, &[0.8, 0.6, 0.3, 1.0]);
+    // A copied layer ID must never make a shifted source index identify the target document.
+    target.layers[0].id = reference_id;
+    let target_id = target.id;
+    let mut session = photocraft_engine::Session::new();
+    session.add_document(make("earlier"), None);
+    session.add_document(source, None);
+    session.select_layer(reference_id).unwrap();
+    session.add_document(target, None);
+    let mut app = PhotocraftApp::new(session, Default::default());
+    app.sync_views();
+    let ctx = egui::Context::default();
+    PhotocraftApp::setup_context(&ctx, Default::default());
+    let root = open(&mut app, "image.adjustments.matchColor").unwrap();
+    if !change.starts_with("select-") {
+        for (field, value) in [("source", json!(1)), ("sourceLayer", json!(reference_id))] {
+            assert_eq!(match_color_control(&mut app, &ctx, "ui.dialog.set", json!({"dialog": root, "field": field, "value": value}))["ok"], true);
+        }
+    } else {
+        assert_eq!(app.ui.dialog_mut(root).unwrap().fields["source"], json!(-1));
+    }
+    let (command, field, value) = if change == "delete-layer" {
+        ("layer.delete", "layer", json!(reference_id))
+    } else {
+        ("file.close", "document", json!(if change == "close-source" { 1 } else { 0 }))
+    };
+    let params = Value::Object([(field.into(), value.clone())].into_iter().collect());
+    assert_eq!(
+        match_color_control(&mut app, &ctx, "engine.execute", json!({"command": command, "params": params}))["ok"],
+        false,
+        "ordinary edits are modal-blocked"
+    );
+    if change == "delete-layer" {
+        match_color_control(&mut app, &ctx, "ui.window.open", json!({"document": 1}));
+        assert_eq!(app.session.active_index(), Some(1));
+    }
+    let opened = match_color_control(&mut app, &ctx, "ui.dialog.open", json!({"kind": "command", "command": command}));
+    assert_eq!(opened["ok"], true, "{opened}");
+    let child = opened["result"]["dialog"].as_u64().unwrap();
+    assert_eq!(match_color_control(&mut app, &ctx, "ui.dialog.set", json!({"dialog": child, "field": field, "value": value}))["ok"], true);
+    let changed = match_color_control(&mut app, &ctx, "ui.dialog.confirm", json!({"dialog": child}));
+    assert_eq!(changed["ok"], true, "{changed}");
+    let target_index = app.session.documents().iter().position(|st| st.doc.id == target_id).unwrap();
+    match_color_control(&mut app, &ctx, "ui.window.open", json!({"document": target_index}));
+    assert_eq!(app.session.active().unwrap().doc.id, target_id);
+    if change == "delete-layer" {
+        assert!(app.session.documents()[1].doc.layer(reference_id).is_none(), "the supported nested command really deleted the selected source layer");
+        assert!(
+            app.session.execute("image.adjustments.matchColor", json!({"source": 1, "sourceLayer": reference_id})).is_err(),
+            "the explicit engine API still refuses missing IDs"
+        );
+        ctx.run_ui(Default::default(), |ui| crate::dialogs::show(&mut app, ui.ctx())).textures_delta.clear();
+        let fields = &app.ui.dialog_mut(root).unwrap().fields;
+        assert!(params_of(fields).get("sourceLayer").is_none(), "the displayed UI falls back to Merged");
+    } else {
+        assert_eq!(app.session.documents().len(), 2, "the supported nested command really closed a document");
+    }
+    if change == "select-with-frame" {
+        ctx.run_ui(Default::default(), |ui| crate::dialogs::show(&mut app, ui.ctx())).textures_delta.clear();
+    }
+    if change.starts_with("select-") {
+        assert_eq!(app.session.documents()[0].doc.name, "reference", "the explicitly chosen current index is the blue source");
+        let value = if change == "select-invalid" { 99 } else { 0 };
+        assert_eq!(match_color_control(&mut app, &ctx, "ui.dialog.set", json!({"dialog": root, "field": "source", "value": value}))["ok"], true);
+    }
+    let result = crate::dialogs::confirm(&mut app, root);
+    let st = app.session.active().unwrap();
+    if change == "close-source" || change == "select-invalid" {
+        assert!(result.is_err(), "a closed or invalid source must not silently become another document");
+        assert_eq!(st.history.past_len(), 0);
+    } else {
+        assert!(result.is_ok(), "{change}: {result:?}");
+        let pixel = st.doc.layers[0].surface().unwrap().rgba(4, 4);
+        assert_eq!(pixel[2] > pixel[0], change != "delete-layer", "{change}: {pixel:?}");
+        assert_eq!(st.history.past_len(), 1);
+    }
+}
+
+#[test]
+fn match_color_source_layer_deletion_refreshes_the_open_dialog() {
+    match_color_after_source_change("delete-layer");
+}
+
+#[test]
+fn match_color_source_document_keeps_its_identity_after_an_earlier_close() {
+    match_color_after_source_change("close-earlier");
+}
+
+#[test]
+fn match_color_closed_source_does_not_become_another_document() {
+    match_color_after_source_change("close-source");
+}
+
+/// A fresh explicit source index has the same meaning before and after a normal render frame.
+#[test]
+fn match_color_explicit_source_selection_does_not_depend_on_a_frame() {
+    match_color_after_source_change("select-with-frame");
+    match_color_after_source_change("select-without-frame");
+    match_color_after_source_change("select-invalid");
 }
 
 /// Match Color's preview reads the Source document from the open documents, as OK does: the
@@ -677,8 +1137,16 @@ fn match_color_preview_uses_the_source_document() {
     let doc = s.active().unwrap().doc.clone();
     let layer = doc.layers[0].id;
     let documents: Vec<_> = s.documents().iter().map(|d| d.doc.clone()).collect();
-    for (source, label) in [(0, "another document"), (1, "the edited document itself")] {
-        let p = json!({"source": source});
+    for (source, source_layer, label) in [
+        (0, None, "another document"),
+        (1, None, "the edited document itself"),
+        (0, Some(documents[0].layers[0].id), "another document's layer"),
+        (1, Some(layer), "the edited document's layer"),
+    ] {
+        let mut p = json!({"source": source});
+        if let Some(layer) = source_layer {
+            p["sourceLayer"] = json!(layer);
+        }
         let mut applied = photocraft_engine::Session::new();
         for d in &documents {
             applied.add_document((**d).clone(), None);
@@ -695,6 +1163,7 @@ fn match_color_preview_uses_the_source_document() {
             photocraft_engine::channel_cmds::ChannelTarget::Composite,
             &documents,
             &ColorSettings::default(),
+            None,
         )
         .unwrap_or_else(|| panic!("{label}: no preview"));
         let got = preview.layers[0].surface().unwrap().pixel(24, 16);
@@ -711,6 +1180,7 @@ fn match_color_preview_uses_the_source_document() {
         photocraft_engine::channel_cmds::ChannelTarget::Composite,
         &documents,
         &ColorSettings::default(),
+        None,
     )
     .unwrap();
     let px = preview.layers[0].surface().unwrap().pixel(12, 8);
@@ -903,20 +1373,6 @@ fn notes_after_a_spec_are_not_parameters() {
             assert!(p.key.chars().all(|ch| ch.is_ascii_alphanumeric() || ch == '_'), "{}: junk parameter {:?}", c.id, p.key);
         }
     }
-}
-
-#[test]
-fn selective_color_dialog_ok_applies() {
-    // With the junk `reds: 0` the dialog's OK failed (`reds` must be an array of 4 numbers).
-    let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
-    app.run("file.new", json!({"width": 8, "height": 8})).unwrap();
-    let id = open(&mut app, "image.adjustments.selectiveColor").unwrap();
-    let fields = app.ui.dialogs.last().unwrap().fields.clone();
-    assert!(fields.keys().all(|k| k.starts_with("__") || k.chars().all(|ch| ch.is_ascii_alphanumeric())), "{fields:?}");
-    assert!(!fields.contains_key("reds"), "the per-range arrays are not dialog fields");
-    app.ui.dialog_mut(id).unwrap().fields.insert("black".into(), json!(40.0));
-    crate::dialogs::confirm(&mut app, id).unwrap();
-    assert_eq!(app.session.journal.last().map(|j| j.0.as_str()), Some("image.adjustments.selectiveColor"));
 }
 
 /// A filtered test image with structure at every scale (low-frequency waves plus a ramp).
@@ -1549,18 +2005,92 @@ fn replace_color_eyedropper_samples_the_image() {
     assert_eq!(app.ui.dialogs.last().unwrap().fields["color"], json!("#ff0000"), "the dialog starts from the foreground colour");
     // #6279: armed as it opens, so the first click on the image samples.
     assert!(color_eyedropper_armed(&app));
-    assert!(color_eyedropper_sample(&mut app, 4.0, 4.0));
+    assert!(color_eyedropper_sample(&mut app, 4.0, 4.0, egui::Modifiers::NONE));
     assert_eq!(app.ui.dialogs.last().unwrap().fields["color"], json!("#00ff00"));
     // #4457: where it was picked, for Localized Color Clusters.
     assert_eq!(app.ui.dialogs.last().unwrap().fields["points"], json!([[4.0, 4.0]]));
     // Off-image: the click is consumed, nothing changes and the eyedropper stays armed.
-    assert!(color_eyedropper_sample(&mut app, -1.0, 4.0));
+    assert!(color_eyedropper_sample(&mut app, -1.0, 4.0, egui::Modifiers::NONE));
     assert_eq!(app.ui.dialogs.last().unwrap().fields["color"], json!("#00ff00"));
     assert!(color_eyedropper_armed(&app));
     // Disarmed, the dialog never claims the click.
     app.ui.dialog_mut(id).unwrap().fields.insert(COLOR_EYEDROPPER.into(), json!(false));
     assert!(!color_eyedropper_armed(&app));
-    assert!(!color_eyedropper_sample(&mut app, 4.0, 4.0));
+    assert!(!color_eyedropper_sample(&mut app, 4.0, 4.0, egui::Modifiers::NONE));
+}
+
+/// #6280: Shift-click adds a sample and Alt-click subtracts one (as do the + and − eyedroppers),
+/// in click order, as in Photoshop; a plain click starts over from the clicked colour.
+#[test]
+fn replace_color_shift_and_alt_clicks_add_and_subtract_samples() {
+    let mut s = photocraft_engine::Session::new();
+    s.execute("file.new", json!({"width": 16, "height": 16, "background": "#00ff00"})).unwrap();
+    let mut app = PhotocraftApp::new(s, crate::Services::default());
+    open(&mut app, REPLACE_COLOR).unwrap();
+    let field = |app: &PhotocraftApp, k: &str| app.ui.dialogs.last().unwrap().fields.get(k).cloned().unwrap_or(Value::Null);
+    assert!(color_eyedropper_sample(&mut app, 2.0, 2.0, egui::Modifiers::NONE));
+    assert!(color_eyedropper_sample(&mut app, 5.0, 5.0, egui::Modifiers::SHIFT));
+    assert!(color_eyedropper_sample(&mut app, 9.0, 9.0, egui::Modifiers::ALT));
+    assert_eq!(field(&app, "points"), json!([[2.0, 2.0], [5.0, 5.0]]));
+    assert_eq!(field(&app, "subtractPoints"), json!([[9.0, 9.0]]));
+    assert_eq!(field(&app, "order"), json!(["+", "+", "-"]));
+    assert_eq!(field(&app, "color"), json!("#00ff00"), "the From colour is the plain sample's");
+    // The − eyedropper subtracts without a modifier; a plain click with the plain one starts over.
+    let id = app.ui.dialogs.last().unwrap().id;
+    app.ui.dialog_mut(id).unwrap().fields.insert("__tool".into(), json!("subtract"));
+    assert!(color_eyedropper_sample(&mut app, 3.0, 3.0, egui::Modifiers::NONE));
+    assert_eq!(field(&app, "subtractPoints"), json!([[9.0, 9.0], [3.0, 3.0]]));
+    app.ui.dialog_mut(id).unwrap().fields.insert("__tool".into(), json!("sample"));
+    assert!(color_eyedropper_sample(&mut app, 7.0, 7.0, egui::Modifiers::NONE));
+    assert_eq!((field(&app, "points"), field(&app, "subtractPoints")), (json!([[7.0, 7.0]]), json!([])));
+}
+
+/// A first click with Add to Sample, before any plain sample, takes the clicked colour as the
+/// From colour, so the single-sample command replaces it, not the foreground colour (CodeRabbit
+/// review on #10443). Color Range's matcher, used from the second sample on, also starts its
+/// range at the first added colour.
+#[test]
+fn replace_color_first_add_to_sample_click_sets_the_from_colour() {
+    let mut s = photocraft_engine::Session::new();
+    s.execute("file.new", json!({"width": 16, "height": 16, "background": "#00ff00"})).unwrap();
+    let mut app = PhotocraftApp::new(s, crate::Services::default());
+    let id = open(&mut app, REPLACE_COLOR).unwrap();
+    let field = |app: &PhotocraftApp, k: &str| app.ui.dialogs.last().unwrap().fields.get(k).cloned().unwrap_or(Value::Null);
+    assert_ne!(field(&app, "color"), json!("#00ff00"), "the dialog starts from the foreground colour");
+    for (tool, mods) in [("sample", egui::Modifiers::SHIFT), ("add", egui::Modifiers::NONE)] {
+        let mut fields = app.ui.dialogs.last().unwrap().fields.clone();
+        reset_fields(&app, &mut fields);
+        fields.insert("__tool".into(), json!(tool));
+        app.ui.dialog_mut(id).unwrap().fields = fields;
+        assert!(color_eyedropper_sample(&mut app, 4.0, 4.0, mods));
+        assert_eq!(field(&app, "points"), json!([[4.0, 4.0]]));
+        assert_eq!(field(&app, "color"), json!("#00ff00"), "{tool}");
+    }
+    // A later added sample leaves the From colour alone.
+    app.ui.dialog_mut(id).unwrap().fields.insert("color".into(), json!("#123456"));
+    assert!(color_eyedropper_sample(&mut app, 6.0, 6.0, egui::Modifiers::SHIFT));
+    assert_eq!(field(&app, "color"), json!("#123456"));
+}
+
+/// Reset (Alt+Cancel) forgets the click order with the samples, so samples added afterwards
+/// carry an order that fits them and the command takes it (CodeRabbit review on #10443).
+#[test]
+fn replace_color_reset_forgets_the_click_order() {
+    let mut s = photocraft_engine::Session::new();
+    s.execute("file.new", json!({"width": 16, "height": 16, "background": "#00ff00"})).unwrap();
+    let mut app = PhotocraftApp::new(s, crate::Services::default());
+    let id = open(&mut app, REPLACE_COLOR).unwrap();
+    assert!(color_eyedropper_sample(&mut app, 2.0, 2.0, egui::Modifiers::NONE));
+    assert!(color_eyedropper_sample(&mut app, 9.0, 9.0, egui::Modifiers::ALT));
+    let mut fields = app.ui.dialogs.last().unwrap().fields.clone();
+    reset_fields(&app, &mut fields);
+    app.ui.dialog_mut(id).unwrap().fields = fields;
+    assert!(color_eyedropper_sample(&mut app, 5.0, 5.0, egui::Modifiers::SHIFT));
+    assert!(color_eyedropper_sample(&mut app, 7.0, 7.0, egui::Modifiers::SHIFT));
+    let f = app.ui.dialogs.last().unwrap().fields.clone();
+    assert_eq!(f["order"], json!(["+", "+"]), "{f:?}");
+    let p = json!({"color": f["color"], "points": f["points"], "order": f["order"], "hue": 30});
+    app.session.execute(REPLACE_COLOR, p).unwrap();
 }
 
 /// #4143: the eyedropper button disarms and re-arms the canvas picker (#6279: it opens armed).
@@ -1641,7 +2171,7 @@ fn replace_color_localized_color_clusters() {
     h.run_steps(3);
     let _ = h.get_by_label("Localized Color Clusters");
     h.state_mut().ui.dialog_mut(id).unwrap().fields.insert(COLOR_EYEDROPPER.into(), json!(true));
-    assert!(color_eyedropper_sample(h.state_mut(), 2.0, 5.0));
+    assert!(color_eyedropper_sample(h.state_mut(), 2.0, 5.0, egui::Modifiers::NONE));
     h.get_by_label("Localized Color Clusters").click();
     h.run_steps(2);
     let f = h.state().ui.dialogs.last().unwrap().fields.clone();
@@ -1655,4 +2185,263 @@ fn replace_color_localized_color_clusters() {
     let px = |x: i32| doc.layers[0].surface().unwrap().read_region(photocraft_geom::Rect::new(x, 5, x + 1, 6));
     assert!(px(2)[1] > 0.5, "near the point: shifted to green {:?}", px(2));
     assert!(px(38)[0] > 0.9 && px(38)[1] < 0.1, "far away: still red {:?}", px(38));
+}
+
+/// #9754: exercise the real dropdown, not the selection helper, with every listed extension.
+/// Only the CUBE fixture is parsed here; the other files establish listing eligibility.
+#[test]
+fn color_lookup_folder_menu_click_applies_pixels_and_undoes() {
+    use egui_kittest::Harness;
+    use egui_kittest::kittest::Queryable;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let path = tmp.path().join("invert.cube");
+    std::fs::write(&path, "LUT_3D_SIZE 2\n1 1 1\n0 1 1\n1 0 1\n0 0 1\n1 1 0\n0 1 0\n1 0 0\n0 0 0\n").unwrap();
+    for name in ["listed.3dl", "listed.look"] {
+        std::fs::write(tmp.path().join(name), "listing-only fixture").unwrap();
+    }
+    let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
+    app.run("prefs.set", json!({"path": "fileHandling.lutFolder", "value": tmp.path().to_str().unwrap()})).unwrap();
+    app.run("file.new", json!({"width": 4, "height": 4, "background": "#ff0000"})).unwrap();
+    let mut h = Harness::builder().with_size(egui::vec2(900.0, 800.0)).build_ui_state(|ui, app| crate::dialogs::show(app, ui.ctx()), &mut app);
+    PhotocraftApp::setup_context(&h.ctx, crate::theme::ThemeKind::ALL[0]);
+    let id = open(h.state_mut(), "image.adjustments.colorLookup").unwrap();
+    h.run_steps(3);
+    for _ in 0..500 {
+        if crate::adjust_ui::folder_luts(tmp.path().to_str().unwrap(), &h.ctx).len() == 3 {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        h.run_steps(1);
+    }
+    h.get_by_role_and_label(egui::accesskit::Role::ComboBox, "Lut").click();
+    h.run_steps(2);
+    let _ = h.get_by_label("listed.3dl");
+    let _ = h.get_by_label("listed.look");
+    h.get_by_label("invert.cube").click();
+    h.run_steps(3);
+    let f = h.state_mut().ui.dialog_mut(id).unwrap().fields.clone();
+    assert_eq!(f["file"], json!(path.to_str().unwrap()));
+    assert_eq!(f["lut"], json!("none"));
+    let submitted = params_of(&f);
+    assert!(!submitted.as_object().unwrap().keys().any(|key| key.starts_with("__")));
+    crate::dialogs::confirm(h.state_mut(), id).unwrap();
+    let pixel = |app: &PhotocraftApp| app.session.active().unwrap().doc.layers[0].surface().unwrap().read_region(photocraft_geom::Rect::new(0, 0, 1, 1));
+    let cyan = pixel(h.state());
+    assert!(cyan[0] < 0.01 && cyan[1] > 0.99 && cyan[2] > 0.99, "selected nonidentity LUT applied: {cyan:?}");
+    h.state_mut().run("edit.undo", json!({})).unwrap();
+    let red = pixel(h.state());
+    assert!(red[0] > 0.99 && red[1] < 0.01 && red[2] < 0.01, "Undo restores pixels: {red:?}");
+    h.state_mut().run("edit.redo", json!({})).unwrap();
+    assert_eq!(pixel(h.state()), cyan);
+}
+
+#[test]
+fn match_color_control_source_changes_reset_layer_even_with_copied_ids() {
+    use photocraft_doc::{Color, ColorMode, Layer, SampleType, Size};
+    use photocraft_geom::Rect;
+    let area = Rect::new(0, 0, 8, 8);
+    let mut source = Document::with_background("first", Size::new(8, 8), ColorMode::Rgb, SampleType::U8, Color::WHITE);
+    let bottom = source.layers[0].id;
+    let mut cover = Layer::raster("cover", source.pixel_format());
+    cover.surface_mut().unwrap().fill_rect(area, &[0.9, 0.2, 0.1, 1.0]);
+    source.layers.push(cover);
+    let mut other = source.clone();
+    other.id = Document::new("identity", source.size, source.mode, source.depth).id;
+    other.name = "second".into();
+    other.layers[0].surface_mut().unwrap().fill_rect(area, &[0.1, 0.8, 0.2, 1.0]);
+    for frame in [false, true] {
+        let mut session = photocraft_engine::Session::new();
+        session.add_document(source.clone(), None);
+        session.add_document(other.clone(), None);
+        session.execute("file.new", json!({"width":8,"height":8,"background":"white"})).unwrap();
+        let mut app = PhotocraftApp::new(session, Default::default());
+        app.sync_views();
+        let ctx = egui::Context::default();
+        PhotocraftApp::setup_context(&ctx, Default::default());
+        for explicit_layer in [false, true] {
+            let id = open(&mut app, "image.adjustments.matchColor").unwrap();
+            for (field, value) in [("source", json!(0)), ("sourceLayer", json!(bottom)), ("source", json!(0))] {
+                assert_eq!(match_color_control(&mut app, &ctx, "ui.dialog.set", json!({"dialog":id,"field":field,"value":value}))["ok"], true);
+            }
+            assert_eq!(app.ui.dialog_mut(id).unwrap().fields["sourceLayer"], json!(bottom), "unchanged Source retains Layer");
+            assert_eq!(match_color_control(&mut app, &ctx, "ui.dialog.set", json!({"dialog":id,"field":"source","value":1}))["ok"], true);
+            if frame {
+                ctx.run_ui(Default::default(), |ui| crate::dialogs::show(&mut app, ui.ctx())).textures_delta.clear();
+            }
+            assert!(!app.ui.dialog_mut(id).unwrap().fields.contains_key("sourceLayer"), "a different Source returns to Merged");
+            if explicit_layer {
+                assert_eq!(match_color_control(&mut app, &ctx, "ui.dialog.set", json!({"dialog":id,"field":"sourceLayer","value":bottom}))["ok"], true);
+            }
+            crate::dialogs::confirm(&mut app, id).unwrap();
+            let pixel = app.session.active().unwrap().doc.layers[0].surface().unwrap().rgba(4, 4);
+            assert_eq!(pixel[1] > pixel[0], explicit_layer, "explicit layer samples green; Merged samples red: {pixel:?}");
+            app.run("edit.undo", json!({})).unwrap();
+        }
+        assert_eq!(*app.session.documents()[0].doc, source);
+        assert_eq!(*app.session.documents()[1].doc, other);
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn match_color_preview_refreshes_when_a_source_job_lands() {
+    use photocraft_doc::{Color, ColorMode, SampleType, Size};
+    use photocraft_geom::Rect;
+    let area = Rect::new(0, 0, 8, 8);
+    {
+        let mut source = Document::with_background("reference", Size::new(8, 8), ColorMode::Rgb, SampleType::U8, Color::WHITE);
+        source.layers[0].surface_mut().unwrap().fill_rect(area, &[0.1, 0.3, 0.9, 1.0]);
+        let mut session = photocraft_engine::Session::new();
+        session.add_document(source, None);
+        // Start before opening the dialog; applying a completed source job is a normal producer.
+        let photocraft_engine::jobs::Started::Job(job) = session
+            .start_job(
+                "test.source",
+                json!({}),
+                "Source pixels",
+                true,
+                |_| Ok(()),
+                move |session, ()| {
+                    session.edit("Source pixels", |doc, active| {
+                        doc.layer_mut(active.unwrap()).unwrap().surface_mut().unwrap().fill_rect(area, &[0.9, 0.2, 0.1, 1.0]);
+                        Ok(())
+                    })?;
+                    Ok(Value::Null)
+                },
+            )
+            .unwrap()
+        else {
+            panic!("native source job");
+        };
+        session.execute("file.new", json!({"width":8,"height":8,"background":"white"})).unwrap();
+        let mut app = PhotocraftApp::new(session, Default::default());
+        app.sync_views();
+        app.background_jobs = false;
+        let target = app.session.active().unwrap().doc.clone();
+        let revision = app.session.active().unwrap().revision;
+        let ctx = egui::Context::default();
+        let id = open(&mut app, "image.adjustments.matchColor").unwrap();
+        assert_eq!(match_color_control(&mut app, &ctx, "ui.dialog.set", json!({"dialog":id,"field":"source","value":0}))["ok"], true);
+        let preview = |app: &mut PhotocraftApp, blue: bool| {
+            crate::canvas::ensure_filter_preview(app, 1, &ctx).expect("inline preview");
+            let pixel = app.filter_preview.as_ref().unwrap().result.as_ref().unwrap().layers[0].surface().unwrap().rgba(4, 4);
+            assert_eq!(pixel[2] > pixel[0], blue, "preview follows current source pixels: {pixel:?}");
+            pixel
+        };
+        preview(&mut app, true);
+        let before_key = app.filter_preview.as_ref().unwrap().key.clone();
+        let cached = app.filter_preview.as_ref().unwrap().result.as_ref().unwrap().clone();
+        preview(&mut app, true);
+        assert!(std::sync::Arc::ptr_eq(&cached, app.filter_preview.as_ref().unwrap().result.as_ref().unwrap()), "unchanged source reuses cached preview");
+        app.session.wait_job(job).unwrap();
+        assert_eq!(app.session.active_index(), Some(1));
+        assert_eq!(app.session.active().unwrap().revision, revision, "target revision remains unchanged");
+        assert!(std::sync::Arc::ptr_eq(&target, &app.session.active().unwrap().doc));
+        let shown = preview(&mut app, false);
+        let after_key = &app.filter_preview.as_ref().unwrap().key;
+        assert_ne!(&before_key, after_key);
+        assert!(!before_key.same_target(after_key), "old-source worker results must not be republished as slider updates");
+        crate::dialogs::confirm(&mut app, id).unwrap();
+        let applied = app.session.active().unwrap().doc.layers[0].surface().unwrap().rgba(4, 4);
+        assert!(shown.iter().zip(applied).all(|(a, b)| (a - b).abs() <= 1.0 / 255.0), "preview agrees with OK");
+        assert_eq!(app.session.active().unwrap().history.past_len(), 1);
+    }
+}
+
+#[test]
+fn preview_source_revisions_follow_only_referenced_documents() {
+    let mut session = photocraft_engine::Session::new();
+    for _ in 0..2 {
+        session.execute("file.new", json!({"width":1,"height":1})).unwrap();
+    }
+    let source = &session.documents()[0];
+    let want = vec![(source.doc.id, source.revision)];
+    for (command, params) in [
+        ("image.adjustments.matchColor", json!({"source":0})),
+        ("filter.distort.displace", json!({"mapDocument":0})),
+        (SMART_FILTER_SET_PARAMS, json!({"params":{"mapDocument":0}})),
+    ] {
+        assert_eq!(preview_source_revisions(&session, command, &params), want, "{command}");
+    }
+    for params in [json!({}), json!({"source":-1}), json!({"source":99})] {
+        assert!(preview_source_revisions(&session, "image.adjustments.matchColor", &params).is_empty());
+    }
+}
+
+#[test]
+fn indexed_matte_dropdown_and_picker_change_the_applied_edge_color() {
+    use egui::accesskit::Role;
+    use egui_kittest::{Harness, kittest::Queryable};
+
+    for (choice, matte) in [("Black", [0.0, 0.0, 0.0]), ("50% Gray", [128.0 / 255.0; 3]), ("Netscape Gray", [192.0 / 255.0; 3]), ("Other…", [0.0, 0.0, 1.0])]
+    {
+        let mut session = photocraft_engine::Session::new();
+        session.execute("file.new", json!({"width": 2, "height": 1, "depth": 32, "background": "transparent"})).unwrap();
+        session
+            .edit("fixture", |doc, active| {
+                let bounds = doc.bounds();
+                doc.layer_mut(active.unwrap()).unwrap().surface_mut().unwrap().write_region(bounds, &[1.0, 0.0, 0.0, 0.75, 0.0, 0.0, 0.0, 0.0]);
+                Ok(())
+            })
+            .unwrap();
+        let mut app = PhotocraftApp::new(session, crate::Services::default());
+        let mut harness = Harness::builder().with_size(egui::vec2(900.0, 1000.0)).build_ui_state(|ui, app| crate::dialogs::show(app, ui.ctx()), &mut app);
+        PhotocraftApp::setup_context(&harness.ctx, crate::theme::ThemeKind::ALL[0]);
+        let id = open(harness.state_mut(), "image.mode.indexedColor").unwrap();
+        harness.state_mut().ui.dialog_mut(id).unwrap().fields.insert("palette".into(), json!("exact"));
+        harness.run_steps(3);
+        harness.query_all_by_role(Role::ComboBox).find(|node| node.value().as_deref() == Some("None")).expect("Matte dropdown").click();
+        harness.run_steps(2);
+        harness.get_by_label(choice).click();
+        harness.run_steps(3);
+        if choice == "Other…" {
+            let picker = harness.state().ui.dialogs.last().unwrap().id;
+            assert_ne!(picker, id);
+            harness.state_mut().ui.dialog_mut(picker).unwrap().fields.insert("color".into(), json!("#0000ff"));
+            crate::dialogs::confirm(harness.state_mut(), picker).unwrap();
+            harness.state_mut().ui.dialogs.retain(|dialog| dialog.id != picker);
+            harness.run_steps(3);
+        }
+        harness.get_by_label("OK").click();
+        harness.run_steps(3);
+        let doc = &harness.state().session.active().unwrap().doc;
+        assert_eq!(doc.mode, photocraft_color::ColorMode::Indexed);
+        let surface = doc.layers[0].surface().unwrap();
+        let edge = surface.rgba(0, 0);
+        let expected = [0.75 + 0.25 * matte[0], 0.25 * matte[1], 0.25 * matte[2]];
+        assert!(edge.iter().zip(expected).all(|(got, want)| (got - want).abs() <= 1.0 / 255.0) && edge[3] == 1.0, "{choice}: {edge:?} vs {expected:?}");
+        assert_eq!(surface.rgba(1, 0)[3], 0.0);
+    }
+}
+
+/// Selecting Other… must not replace None until the custom colour picker is confirmed.
+#[test]
+fn indexed_matte_cancel_keeps_the_previous_choice() {
+    use egui::accesskit::Role;
+    use egui_kittest::{Harness, kittest::Queryable};
+
+    let mut session = photocraft_engine::Session::new();
+    session.execute("file.new", json!({"width": 2, "height": 1, "depth": 32, "background": "transparent"})).unwrap();
+    let mut app = PhotocraftApp::new(session, crate::Services::default());
+    let mut harness = Harness::builder().with_size(egui::vec2(900.0, 1000.0)).build_ui_state(|ui, app| crate::dialogs::show(app, ui.ctx()), &mut app);
+    PhotocraftApp::setup_context(&harness.ctx, crate::theme::ThemeKind::ALL[0]);
+    let id = open(harness.state_mut(), "image.mode.indexedColor").unwrap();
+    harness.run_steps(3);
+    harness.query_all_by_role(Role::ComboBox).find(|node| node.value().as_deref() == Some("None")).expect("Matte dropdown").click();
+    harness.run_steps(2);
+    harness.get_by_label("Other…").click();
+    harness.run_steps(3);
+
+    let picker = harness.state().ui.dialogs.last().expect("custom matte picker").id;
+    assert_ne!(picker, id);
+    let parent = harness.state().ui.dialogs.iter().find(|dialog| dialog.id == id).expect("Indexed Color dialog");
+    assert_eq!(parent.fields.get("matte").and_then(Value::as_str), None, "opening Other… does not commit a matte");
+    assert_eq!(harness.state().ui.dialogs.last().unwrap().fields["color"], "#ffffff", "the previous default still seeds the picker");
+
+    crate::dialogs::cancel(harness.state_mut(), picker).unwrap();
+    harness.run_steps(3);
+    let parent = harness.state().ui.dialogs.iter().find(|dialog| dialog.id == id).expect("Indexed Color dialog");
+    assert_eq!(parent.fields.get("matte").and_then(Value::as_str), None, "cancel restores the previous None choice");
+    assert!(!parent.fields.contains_key("__pickColorDefault"));
 }

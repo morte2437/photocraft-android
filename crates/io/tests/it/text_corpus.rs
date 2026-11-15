@@ -196,7 +196,7 @@ fn corpus_photoshop_path_text_opens_on_its_path() {
         let layer = all.iter().find(|l| matches!(l.content, LayerContent::Text(_))).unwrap();
         let LayerContent::Text(t) = &layer.content else { unreachable!() };
         let doc_anchors = |t: &photocraft_doc::TextLayer| -> Vec<Point> {
-            let TextShape::Path { path, start, flip } = &t.shape else { panic!("{file}: not path text: {:?}", t.shape) };
+            let TextShape::Path { path, start, flip, .. } = &t.shape else { panic!("{file}: not path text: {:?}", t.shape) };
             assert_eq!((path.closed, *start, *flip), (closed, 0.0, false), "{file}");
             path.knots.iter().map(|k| t.transform.apply(k.anchor)).collect()
         };

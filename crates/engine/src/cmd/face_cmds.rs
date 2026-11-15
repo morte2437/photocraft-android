@@ -28,6 +28,9 @@ pub fn detect(px: &[[f32; 4]], w: usize, h: usize, min_score: f32) -> Result<Vec
 /// `all_layers` is off. Coordinates are document pixels.
 pub fn faces_in(doc: &Document, active: Option<LayerId>, all_layers: bool, min_score: f32) -> Result<Vec<Face>> {
     let area = doc.bounds();
+    // Both paths hold the whole canvas as straight RGBA f32, however few tiles the layers store:
+    // refuse a canvas past the working budget before allocating it.
+    crate::allocation::check_dense(area, 16, "face detection")?;
     let (w, h) = (area.width() as usize, area.height() as usize);
     let surface = active.and_then(|id| doc.layer(id)).and_then(|l| l.surface()).filter(|_| !all_layers);
     let px = match surface {

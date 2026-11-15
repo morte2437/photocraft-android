@@ -78,29 +78,28 @@ pub(super) struct Above {
     pub(super) max_side: usize,
     /// The covering layers (whole layers or groups, at any depth).
     pub(super) ids: Vec<LayerId>,
-    /// Adjustment layers over the covering ones: they stay in the document under the box as well,
-    /// and are composited with the covering layers so those keep the adjustment.
-    pub(super) applied: Vec<LayerId>,
     /// Their composite and the canvas area it covers; `None` when nothing visible covers the layer.
     pub(super) shown: Option<(crate::transform_tex::PreviewTextures, photocraft_geom::Rect)>,
 }
 
-impl Above {
-    pub(super) fn new(ctx: &egui::Context, name: String, doc: &Document, id: LayerId, max_side: usize) -> Self {
-        let mut a = Self { ctx: ctx.clone(), name, max_side, ids: Vec::new(), applied: Vec::new(), shown: None };
-        a.rebuild(doc, id);
-        a
-    }
+/// What covers a layer ([`covering`]) and the document to composite it from: the cheap half of
+/// [`Above`], so the composite ([`AbovePlan::image`]) can run off the UI thread.
+pub(super) struct AbovePlan {
+    pub(super) ids: Vec<LayerId>,
+    up: Document,
+    rect: photocraft_geom::Rect,
+}
 
-    /// Composite what covers layer `id` of `doc` (the live document) again.
-    pub(super) fn rebuild(&mut self, doc: &Document, id: LayerId) {
-        self.ids.clear();
-        self.applied.clear();
-        covering(&doc.layers, id, &mut self.ids, &mut self.applied);
+impl AbovePlan {
+    pub(super) fn new(doc: &Document, id: LayerId) -> Self {
+        let (mut ids, mut applied) = (Vec::new(), Vec::new());
+        covering(&doc.layers, id, &mut ids, &mut applied);
         let mut up = doc.clone();
         let mut covers = doc.clone();
-        show_only(&mut covers.layers, &self.ids);
-        let keep: Vec<LayerId> = self.ids.iter().chain(&self.applied).copied().collect();
+        show_only(&mut covers.layers, &ids);
+        // Adjustment layers over the covering ones (`applied`) stay in the document under the box
+        // as well, and are composited with the covering layers so those keep the adjustment.
+        let keep: Vec<LayerId> = ids.iter().chain(&applied).copied().collect();
         show_only(&mut up.layers, &keep);
         let canvas = up.bounds();
         // An adjustment touches only pixels the covering layers have, so they alone bound the composite.
@@ -110,21 +109,58 @@ impl Above {
             .filter(|l| l.visible)
             .fold(photocraft_geom::Rect::EMPTY, |r, l| r.union(&photocraft_compose::composite_bounds(l, canvas).unwrap_or(canvas)))
             .intersect(&canvas);
-        self.shown = (!rect.is_empty()).then(|| {
-            let (image, uv) = composite_image(&up, rect, self.max_side);
-            (crate::transform_tex::PreviewTextures::new(&self.ctx, self.name.clone(), image, uv), rect)
-        });
+        Self { ids, up, rect }
+    }
+
+    /// How many canvas pixels the covering composite spans.
+    pub(super) fn area(&self) -> u64 {
+        self.rect.size().area()
+    }
+
+    /// The covering layers' composite (the heavy part; any thread). `None` when nothing covers.
+    pub(super) fn image(&self, max_side: usize) -> Option<(egui::ColorImage, [f32; 2])> {
+        (!self.rect.is_empty()).then(|| composite_image(&self.up, self.rect, max_side))
     }
 
     /// Leave the covering layers out of `layers` (the document under the box).
     pub(super) fn hide_in(&self, layers: &mut [photocraft_doc::Layer]) {
-        for l in layers.iter_mut() {
-            if self.ids.contains(&l.id) {
-                l.visible = false;
-            } else if let LayerContent::Group(g) = &mut l.content {
-                self.hide_in(&mut g.children);
-            }
+        hide_ids(&self.ids, layers);
+    }
+}
+
+fn hide_ids(ids: &[LayerId], layers: &mut [photocraft_doc::Layer]) {
+    for l in layers.iter_mut() {
+        if ids.contains(&l.id) {
+            l.visible = false;
+        } else if let LayerContent::Group(g) = &mut l.content {
+            hide_ids(ids, &mut g.children);
         }
+    }
+}
+
+impl Above {
+    pub(super) fn new(ctx: &egui::Context, name: String, doc: &Document, id: LayerId, max_side: usize) -> Self {
+        let plan = AbovePlan::new(doc, id);
+        let image = plan.image(max_side);
+        Self::from_plan(ctx, name, max_side, plan, image)
+    }
+
+    /// An `Above` from its plan and the composite made from it (on the UI thread: textures).
+    pub(super) fn from_plan(ctx: &egui::Context, name: String, max_side: usize, plan: AbovePlan, image: Option<(egui::ColorImage, [f32; 2])>) -> Self {
+        let shown = image.map(|(image, uv)| (crate::transform_tex::PreviewTextures::new(ctx, name.clone(), image, uv), plan.rect));
+        Self { ctx: ctx.clone(), name, max_side, ids: plan.ids, shown }
+    }
+
+    /// Composite what covers layer `id` of `doc` (the live document) again.
+    pub(super) fn rebuild(&mut self, doc: &Document, id: LayerId) {
+        let plan = AbovePlan::new(doc, id);
+        let image = plan.image(self.max_side);
+        *self = Self::from_plan(&self.ctx.clone(), self.name.clone(), self.max_side, plan, image);
+    }
+
+    /// Leave the covering layers out of `layers` (the document under the box).
+    pub(super) fn hide_in(&self, layers: &mut [photocraft_doc::Layer]) {
+        hide_ids(&self.ids, layers);
     }
 
     /// Draw the composite over the moving pixels.

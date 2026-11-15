@@ -55,6 +55,9 @@ fn fill_mode(p: &Value) -> Result<FillMode> {
     }
 }
 
+/// The reference's alert for a Paint Bucket click in a Bitmap document (#12536).
+pub const BITMAP_REFUSAL: &str = "Could not use the paint bucket because it does not work with Bitmap images (convert image to Grayscale mode to edit).";
+
 fn bucket(s: &mut Session, p: &Value) -> Result<Value> {
     let fg = s.tools.foreground;
     let c = color(p.get("color"), fg);
@@ -63,6 +66,10 @@ fn bucket(s: &mut Session, p: &Value) -> Result<Value> {
     let opacity = opacity(p, "paint.bucket")?;
     let mode = fill_mode(p)?;
     let all = b(p, "sampleAllLayers", false) && crate::channel_cmds::target_of(p) == crate::channel_cmds::Target::Pixels;
+    // Before the region, the target and the document copy: a Bitmap click changes nothing.
+    if s.active().is_some_and(|d| d.doc.mode == photocraft_color::ColorMode::Bitmap) {
+        return Err(EngineError::Other(BITMAP_REFUSAL.into()));
+    }
     // Other visible layers can define the region, but the fill still writes only to the target.
     let region = if all {
         let (area, img) = crate::selection_cmds::sample_rgba8(s, true)?;
@@ -86,6 +93,16 @@ fn bucket(s: &mut Session, p: &Value) -> Result<Value> {
     // A foreground picked as CMYK fills a CMYK document with the picked inks (#4196).
     let inks = s.tools.picked_cmyk([c[0], c[1], c[2]]).filter(|_| c[3] >= 1.0 && pattern.is_none());
     let layer = if p.get("layer").is_some() { Some(crate::commands::layer_param(s, p)?) } else { s.active().and_then(|st| st.active_layer) };
+    // A click off the canvas, or on a pixel the selection leaves out, fills nothing and adds no
+    // history state (#12535). A partly selected pixel still fills, clipped to the selection.
+    let fills_nothing =
+        s.active().is_some_and(|d| !d.doc.bounds().contains(x, y) || d.doc.selection.as_ref().is_some_and(|m| m.sample_channel(x, y, 0) <= 0.0));
+    if fills_nothing {
+        // The target's refusals (a locked layer, a missing mask) stay errors: it is resolved on a copy.
+        let mut probe = (*s.active().ok_or(EngineError::NoDocument)?.doc).clone();
+        crate::channel_cmds::target_surface(&mut probe, layer, p)?;
+        return Ok(json!({ "filled": false }));
+    }
     let filled = s.edit("Paint Bucket", |doc, _| {
         let area = doc.bounds();
         let sel = doc.selection.clone();
@@ -144,15 +161,26 @@ fn gradient(s: &mut Session, p: &Value) -> Result<Value> {
     // where straight stops give 0.0625.
     let stops = match p.get("method").and_then(Value::as_str).and_then(photocraft_io::GradientMethod::from_name) {
         Some(m) if stops.len() >= 2 => {
-            let colors = stops.iter().map(|(t, c)| (*t, photocraft_color::Color::rgba(c[0], c[1], c[2], c[3]))).collect();
-            let mids = vec![0.5; stops.len() - 1];
-            photocraft_io::bake_gradient(colors, &mids, (f(p, "smoothness", 100.0) / 100.0).clamp(0.0, 1.0), m)
-                .into_iter()
-                .map(|(t, c)| {
-                    let rgb = c.to_rgb();
-                    (t, [rgb[0], rgb[1], rgb[2], c.alpha])
-                })
-                .collect()
+            let smoothness = (f(p, "smoothness", 100.0) / 100.0).clamp(0.0, 1.0);
+            // Smooth at 100 % Smoothness bakes the colour and opacity stops apart: the colours by
+            // the method, the opacity by Smooth's measured transparency curve (#12010). Merged
+            // stops would take the nearest stop's alpha. The other methods and Smoothness values
+            // were not measured in the Gradient tool and keep the merged stops.
+            let split = if m == photocraft_io::GradientMethod::Smooth && smoothness >= 1.0 { split_stops(s, p, fg)? } else { None };
+            match split {
+                Some(split) => smooth_split_stops(split),
+                None => {
+                    let colors = stops.iter().map(|(t, c)| (*t, photocraft_color::Color::rgba(c[0], c[1], c[2], c[3]))).collect();
+                    let mids = vec![0.5; stops.len() - 1];
+                    photocraft_io::bake_gradient(colors, &mids, smoothness, m)
+                        .into_iter()
+                        .map(|(t, c)| {
+                            let rgb = c.to_rgb();
+                            (t, [rgb[0], rgb[1], rgb[2], c.alpha])
+                        })
+                        .collect()
+                }
+            }
         }
         _ => stops,
     };
@@ -169,6 +197,64 @@ fn gradient(s: &mut Session, p: &Value) -> Result<Value> {
         Ok(())
     })?;
     Ok(Value::Null)
+}
+
+/// Smooth's colour and opacity stops baked apart, then joined. Both bakes sample the same
+/// positions, so the alpha is multiplied in at each one: [`gradients::apply_opacity`] would cut
+/// every interval into four (385 stops instead of 97), and `paint_gradient` scans the stops for
+/// every pixel. Positions that differ still go through `apply_opacity`.
+pub(crate) fn smooth_split_stops((cs, os): gradients::FillStops) -> gradients::Stops {
+    let mids = vec![0.5; cs.len().saturating_sub(1)];
+    let colours: gradients::Stops = photocraft_io::bake_gradient(cs, &mids, 1.0, photocraft_io::GradientMethod::Smooth)
+        .into_iter()
+        .map(|(t, c)| {
+            let rgb = c.to_rgb();
+            (t, [rgb[0], rgb[1], rgb[2], 1.0])
+        })
+        .collect();
+    let omids = vec![0.5; os.len().saturating_sub(1)];
+    let opacity = photocraft_io::bake_gradient_smooth_opacity(os, &omids);
+    if colours.len() != opacity.len() || colours.iter().zip(&opacity).any(|(c, o)| (c.0 - o.0).abs() > 1e-6) {
+        return gradients::apply_opacity(colours, &opacity);
+    }
+    colours
+        .into_iter()
+        .zip(opacity)
+        .map(|((t, mut c), (_, a))| {
+            c[3] = if a.is_finite() { a.clamp(0.0, 1.0) } else { 1.0 };
+            (t, c)
+        })
+        .collect()
+}
+
+/// The Gradient tool's colour stops (opaque) and opacity stops kept apart, for Smooth's own
+/// transparency curve. `None` when the opacity is constant, or when legacy `colors` carry their
+/// own alpha (that case keeps the merged stops). A single colour stop spans the whole gradient.
+fn split_stops(s: &Session, p: &Value, fg: [f32; 4]) -> Result<Option<gradients::FillStops>> {
+    let (mut cs, os) = match gradients::tool_fill_stops(s, p)? {
+        Some(split) => split,
+        None => {
+            // The legacy `colors` list, evenly spaced.
+            let colors: Vec<[f32; 4]> = p.get("colors").and_then(Value::as_array).map(|a| a.iter().map(|v| color(Some(v), fg)).collect()).unwrap_or_default();
+            if colors.iter().any(|c| c[3] < 1.0) {
+                return Ok(None);
+            }
+            let n = colors.len();
+            let cs = colors
+                .iter()
+                .enumerate()
+                .map(|(i, c)| (if n > 1 { i as f32 / (n - 1) as f32 } else { 0.0 }, photocraft_color::Color::rgb(c[0], c[1], c[2])))
+                .collect();
+            (cs, gradients::transparency_param(p, "paint.gradient")?.unwrap_or_default())
+        }
+    };
+    if os.iter().all(|o| (o.1 - 1.0).abs() < 1e-6) {
+        return Ok(None);
+    }
+    if let [(_, c)] = cs.as_slice() {
+        cs = vec![(0.0, *c), (1.0, *c)];
+    }
+    Ok(if cs.is_empty() { None } else { Some((cs, os)) })
 }
 
 /// Paint helper command specs.
@@ -199,3 +285,9 @@ pub fn specs() -> Vec<CommandSpec> {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod bucket_no_op_history_tests;
+
+#[cfg(test)]
+mod bucket_bitmap_tests;

@@ -261,7 +261,7 @@ fn inspect_and_replace_contents_report_shared_instances() {
 fn photoshop_placed_copies_import_as_shared_instances() {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../corpus/photoshop/smart-filters/sf-none-plain.psd");
     let bytes = std::fs::read(&path).unwrap_or_else(|e| panic!("{}: {e} (run `cargo xtask corpus --all`)", path.display()));
-    let mut file = photocraft_psd::PsdFile::from_bytes(&bytes).unwrap();
+    let mut file = craft_psd::PsdFile::from_bytes(&bytes).unwrap();
     let placed = file.layers().iter().find(|r| r.block(b"SoLd").is_some()).expect("a placed layer").clone();
     file.layers_mut().push(placed);
     let mut s = Session::new();

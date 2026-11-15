@@ -59,11 +59,14 @@ pub fn entries(l: &Layer, multi: bool, has_selection: bool) -> Vec<Entry> {
     // Photoshop's New Group dialog.
     v.push(Some((tl!("Group from Layers…"), "layer.new.groupFromLayers")));
     v.push(None);
-    v.push(Some((tl!("Quick Export As PNG"), "layer.quickExportAsPng")));
+    v.push(Some((tl!("Quick Export as PNG"), "layer.quickExportAsPng")));
     v.push(Some((tl!("Export As…"), "layer.exportAs")));
     v.push(None);
     v.push(Some((tl!("Artboard from Layers…"), "layer.new.artboardFromLayers")));
     v.push(Some((tl!("Frame from Layers…"), "layer.new.frameFromLayers")));
+    if !multi && matches!(l.content, LayerContent::Shape(_) | LayerContent::Text(_)) {
+        v.push(Some((tl!("Convert to Frame…"), "layer.frame.convert")));
+    }
     v.push(None);
     v.push(Some((tl!("Convert to Smart Object"), "layer.smartObjects.convertToSmartObject")));
     if multi {
@@ -73,10 +76,15 @@ pub fn entries(l: &Layer, multi: bool, has_selection: bool) -> Vec<Entry> {
         v.push(Some(("Rasterize Layers", "layer.rasterize.layer")));
     } else {
         match &l.content {
-            LayerContent::Text(_) => v.push(Some(("Rasterize Type", "layer.rasterize.type"))),
+            LayerContent::Text(_) => {
+                v.push(Some(("Rasterize Type", "layer.rasterize.type")));
+                v.push(Some((tl!("Create Work Path"), "type.createWorkPath")));
+                v.push(Some((tl!("Convert to Shape"), "type.convertToShape")));
+            }
             LayerContent::Shape(_) => v.push(Some(("Rasterize Layer", "layer.rasterize.shape"))),
             LayerContent::Smart(_) => {
                 v.push(Some((tl!("Edit Contents"), "layer.smartObjects.editContents")));
+                v.push(Some((tl!("Reset Transform"), "layer.smartObjects.resetTransform")));
                 v.push(Some((tl!("Replace Contents…"), "layer.smartObjects.replaceContents")));
                 v.push(Some((tl!("Relink to File…"), "layer.smartObjects.relinkToFile")));
                 v.push(Some((tl!("Convert to Layers"), "layer.smartObjects.convertToLayers")));

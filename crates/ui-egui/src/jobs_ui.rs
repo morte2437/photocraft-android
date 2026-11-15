@@ -70,6 +70,17 @@ pub(crate) struct OpenBatch {
     opened: Vec<usize>,
 }
 
+/// A file being placed in the background (File › Place, or a file dropped on the canvas): Free
+/// Transform starts on its layer when the job lands, and the files dropped after it follow.
+#[derive(Clone, Debug)]
+pub struct PlaceJob {
+    pub job: JobId,
+    /// Display name (the file name).
+    pub name: String,
+    /// The document it lands in: Free Transform starts only while that one is in view.
+    pub doc: DocId,
+}
+
 /// The job command of a background save.
 pub const SAVE_JOB: &str = "file.save";
 
@@ -165,6 +176,9 @@ pub struct JobsUi {
     pub focus: Option<JobId>,
     /// The job the latest [`run`] started (the control channel waits on it).
     pub(crate) last_started: Option<JobId>,
+    /// The file being placed in the background, if any. One at a time: files dropped meanwhile
+    /// wait in the app's drop queue.
+    pub place: Option<PlaceJob>,
     /// Cached read-only canvas image of the current folder Batch input.
     batch_preview_texture: Option<(JobId, u64, egui::TextureHandle)>,
 }
@@ -173,7 +187,10 @@ pub struct JobsUi {
 /// (the result is then `{"job": id, "pending": true}` and the edit lands when [`tick`] applies
 /// it), else synchronously like [`photocraft_engine::Session::execute`].
 pub fn run(app: &mut PhotocraftApp, id: &str, params: Value) -> Result<Value, String> {
-    if !app.background_jobs {
+    // A place is also a job where there are no threads (the web build): the session steps it a
+    // slice per frame, and every other command stays synchronous there.
+    let place = matches!(id, "file.placeEmbedded" | "file.placeLinked") && place_in_background(app);
+    if !app.background_jobs && !place {
         return app.session.execute(id, params).map_err(|e| e.to_string());
     }
     match app.session.start(id, params).map_err(|e| e.to_string())? {
@@ -186,6 +203,69 @@ pub fn run(app: &mut PhotocraftApp, id: &str, params: Value) -> Result<Value, St
             Ok(json!({"job": job.0, "pending": true}))
         }
     }
+}
+
+/// Is a place a job? With worker threads (`background_jobs`), or where the session has none and
+/// steps the place itself a slice per frame (`cooperative_jobs`, the web build). Every other
+/// command goes by `background_jobs` alone: threads are what save, print and the rest need.
+pub(crate) fn place_in_background(app: &PhotocraftApp) -> bool {
+    app.background_jobs || app.session.cooperative_jobs()
+}
+
+/// Place a file's bytes in the background (File › Place for a file with no path to read, a dropped
+/// file read by the browser): like [`run`] for `file.placeEmbedded`, the result is
+/// `{"job": id, "pending": true}` and the layer lands when [`tick`] applies the job. `linked`
+/// makes it Place Linked to that path. Hand the result to [`track_place`].
+pub(crate) fn start_place_bytes(app: &mut PhotocraftApp, name: &str, bytes: Vec<u8>, linked: Option<String>, params: &Value) -> Result<Value, String> {
+    if app.jobs.place.is_some() {
+        return Err(tl!("A file is still being placed; try again when it has finished.").into());
+    }
+    match app.session.start_place_bytes(name, bytes, linked, params.clone()).map_err(|e| e.to_string())? {
+        Started::Done(v) => Ok(v),
+        Started::Job(job) => {
+            app.jobs.last_started = Some(job);
+            // The status bar's progress readout names the job; clear any old message.
+            app.ui.status.clear();
+            app.ui.status_error = false;
+            Ok(json!({"job": job.0, "pending": true}))
+        }
+    }
+}
+
+/// Follow the place that `started` (the result of [`run`] or [`start_place_bytes`] for the file
+/// `name`) began in the background: when it lands, Free Transform starts on its layer and the
+/// next dropped file is placed (see `on_event`). False when it already ran (nothing to follow).
+pub(crate) fn track_place(app: &mut PhotocraftApp, name: &str, started: &Value) -> bool {
+    let job = started.get("pending").and_then(Value::as_bool).filter(|pending| *pending).and_then(|_| started.get("job")?.as_u64());
+    let (Some(job), Some(doc)) = (job, app.session.active().map(|st| st.doc.id)) else { return false };
+    app.jobs.place = Some(PlaceJob { job: JobId(job), name: crate::file_open::display_name(name), doc });
+    true
+}
+
+/// A background place ended: start Free Transform on the layer it made, or report why not, then
+/// go on with the files dropped meanwhile.
+fn finish_place(app: &mut PhotocraftApp, ctx: &egui::Context, place: PlaceJob, outcome: JobOutcome) {
+    app.sync_views();
+    match outcome {
+        JobOutcome::Done(result) => {
+            // The tab can change while the file is placed: the box opens only on the document it
+            // was placed in, and never over another one. An image placed into a frame has none.
+            if app.ui.transform.is_none()
+                && result.get("frame").and_then(Value::as_u64).is_none()
+                && app.session.active().is_some_and(|st| st.doc.id == place.doc)
+                && let Err(e) = crate::transform_tool::begin_placed(app, ctx)
+            {
+                app.ui.status = e;
+            }
+        }
+        JobOutcome::Failed(err) => app.place_failed(&place.name, &err),
+        JobOutcome::Cancelled if app.session.documents().iter().any(|st| st.doc.id == place.doc) => {
+            app.ui.status = crate::i18n::fmt(tl!("Cancelled placing {name}"), &[("name", &place.name)]);
+            app.ui.status_error = false;
+        }
+        JobOutcome::Cancelled => {}
+    }
+    app.place_next_dropped(ctx);
 }
 
 /// Open a file in the background: a tab appears at once and shows the progress; the document
@@ -206,11 +286,38 @@ pub fn start_open(
         // once. A preflight keeps the slot and set order in its memory prompt.
         Started::Done(v) => finish_open(app, name, path.as_deref(), &v, slot, order),
         Started::Job(job) => {
-            app.jobs.opens.push(OpenTab { job, name: name.to_string(), path, slot, order });
-            app.jobs.focus = Some(job);
-            app.ui.chrome.home = None;
-            app.ui.status = crate::i18n::fmt(tl!("Opening {name}…"), &[("name", name)]);
-            app.ui.status_error = false;
+            track_open(app, OpenTab { job, name: name.to_string(), path, slot, order });
+            Ok(())
+        }
+    }
+}
+
+/// A file opening in the background gets its tab: focused, with the status line naming it.
+fn track_open(app: &mut PhotocraftApp, tab: OpenTab) {
+    app.ui.status = crate::i18n::fmt(tl!("Opening {name}…"), &[("name", &tab.name)]);
+    app.jobs.focus = Some(tab.job);
+    app.jobs.opens.push(tab);
+    app.ui.chrome.home = None;
+    app.ui.status_error = false;
+}
+
+/// File › Open as Smart Object… for one file: `file.openAsSmartObject` as a tracked open job, so
+/// the result goes through File › Open's completion ([`finish_open`]: the profile prompt, the
+/// Camera Raw open dialog for a raw, the import warnings). The document is untitled, so
+/// Open Recent is untouched. Inline (background jobs off, or the web) it finishes at once.
+pub(crate) fn start_open_as_smart_object(app: &mut PhotocraftApp, path: &str, order: Option<OpenOrder>) -> Result<(), String> {
+    let name = crate::file_open::display_name(path);
+    // `confirmDamage`: a damaged PSD waits for the user's answer, as in File › Open.
+    let params = json!({"path": path, "confirmDamage": true});
+    let started = if app.background_jobs {
+        app.session.start("file.openAsSmartObject", params).map_err(|e| e.to_string())?
+    } else {
+        Started::Done(app.session.execute("file.openAsSmartObject", params).map_err(|e| e.to_string())?)
+    };
+    match started {
+        Started::Done(v) => finish_open(app, &name, None, &v, None, order),
+        Started::Job(job) => {
+            track_open(app, OpenTab { job, name, path: None, slot: None, order });
             Ok(())
         }
     }
@@ -286,6 +393,7 @@ pub fn start_save(
         // The engine's wording for a command refused while a job runs.
         return Err(format!("“{}” is still running on this document; wait for it to finish or cancel it (Esc)", j.label));
     }
+    crate::app::ensure_memory_to_save(&st.doc, &path)?;
     let name = crate::file_open::display_name(&path);
     // One writer per file: an older snapshot must not land after a newer one.
     if app.jobs.saves.iter().any(|s| s.path == path) {
@@ -359,7 +467,7 @@ fn finish_save(app: &mut PhotocraftApp, ctx: &egui::Context, save: SaveJob, labe
         }
         JobOutcome::Cancelled => {
             app.jobs.close_after_saves = false;
-            app.ui.status = crate::i18n::fmt(tl!("Cancelled {label}"), &[("label", label)]);
+            app.ui.status = crate::i18n::fmt(tl!("Canceled {label}"), &[("label", label)]);
             app.ui.status_error = false;
         }
     }
@@ -457,13 +565,13 @@ pub fn try_cancel(app: &mut PhotocraftApp, id: JobId) -> Result<(), CancelRefuse
     // A save that has started replacing the file runs to the end: cancelling it now would leave
     // the file written but the document marked unsaved.
     if r == Err(CancelRefused::Committing) {
-        app.ui.status = crate::i18n::fmt(tl!("{label} is writing the file and can no longer be cancelled"), &[("label", label.as_deref().unwrap_or_default())]);
+        app.ui.status = crate::i18n::fmt(tl!("{label} is writing the file and can no longer be canceled"), &[("label", label.as_deref().unwrap_or_default())]);
         app.ui.status_error = false;
     }
     if r.is_ok() {
         // The event (and its status text) arrives with the next poll; say so now as well.
         if let Some(l) = label {
-            app.ui.status = crate::i18n::fmt(tl!("Cancelled {label}"), &[("label", &l)]);
+            app.ui.status = crate::i18n::fmt(tl!("Canceled {label}"), &[("label", &l)]);
             app.ui.status_error = false;
         }
     }
@@ -508,6 +616,12 @@ fn on_event(app: &mut PhotocraftApp, ctx: &egui::Context, e: JobEvent) {
     if crate::camera_raw_ui::on_redevelop_event(app, &e) {
         return;
     }
+    if app.jobs.place.as_ref().is_some_and(|p| p.job == e.id)
+        && let Some(place) = app.jobs.place.take()
+    {
+        finish_place(app, ctx, place, e.outcome);
+        return;
+    }
     if e.command == SAVE_JOB
         && let Some(i) = app.jobs.saves.iter().position(|s| s.job == e.id)
     {
@@ -521,7 +635,7 @@ fn on_event(app: &mut PhotocraftApp, ctx: &egui::Context, e: JobEvent) {
         finish_save(app, ctx, save, &e.label, e.outcome);
         return;
     }
-    if e.command == OPEN_JOB {
+    if e.command == OPEN_JOB || app.jobs.opens.iter().any(|o| o.job == e.id) {
         let Some(i) = app.jobs.opens.iter().position(|o| o.job == e.id) else { return };
         let tab = app.jobs.opens.remove(i);
         match e.outcome {
@@ -532,7 +646,7 @@ fn on_event(app: &mut PhotocraftApp, ctx: &egui::Context, e: JobEvent) {
             }
             JobOutcome::Failed(err) => app.open_failed(&tab.name, &err),
             JobOutcome::Cancelled => {
-                app.ui.status = crate::i18n::fmt(tl!("Cancelled opening {name}"), &[("name", &tab.name)]);
+                app.ui.status = crate::i18n::fmt(tl!("Canceled opening {name}"), &[("name", &tab.name)]);
                 app.ui.status_error = false;
             }
         }
@@ -556,7 +670,7 @@ fn on_event(app: &mut PhotocraftApp, ctx: &egui::Context, e: JobEvent) {
             crate::file_ui::print_status(app, result);
         }
         JobOutcome::Done(_) if cancelled_batch => {
-            app.ui.status = crate::i18n::fmt(tl!("Cancelled {label}"), &[("label", &e.label)]);
+            app.ui.status = crate::i18n::fmt(tl!("Canceled {label}"), &[("label", &e.label)]);
             app.ui.status_error = false;
         }
         JobOutcome::Done(_) => {
@@ -572,7 +686,7 @@ fn on_event(app: &mut PhotocraftApp, ctx: &egui::Context, e: JobEvent) {
             notices::error(app, format!("{}: {err}", e.label));
         }
         JobOutcome::Cancelled => {
-            app.ui.status = crate::i18n::fmt(tl!("Cancelled {label}"), &[("label", &e.label)]);
+            app.ui.status = crate::i18n::fmt(tl!("Canceled {label}"), &[("label", &e.label)]);
             app.ui.status_error = false;
         }
     }
@@ -616,6 +730,7 @@ fn finish_open(app: &mut PhotocraftApp, name: &str, path: Option<&str>, v: &Valu
         order,
         question,
         policy_applied,
+        smart_object: v.get("smartObject").and_then(Value::as_bool).unwrap_or(false),
     };
     // Held back for the profile prompt (Ask When Opening).
     if let Some(id) = v.get("held").and_then(Value::as_u64) {
@@ -651,7 +766,7 @@ pub(crate) fn after_open(
     name: &str,
     path: Option<&str>,
     warnings: &[String],
-    bytes: Option<&[u8]>,
+    bytes: Option<&Arc<Vec<u8>>>,
 ) -> Result<(), String> {
     let index = app.session.documents().iter().position(|st| st.doc.id == document).ok_or("the opened document is missing")?;
     app.session.set_active(index);
@@ -844,7 +959,13 @@ pub fn dialog(app: &mut PhotocraftApp, ctx: &egui::Context) {
         Some(j) => j,
         None => {
             let Some(j) = app.session.active_job() else { return };
-            if j.command == "file.automate.batch" || j.elapsed_ms < DIALOG_DELAY_MS || app.jobs.saves.iter().any(|s| s.job == j.id) {
+            // A save shows its progress in the tab and the status bar; so does a place, which
+            // leaves the view free to zoom and pan while the file is decoded.
+            let place = place_uses_status_bar(
+                &j.command,
+                !app.ui.view.hides_chrome() && app.ui.panels.status_bar && job_in_view(app).is_some_and(|shown| shown.id == j.id),
+            );
+            if j.command == "file.automate.batch" || j.elapsed_ms < DIALOG_DELAY_MS || place || app.jobs.saves.iter().any(|s| s.job == j.id) {
                 return;
             }
             j
@@ -893,7 +1014,7 @@ fn batch_interrupt_dialog(app: &mut PhotocraftApp, ctx: &egui::Context, id: JobI
         ui.set_width(390.0);
         ui.label(RichText::new(tl!("Batch")).font(crate::theme::semibold(15.0)));
         ui.add_space(8.0);
-        ui.label(RichText::new(tl!("A command was cancelled or stopped during batch processing. Continue with the next file or stop?")).color(t.text_dim));
+        ui.label(RichText::new(tl!("A command was canceled or stopped during batch processing. Continue with the next file or stop?")).color(t.text_dim));
         ui.add_space(14.0);
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             if crate::widgets::primary_button(ui, tl!("Continue"), 96.0).clicked() {
@@ -1007,6 +1128,7 @@ pub fn inspect(app: &PhotocraftApp) -> Value {
         "running": app.session.jobs(),
         "opening": app.jobs.opens.iter().map(|o| json!({"job": o.job.0, "name": o.name, "path": o.path})).collect::<Vec<_>>(),
         "saving": app.jobs.saves.iter().map(|s| json!({"job": s.job.0, "path": s.path})).collect::<Vec<_>>(),
+        "placing": app.jobs.place.as_ref().map(|p| json!({"job": p.job.0, "name": p.name})),
         "focus": app.jobs.focus.map(|j| j.0),
         "background": app.background_jobs,
     })
@@ -1019,3 +1141,20 @@ pub fn bytes(b: &[u8]) -> OpenSource {
 
 #[cfg(test)]
 mod tests;
+
+/// Placements keep the canvas accessible when progress and Cancel are visible in the status bar.
+fn place_uses_status_bar(command: &str, status_bar_visible: bool) -> bool {
+    status_bar_visible && matches!(command, "file.placeEmbedded" | "file.placeLinked")
+}
+
+#[cfg(test)]
+mod place_progress_tests {
+    #[test]
+    fn placement_modal_depends_on_command_and_visible_progress() {
+        for command in ["file.placeEmbedded", "file.placeLinked"] {
+            assert!(super::place_uses_status_bar(command, true));
+            assert!(!super::place_uses_status_bar(command, false));
+        }
+        assert!(!super::place_uses_status_bar("filter.blur", true));
+    }
+}

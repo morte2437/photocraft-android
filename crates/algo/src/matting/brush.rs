@@ -216,6 +216,12 @@ fn segments(points: &[(f32, f32)], r: f32, clip: Rect) -> impl Iterator<Item = (
 }
 
 impl EdgeBrush {
+    /// Coordinates actually painted by these strokes, including restore coverage.
+    /// Iterating these avoids visiting the empty space between distant strokes.
+    pub fn tile_coords(&self) -> impl Iterator<Item = TileCoord> + '_ {
+        self.tiles.keys().copied()
+    }
+
     /// Rasterises `strokes` (clipped to `canvas`), tile by tile. `None` when they paint nothing,
     /// sweep more than [`MAX_SWEPT_AREA`] or paint more than [`MAX_PAINTED_TILES`] tiles.
     pub fn new(strokes: &[EdgeStroke], canvas: Rect) -> Option<EdgeBrush> {

@@ -101,6 +101,48 @@ fn has_linked(s: &Session) -> std::result::Result<(), String> {
         _ => Err("the smart object is embedded".into()),
     }
 }
+fn linked_layers(doc: &Document) -> Vec<LayerId> {
+    doc.walk()
+        .into_iter()
+        .filter(|(_, _, l)| matches!(&l.content, LayerContent::Smart(sm) if matches!(sm.source, SmartSource::Linked { .. })))
+        .map(|(_, _, l)| l.id)
+        .collect()
+}
+fn has_any_linked(s: &Session) -> std::result::Result<(), String> {
+    let d = s.active().ok_or("no document open")?;
+    if linked_layers(&d.doc).is_empty() { Err("the document has no linked smart object".into()) } else { Ok(()) }
+}
+/// Embed All Linked: reads every linked file first, so a missing one refuses the whole step.
+fn embed_all_linked(s: &mut Session, _p: &Value) -> Result<Value> {
+    let doc = &s.active().ok_or(EngineError::NoDocument)?.doc;
+    let ids = linked_layers(doc);
+    if ids.is_empty() {
+        return Err(other("the document has no linked smart object"));
+    }
+    let mut sources = Vec::with_capacity(ids.len());
+    for id in &ids {
+        let src = &smart(doc, *id)?.source;
+        let (file_name, bytes) = source_bytes(&doc.metadata, src).ok_or_else(|| {
+            let path = match src {
+                SmartSource::Linked { path } => path.as_str(),
+                SmartSource::Embedded { .. } => "",
+            };
+            other(format!("the linked file can't be read: {path}"))
+        })?;
+        sources.push(SmartSource::Embedded { file_name, bytes });
+    }
+    let parent = doc.id;
+    let contents: Vec<SmartContentsId> = ids.iter().map(|id| smart(doc, *id).map(|sm| sm.contents_id)).collect::<Result<_>>()?;
+    s.edit("Embed All Linked", |doc, _| {
+        for (id, src) in ids.iter().zip(sources) {
+            smart_mut(doc, *id)?.source = src;
+            refresh_or_fail(doc, *id)?;
+        }
+        Ok(())
+    })?;
+    s.smart_links.retain(|l| l.parent != parent || !contents.contains(&l.contents_id));
+    Ok(json!({"embedded": ids.iter().map(|l| l.0).collect::<Vec<_>>()}))
+}
 fn has_doc(s: &Session) -> std::result::Result<(), String> {
     s.active().map(|_| ()).ok_or_else(|| "no document open".into())
 }
@@ -146,14 +188,13 @@ mod source;
 pub(crate) use contents::on_close;
 pub use contents::{commit_child, contents_of, replace_contents_bytes, replace_contents_from_bytes};
 use contents::{edit_contents, export_contents, is_smart_child, path_param, replace_contents, set_source, update_all};
-#[cfg(test)]
 use filters::smart_mut;
-pub(crate) use filters::{add_smart_filter, filter_mask_paintable, filter_mask_surface, refresh_after_filter_mask_edit};
+pub(crate) use filters::{add_smart_filter, add_smart_filter_in, filter_mask_paintable, filter_mask_surface, refresh_after_filter_mask_edit};
 use filters::{blending_options, delete_filter, edit_filters, move_filter, set_filter_params, set_filter_visible, smart, transfer_filters};
 pub(crate) use placing::detach_psd;
-use placing::{convert, shift_layer, via_copy};
+pub(crate) use placing::{affine_homography, set_placement, shift_smart, transform_placement};
+use placing::{convert, reset_transform, shift_layer, via_copy};
 pub use placing::{layer_to_smart, layers_to_smart, placement};
-pub(crate) use placing::{set_placement, shift_smart, transform_placement};
 #[cfg(test)]
 pub(crate) use rendering::DISPLAY_NATIVE_HASH_BYTES;
 use rendering::refresh_or_fail;
@@ -197,6 +238,14 @@ pub fn specs() -> Vec<CommandSpec> {
             r##"{"layer":id?} → opens the contents as a new document; saving (layer.smartObjects.saveContents) or closing it updates the smart object"##,
             has_smart,
             edit_contents
+        ),
+        spec!(
+            "layer.smartObjects.resetTransform",
+            "Reset Transform",
+            SO,
+            r##"{"layer":id?} (the placement returns to 100 % of the current contents' own size with rotation, skew, Distort, Perspective and the Warp cleared, centred on the average of the placement's four corners; the smart filters stay; refused with nothing changed when the object can't be re-rendered (a visible filter PhotoCraft doesn't have, or contents that can't be read); one undo step)"##,
+            has_smart,
+            reset_transform
         ),
         spec!("layer.smartObjects.saveContents", "Save Contents", &[], "{} (in an Edit Contents document)", is_smart_child, |s, _| {
             let i = s.active_index().ok_or(EngineError::NoDocument)?;
@@ -244,12 +293,20 @@ pub fn specs() -> Vec<CommandSpec> {
             has_smart,
             unpack::convert_to_layers
         ),
-        spec!("layer.smartObjects.convertToEmbedded", "Convert to Embedded", SO, r##"{"layer":id?}"##, has_linked, |s, p| {
+        spec!("layer.smartObjects.convertToEmbedded", "Embed Linked", SO, r##"{"layer":id?}"##, has_linked, |s, p| {
             set_source(s, p, "Convert to Embedded", true, |meta, src| {
                 let (file_name, bytes) = source_bytes(meta, src).ok_or_else(|| other("the linked file can't be read"))?;
                 Ok(SmartSource::Embedded { file_name, bytes })
             })
         }),
+        spec!(
+            "layer.smartObjects.embedAllLinked",
+            "Embed All Linked",
+            SO,
+            "{} (every linked smart object of the active document becomes embedded in one history step; a linked file that can't be read refuses the whole step and the error names it) -> {embedded: [layer ids]}",
+            has_any_linked,
+            embed_all_linked
+        ),
         spec!(
             "layer.smartObjects.convertToLinked",
             "Convert to Linked…",
@@ -340,7 +397,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "layer.smartFilter.setParams",
             "Edit Smart Filter",
             &[],
-            r##"{"layer":id?,"index":u32?,"params":{…} (merged)}"##,
+            r##"{"layer":id?,"index":u32?,"params":{…} (merged),"replace":bool=false (params replace the stored ones instead)}"##,
             has_smart_filters,
             set_filter_params
         ),

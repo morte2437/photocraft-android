@@ -160,6 +160,12 @@ pub(crate) fn apply_to_surface(command: &str, params: &Value, surf: &Surface, se
 /// Largest base64 payload `plugin.install` accepts (the module limit, encoded).
 const MAX_DATA_CHARS: usize = (32 << 20) / 3 * 4 + 4;
 
+fn b64_decode(s: &str) -> Option<Vec<u8>> {
+    // plugin.install historically accepts both alphabet variants, including mixed input.
+    // Keep that input policy while the library validates padding and decodes the bytes.
+    photocraft_paint::tile::b64_decode(&s.replace('-', "+").replace('_', "/"))
+}
+
 fn install(_s: &mut Session, p: &Value) -> Result<Value> {
     const CMD: &str = "plugin.install";
     let plugin = if let Some(data) = p.get("data") {
@@ -167,7 +173,7 @@ fn install(_s: &mut Session, p: &Value) -> Result<Value> {
         if data.len() > MAX_DATA_CHARS {
             return Err(bad(CMD, "`data` is larger than the module limit"));
         }
-        let bytes = photocraft_paint::tile::b64_decode(data).ok_or_else(|| bad(CMD, "`data` is not valid base64"))?;
+        let bytes = b64_decode(data).ok_or_else(|| bad(CMD, "`data` is not valid base64"))?;
         Plugin::load(&bytes, photocraft_plugins::Limits::default()).map_err(err)?
     } else if let Some(path) = p.get("path") {
         let path = path.as_str().filter(|s| !s.is_empty()).ok_or_else(|| bad(CMD, "`path` must be a file path"))?;

@@ -23,6 +23,16 @@ pub(super) const KEY: &str = "stops";
 /// The dialog field holding the transparency stops.
 pub(super) const OPACITY_KEY: &str = "opacityStops";
 
+/// A colour stop being dragged on the page's ramp.
+#[derive(Clone, Copy, Debug)]
+struct StopDrag {
+    /// The stop's index (it changes as the stop passes others).
+    index: usize,
+    /// The stop while it is pulled off the bar: deleted from the gradient, so the ramp and the
+    /// canvas show it gone; dragging back onto the bar puts it back.
+    removed: Option<(f32, Color)>,
+}
+
 /// Where the last drawn ramp bar is, for tests that drive it: `(effect id, bar rect)`.
 pub(crate) fn bar_id() -> egui::Id {
     egui::Id::unique("fx-gradient-bar")
@@ -207,39 +217,67 @@ pub(super) fn row(app: &mut PhotocraftApp, ui: &mut egui::Ui, f: &mut Map<String
         ui.painter().rect_filled(chip, 0.0, Color32::from_rgb(q(r), q(g), q(b)));
         ui.painter().rect_stroke(chip, 0.0, Stroke::new(if i == selected { 1.5 } else { 1.0 }, ink), StrokeKind::Outside);
     }
-    // Pointer: press on a marker selects it and starts a drag; a drag moves it, and a drag that
-    // leaves the strip deletes it on release (two stops always stay); a click under the bar with
-    // no marker adds a stop; a double-click on a marker opens the Color Picker.
+    // Pointer: press on a marker selects it and starts a drag; a drag moves it, and a drag down
+    // off the strip deletes it (the ramp shows it gone, dragging back puts it back, two stops
+    // always stay); a click under the bar with no marker adds a stop; a double-click on a
+    // marker opens the Color Picker.
     if resp.drag_started()
         && let Some(p) = ui.input(|i| i.pointer.press_origin())
     {
         if let Some(i) = hit(p) {
-            ui.data_mut(|d| d.insert_temp(drag_key, i));
+            ui.data_mut(|d| d.insert_temp(drag_key, StopDrag { index: i, removed: None }));
             ui.data_mut(|d| d.insert_temp(sel_key, i));
         } else {
-            ui.data_mut(|d| d.remove::<usize>(drag_key));
+            ui.data_mut(|d| d.remove::<StopDrag>(drag_key));
         }
     }
-    let dragging: Option<usize> = ui.data(|d| d.get_temp(drag_key));
-    if let (Some(i), Some(p)) = (dragging, resp.interact_pointer_pos()) {
-        let away = p.y > outer.bottom() + 24.0 || p.y < bar.top() - 24.0;
-        if resp.drag_stopped() {
-            ui.data_mut(|d| d.remove::<usize>(drag_key));
-            if away && stops.len() > 2 {
-                edit(app, f, effect, disp, json!({"action": "delete", "index": i}));
-                ui.data_mut(|d| d.insert_temp(sel_key, 0usize));
+    let dragging: Option<StopDrag> = ui.data(|d| d.get_temp(drag_key));
+    if let (Some(mut drag), Some(p)) = (dragging, resp.interact_pointer_pos()) {
+        let off = crate::gradient_ui::off_strip(p, bar);
+        let loc = loc_of(p.x);
+        // The release frame applies the same rule (its last move may cross the edge), then ends
+        // the drag.
+        if resp.dragged() || resp.drag_stopped() {
+            match drag.removed {
+                None if off && stops.len() > 2 => {
+                    if let Some(stop) = stops.get(drag.index).copied()
+                        && edit(app, f, effect, disp, json!({"action": "delete", "index": drag.index})).is_some()
+                    {
+                        drag.removed = Some(stop);
+                        ui.data_mut(|d| d.insert_temp(sel_key, 0usize));
+                    }
+                }
+                Some((_, color)) if !off => {
+                    let mut back = stops.clone();
+                    back.push((loc, color));
+                    back.sort_by(|a, b| a.0.total_cmp(&b.0));
+                    let index = back.iter().rposition(|s| s.0 == loc).unwrap_or(0);
+                    let mut fill = fill.clone();
+                    if let Fill::Gradient { stops, .. } = &mut fill {
+                        *stops = back;
+                    }
+                    commit(f, effect, disp, &fill);
+                    drag = StopDrag { index, removed: None };
+                    ui.data_mut(|d| d.insert_temp(sel_key, index));
+                }
+                Some(_) => {}
+                None => {
+                    if (loc - stops.get(drag.index).map_or(loc, |s| s.0)).abs() > 1e-4
+                        && let Some(at) = edit(app, f, effect, disp, json!({"action": "move", "index": drag.index, "location": loc}))
+                    {
+                        drag.index = at;
+                        ui.data_mut(|d| d.insert_temp(sel_key, at));
+                    }
+                }
             }
-        } else if resp.dragged() && !away {
-            let loc = loc_of(p.x);
-            if (loc - stops.get(i).map_or(loc, |s| s.0)).abs() > 1e-4
-                && let Some(at) = edit(app, f, effect, disp, json!({"action": "move", "index": i, "location": loc}))
-            {
-                ui.data_mut(|d| d.insert_temp(drag_key, at));
-                ui.data_mut(|d| d.insert_temp(sel_key, at));
+            if resp.drag_stopped() {
+                ui.data_mut(|d| d.remove::<StopDrag>(drag_key));
+            } else {
+                ui.data_mut(|d| d.insert_temp(drag_key, drag));
             }
         }
     } else if resp.drag_stopped() {
-        ui.data_mut(|d| d.remove::<usize>(drag_key));
+        ui.data_mut(|d| d.remove::<StopDrag>(drag_key));
     }
     if resp.double_clicked()
         && let Some(p) = resp.interact_pointer_pos()
@@ -383,6 +421,72 @@ mod tests {
         h.run_steps(1);
         release(&mut h, away);
         assert_eq!(stops_in(h.state(), parent).len(), 2);
+    }
+
+    /// #10742: on the Gradient Overlay page a colour stop dragged down off the bar (about a
+    /// marker's height) disappears while it is off, is gone on release, and comes back when
+    /// dragged back onto the bar first.
+    #[test]
+    fn a_stop_dragged_off_the_ramp_shows_gone_and_dragging_back_cancels() {
+        let (mut app, parent) = dialog_app();
+        let effect = crate::layer_style::effects_of(&app.ui.dialogs[0].fields)[0]["id"].as_str().unwrap().to_string();
+        set_param(&mut app.ui.dialog_mut(parent).unwrap().fields, &effect, KEY, json!([[0.0, "#000000"], [0.5, "#ff0000"], [1.0, "#ffffff"]]));
+        let mut h = harness(app, parent);
+        let (_, bar): (String, Rect) = h.ctx.data(|d| d.get_temp(bar_id())).expect("the ramp was drawn");
+        let mid = pos2(bar.center().x, bar.bottom() + 9.0);
+        let away = pos2(mid.x, mid.y + 22.0);
+        press(&mut h, mid);
+        h.event(egui::Event::PointerMoved(pos2(mid.x, mid.y + 11.0)));
+        h.run_steps(1);
+        h.event(egui::Event::PointerMoved(away));
+        h.run_steps(1);
+        assert_eq!(stops_in(h.state(), parent).len(), 2, "off the bar the stop is gone");
+        h.event(egui::Event::PointerMoved(mid));
+        h.run_steps(1);
+        let back = stops_in(h.state(), parent);
+        assert_eq!(back.len(), 3, "back on the bar it returns: {back:?}");
+        release(&mut h, mid);
+        let back = stops_in(h.state(), parent);
+        assert!(back.len() == 3 && (back[1].0 - 0.5).abs() < 0.01 && super::super::hex(&back[1].1) == "#ff0000", "{back:?}");
+        press(&mut h, mid);
+        h.event(egui::Event::PointerMoved(pos2(mid.x, mid.y + 11.0)));
+        h.run_steps(1);
+        h.event(egui::Event::PointerMoved(away));
+        h.run_steps(1);
+        release(&mut h, away);
+        let stops = stops_in(h.state(), parent);
+        assert_eq!(stops.iter().map(|s| super::super::hex(&s.1)).collect::<Vec<_>>(), ["#000000", "#ffffff"], "{stops:?}");
+    }
+
+    /// The release frame counts: a stop that leaves the strip in the frame it is released is
+    /// removed, and one brought back onto the strip in that frame is kept.
+    #[test]
+    fn the_release_frame_decides_whether_a_stop_comes_off_the_ramp() {
+        for back in [true, false] {
+            let (mut app, parent) = dialog_app();
+            let effect = crate::layer_style::effects_of(&app.ui.dialogs[0].fields)[0]["id"].as_str().unwrap().to_string();
+            set_param(&mut app.ui.dialog_mut(parent).unwrap().fields, &effect, KEY, json!([[0.0, "#000000"], [0.5, "#ff0000"], [1.0, "#ffffff"]]));
+            let mut h = harness(app, parent);
+            let (_, bar): (String, Rect) = h.ctx.data(|d| d.get_temp(bar_id())).expect("the ramp was drawn");
+            let mid = pos2(bar.center().x, bar.bottom() + 9.0);
+            let away = pos2(mid.x, mid.y + 30.0);
+            press(&mut h, mid);
+            h.event(egui::Event::PointerMoved(pos2(mid.x, mid.y + 11.0)));
+            h.run_steps(1);
+            if back {
+                h.event(egui::Event::PointerMoved(away));
+                h.run_steps(1);
+                assert_eq!(stops_in(h.state(), parent).len(), 2, "off the strip the stop is gone");
+            }
+            let to = if back { mid } else { away };
+            // The last move and the release in one frame (`Harness::event` gives each its own).
+            let input = &mut h.input_mut().events;
+            input.push(egui::Event::PointerMoved(to));
+            input.push(egui::Event::PointerButton { pos: to, button: egui::PointerButton::Primary, pressed: false, modifiers: Default::default() });
+            h.run_steps(2);
+            let stops = stops_in(h.state(), parent);
+            assert_eq!(stops.len(), if back { 3 } else { 2 }, "back {back}: {stops:?}");
+        }
     }
 
     /// A preset from the Gradients panel becomes the page's stops; the Delete button and the

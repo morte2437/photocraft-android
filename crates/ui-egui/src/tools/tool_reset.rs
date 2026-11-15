@@ -1,5 +1,6 @@
 //! Reset Tool and Reset All Tools (#2825), as in Photoshop: right-click the tool icon at the far
-//! left of the options bar. Reset Tool puts the current tool's options back to their defaults;
+//! left of the options bar. Reset Tool puts the current tool's options back to their defaults
+//! (all but the few it keeps, [`kept_by_reset_tool`]);
 //! Reset All Tools asks first ("Reset all tools to their default settings?"), then resets every
 //! tool's options.
 //!
@@ -13,8 +14,9 @@
 //! Smudge). Resetting one of those tools resets the shared field too. Sample All Layers is kept per
 //! tool, as in Photoshop, so resetting a tool resets only its own.
 //! [`reset_options`] lists the fields of each tool. The selection tools also go back to New
-//! Selection, and the painting tools (the ones with a brush in the options bar) get the default
-//! brush, keeping the colours. Tools without options (Hand, Rotate View, Ruler, Note, …) have
+//! Selection, and the painting tools (the ones with a brush in the options bar) get their starting
+//! brush (`paint_mouse::fresh_brush`: the Brush tool's 13 px soft round, the default brush for the
+//! others), keeping the colours. Tools without options (Rotate View, Ruler, Note, …) have
 //! nothing to reset.
 
 use serde_json::{Map, Value, json};
@@ -69,8 +71,16 @@ pub fn confirm(app: &mut PhotocraftApp) -> Result<Value, String> {
 
 /// Reset Tool: `tool`'s options, its selection mode and its brush.
 fn reset_tool(app: &mut PhotocraftApp, tool: Tool) {
+    if tool == Tool::Frame {
+        crate::frame_tool::cancel(app);
+        app.ui.frame_tool = Default::default();
+    }
+    if tool == Tool::Artboard {
+        app.ui.artboard_tool = Default::default();
+    }
     reset_options(&mut app.ui.tool_options, tool);
-    if is_selection_tool(tool) {
+    // Patch and Content-Aware Move lasso in the shared selection mode their bars show (#11024).
+    if is_selection_tool(tool) || matches!(tool, Tool::Patch | Tool::ContentAwareMove) {
         app.ui.selection_mode = 0;
     }
     if crate::paint_mouse::has_brush_picker(tool) {
@@ -83,14 +93,25 @@ fn reset_tool(app: &mut PhotocraftApp, tool: Tool) {
 
 /// Reset All Tools: every option, the selection mode and every tool's brush.
 fn reset_all(app: &mut PhotocraftApp) {
+    crate::frame_tool::cancel(app);
+    app.ui.frame_tool = Default::default();
     app.ui.tool_options = ToolOptions::default();
+    app.ui.artboard_tool = Default::default();
     app.ui.selection_mode = 0;
-    app.ui.tool_brushes.clear();
     reset_session_brush(app);
+    // Every other painting tool gets its own starting brush. Left without one, it would take the
+    // live brush when picked (`sync_tool_brush`), and the tools' starting tips differ (#11810).
+    let (live, current) = (app.ui.brush_tool, app.session.tools.brush.clone());
+    app.ui.tool_brushes = Tool::ALL
+        .iter()
+        .filter(|t| **t != live && crate::paint_mouse::has_brush_picker(**t))
+        .map(|t| (*t, crate::paint_mouse::fresh_brush(*t, &current)))
+        .collect();
 }
 
+/// The live brush is `app.ui.brush_tool`'s: give it that tool's starting brush.
 fn reset_session_brush(app: &mut PhotocraftApp) {
-    app.session.tools.brush = crate::paint_mouse::fresh_brush(&app.session.tools.brush);
+    app.session.tools.brush = crate::paint_mouse::fresh_brush(app.ui.brush_tool, &app.session.tools.brush);
     app.session.tools.brush_gesture = None;
     app.session.tools.current_preset = None;
     app.session.tools.brush_changed();
@@ -112,16 +133,30 @@ fn is_selection_tool(tool: Tool) -> bool {
     )
 }
 
-/// Put `tool`'s fields of `o` back to their defaults.
+/// The fields of [`option_keys`] that Reset Tool leaves as they are, as the reference app does
+/// (Zoom Out, #12066; Patch Structure and Color, #12127; Content-Aware Move Mode, #12183).
+/// They stay in [`option_keys`], so a tool preset still stores them, and Reset All Tools still
+/// resets them (it starts from the defaults).
+fn kept_by_reset_tool(tool: Tool) -> &'static [&'static str] {
+    match tool {
+        Tool::Zoom => &["zoom_in"],
+        Tool::Patch => &["patch_structure", "patch_color"],
+        Tool::ContentAwareMove => &["cam_mode"],
+        _ => &[],
+    }
+}
+
+/// Put `tool`'s fields of `o` back to their defaults, except those Reset Tool keeps.
 pub fn reset_options(o: &mut ToolOptions, tool: Tool) {
     let keys = option_keys(tool);
+    let kept = kept_by_reset_tool(tool);
     if keys.is_empty() {
         return;
     }
     let (Ok(Value::Object(mut cur)), Ok(Value::Object(d))) = (serde_json::to_value(&*o), serde_json::to_value(ToolOptions::default())) else {
         return;
     };
-    for k in keys {
+    for k in keys.iter().filter(|k| !kept.contains(k)) {
         if let Some(v) = d.get(*k) {
             cur.insert((*k).to_string(), v.clone());
         }
@@ -139,14 +174,16 @@ pub fn reset_options(o: &mut ToolOptions, tool: Tool) {
 /// The serialized name of `tool`'s own Sample All Layers inside `sample_all`, if it has one: a
 /// tool preset stores that one alone, not the other tools' (#5524, #7356).
 pub fn sample_all_key(tool: Tool) -> Option<String> {
-    let mut probe = crate::state::SampleAllLayers::default();
-    *probe.slot(tool)? = true;
-    let Ok(Value::Object(m)) = serde_json::to_value(probe) else { return None };
-    m.into_iter().find(|(_, v)| v.as_bool() == Some(true)).map(|(k, _)| k)
+    let base = crate::state::SampleAllLayers::default();
+    let mut probe = base;
+    let slot = probe.slot(tool)?;
+    *slot = !*slot;
+    let (Ok(Value::Object(b)), Ok(Value::Object(m))) = (serde_json::to_value(base), serde_json::to_value(probe)) else { return None };
+    m.into_iter().find(|(k, v)| b.get(k) != Some(v)).map(|(k, _)| k)
 }
 
-/// The [`ToolOptions`] fields `tool` shows, by their serialized names: what Reset Tool resets and
-/// what a tool preset made with + stores (#7356).
+/// The [`ToolOptions`] fields `tool` shows, by their serialized names: what Reset Tool resets
+/// (less [`kept_by_reset_tool`]) and what a tool preset made with + stores (#7356).
 pub fn option_keys(tool: Tool) -> &'static [&'static str] {
     // `reset!` names each field once; one that is misspelt or gone fails to compile.
     macro_rules! reset {
@@ -156,7 +193,17 @@ pub fn option_keys(tool: Tool) -> &'static [&'static str] {
         }};
     }
     match tool {
-        Tool::Move => reset!(move_auto_select, move_target, move_show_transform, transform_interpolation),
+        Tool::Move => reset!(
+            move_auto_select,
+            move_target,
+            move_show_transform,
+            move_show_hover_bounds,
+            move_expand_group_on_click,
+            move_show_layers_hover_bounds,
+            transform_interpolation,
+            transform_reference_point,
+            transform_relative_position
+        ),
         Tool::RectMarquee | Tool::EllipseMarquee => reset!(feather, anti_alias, marquee_style, marquee_width, marquee_height, marquee_unit),
         // The single-pixel marquees are never anti-aliased: Feather is their only option.
         Tool::SingleRowMarquee | Tool::SingleColumnMarquee => reset!(feather),
@@ -184,9 +231,9 @@ pub fn option_keys(tool: Tool) -> &'static [&'static str] {
         Tool::Eyedropper => reset!(eyedropper_size, eyedropper_sample, eyedropper_ring),
         Tool::Brush => reset!(brush_clear),
         Tool::Pencil => reset!(pencil_auto_erase, pencil_clear),
-        Tool::Eraser => reset!(eraser_mode),
+        Tool::Eraser => reset!(eraser_mode, erase_to_history),
         Tool::Remove => reset!(remove_new_layer, remove_after_each_stroke),
-        Tool::BackgroundEraser => reset!(bg_sampling, bg_limits, bg_tolerance, bg_protect_fg),
+        Tool::BackgroundEraser => reset!(bg_sampling, bg_limits, bg_tolerance, bg_protect_fg, bg_tolerance_control),
         Tool::ColorReplacement => reset!(cr_mode, cr_sampling, cr_limits, cr_tolerance, cr_anti_alias),
         Tool::MagicEraser => reset!(tolerance, anti_alias, contiguous, magic_eraser_opacity),
         Tool::Gradient => reset!(gradient_style, gradient_reverse, gradient_dither, gradient_classic, gradient_blend_mode, fill_opacity),
@@ -194,7 +241,8 @@ pub fn option_keys(tool: Tool) -> &'static [&'static str] {
         Tool::Type | Tool::VerticalType | Tool::HorizontalTypeMask | Tool::VerticalTypeMask => {
             reset!(type_font, type_style, type_size, type_aa, type_align, type_direction, type_style_defaults)
         }
-        Tool::Zoom => reset!(zoom_scrubby),
+        Tool::Zoom => reset!(zoom_scrubby, zoom_in),
+        Tool::Hand => reset!(hand_scroll_all),
         Tool::SpotHealing => reset!(spot_type),
         Tool::Healing => reset!(clone_aligned, clone_sample),
         Tool::Patch => reset!(patch_mode, patch_content_aware, patch_structure, patch_color),
@@ -204,15 +252,16 @@ pub fn option_keys(tool: Tool) -> &'static [&'static str] {
         Tool::ArtHistoryBrush => reset!(art_history_style, art_history_area, art_history_tolerance),
         Tool::PatternStamp => reset!(pattern_stamp_aligned, pattern_stamp_impressionist, pattern_stamp_scale, pattern_stamp_angle),
         Tool::Blur | Tool::Sharpen => reset!(strength, protect_detail),
-        Tool::Smudge => reset!(strength, finger_painting),
+        Tool::Smudge => reset!(strength, finger_painting, smudge_mode),
         Tool::Dodge | Tool::Burn => reset!(tone_range, exposure, protect_tones),
-        Tool::Sponge => reset!(sponge_mode, vibrance),
+        Tool::Sponge => reset!(sponge_mode, sponge_flow, vibrance),
         Tool::Slice => reset!(slice_style, slice_width, slice_height),
-        Tool::Pen => reset!(vector_mode, pen_path_op, pen_auto_add_delete),
+        Tool::Pen => reset!(vector_mode, pen_path_op, pen_auto_add_delete, pen_rubber_band),
         Tool::CurvaturePen => reset!(vector_mode, pen_path_op),
         Tool::FreeformPen => reset!(vector_mode, pen_path_op, curve_fit),
         Tool::Line => reset!(
-            vector_mode,
+            shape_mode,
+            shape_path_op,
             shape_fill,
             stroke_width,
             shape_stroke,
@@ -227,15 +276,46 @@ pub fn option_keys(tool: Tool) -> &'static [&'static str] {
             arrow_length,
             arrow_concavity,
         ),
-        Tool::Rectangle | Tool::EllipseShape | Tool::Triangle | Tool::Polygon | Tool::CustomShape => {
-            reset!(vector_mode, shape_fill, stroke_width, shape_stroke, shape_fill_gradient, shape_stroke_gradient, corner_radius, polygon_sides, line_weight)
+        // The Rectangle's gear settings are its own (#13343).
+        Tool::Rectangle => reset!(
+            shape_mode,
+            shape_path_op,
+            shape_fill,
+            stroke_width,
+            shape_stroke,
+            shape_fill_gradient,
+            shape_stroke_gradient,
+            corner_radius,
+            align_edges,
+            polygon_sides,
+            line_weight,
+            rect_constraint,
+            rect_fixed_width,
+            rect_fixed_height,
+            rect_ratio_width,
+            rect_ratio_height,
+            rect_from_center,
+        ),
+        Tool::EllipseShape | Tool::Triangle | Tool::Polygon | Tool::Star | Tool::CustomShape => {
+            reset!(
+                shape_mode,
+                shape_path_op,
+                shape_fill,
+                stroke_width,
+                shape_stroke,
+                shape_fill_gradient,
+                shape_stroke_gradient,
+                corner_radius,
+                align_edges,
+                polygon_sides,
+                line_weight
+            )
         }
+        Tool::MixerBrush => reset!(mixer_combination),
         Tool::ColorSampler
         | Tool::Ruler
         | Tool::Note
         | Tool::Count
-        | Tool::MixerBrush
-        | Tool::Hand
         | Tool::RotateView
         | Tool::HistoryBrush
         | Tool::PathSelection
@@ -275,6 +355,17 @@ mod tests {
         }
     }
 
+    /// What Reset Tool keeps is the tool's own option, by a name that exists: a renamed or
+    /// misspelt field would otherwise silently be reset again (#12127, #12183).
+    #[test]
+    fn kept_options_are_the_tools_own() {
+        for t in Tool::ALL {
+            for k in kept_by_reset_tool(t) {
+                assert!(option_keys(t).contains(k), "{k} is not an option of {t:?}");
+            }
+        }
+    }
+
     /// Reset Tool resets only the current tool's options; Reset All Tools asks, then resets all.
     #[test]
     fn reset_tool_and_reset_all_tools() {
@@ -298,6 +389,20 @@ mod tests {
         crate::dialogs::confirm(&mut app, dialog).unwrap();
         assert_eq!(app.ui.tool_options, ToolOptions::default());
         assert!(app.ui.dialogs.is_empty());
+    }
+
+    /// The Patch and Content-Aware Move bars show the shared selection mode, so Reset Tool on
+    /// either sets it back to New, as on the selection tools (#11024).
+    #[test]
+    fn reset_tool_resets_the_patch_selection_mode() {
+        let ctx = egui::Context::default();
+        for tool in [Tool::Patch, Tool::ContentAwareMove] {
+            let mut app = app();
+            app.ui.selection_mode = 2;
+            app.ui.tool = tool;
+            crate::menus::invoke(&mut app, &ctx, RESET, json!({})).unwrap();
+            assert_eq!(app.ui.selection_mode, 0, "{tool:?}");
+        }
     }
 
     /// Sample All Layers is per tool (#5524): resetting Blur turns off only Blur's.
@@ -326,3 +431,7 @@ mod tests {
         assert_eq!((keys.len(), distinct.len()), (12, 12), "one key per tool with the option");
     }
 }
+
+#[cfg(test)]
+#[path = "../patch_sample_all_default_tests.rs"]
+mod patch_sample_all_default_tests;

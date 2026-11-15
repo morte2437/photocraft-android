@@ -154,6 +154,22 @@ pub(super) fn layer_drag_and_drop(
         "below"
     };
     let Some(st) = app.session.active() else { return };
+    if position == "into" && l.frame.is_some() {
+        let selected = st.selected_layers();
+        if selected.len() > 1 && selected.iter().any(|id| id.0 == dragged) {
+            return;
+        }
+        let source = LayerId(dragged);
+        if st.doc.layer(source).is_none_or(|l| !matches!(l.content, photocraft_doc::LayerContent::Raster(_) | photocraft_doc::LayerContent::Smart(_))) {
+            return;
+        }
+        ui.painter().rect_stroke(rect.shrink(1.0), t.radius_sm, Stroke::new(2.0, t.accent), StrokeKind::Inside);
+        if released {
+            app.reorder_preview = None;
+            actions.push(("layer.frame.setContent".into(), json!({"layer":l.id.0,"content":dragged,"copy":copy})));
+        }
+        return;
+    }
     let mut payload = layer_drop_payload(dragged, l.id, position, &st.selected_layers());
     if background_drop_refused(&st.doc, &payload, l.id, position, copy) {
         return;
@@ -295,6 +311,23 @@ pub(super) fn fx_drop(ctx: &egui::Context, ui: &egui::Ui, l: &Layer, rect: Rect,
     ui.painter().rect_stroke(rect.shrink(1.0), t.radius_sm, Stroke::new(2.0, t.accent), StrokeKind::Inside);
     if ctx.input(|i| i.pointer.any_released()) {
         actions.push(fx_drop_action(from, effect, l.id, ctx.input(|i| i.modifiers.alt)));
+    }
+}
+
+/// A layer mask's thumbnail dropped on another layer or group moves the mask there, ⌥ copies it,
+/// as in Photoshop (#10485). A row that has a layer mask already doesn't take the drop (Photoshop
+/// asks whether to replace it). Only the part of the row the list shows takes it: a row scrolled
+/// out of view still lies under the panel's header or footer.
+pub(super) fn mask_drop(ctx: &egui::Context, ui: &egui::Ui, l: &Layer, rect: Rect, actions: &mut Vec<(String, Value)>) {
+    let Some((from, MaskKind::Pixel)) = ctx.data(|d| d.get_temp::<MaskDrag>(mask_drag_key())) else { return };
+    let Some(p) = ctx.input(|i| i.pointer.interact_pos()) else { return };
+    if from == l.id.0 || l.mask.is_some() || !rect.intersect(ui.clip_rect()).contains(p) {
+        return;
+    }
+    let t = Tokens::get(ctx);
+    ui.painter().rect_stroke(rect.shrink(1.0), t.radius_sm, Stroke::new(2.0, t.accent), StrokeKind::Inside);
+    if ctx.input(|i| i.pointer.any_released()) {
+        actions.push(("layer.layerMask.moveTo".into(), json!({"layer": from, "to": l.id.0, "copy": ctx.input(|i| i.modifiers.alt)})));
     }
 }
 

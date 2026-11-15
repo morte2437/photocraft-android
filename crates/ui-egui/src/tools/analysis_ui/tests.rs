@@ -92,9 +92,12 @@ fn ruler_drag_protractor_and_clear() {
     up(&mut app, 60.0, 10.0);
     let info = photocraft_engine::analysis_cmds::ruler_info(&ruler(&app).unwrap(), &Default::default());
     assert!((info["angle"].as_f64().unwrap() - 90.0).abs() < 1e-6, "{info}");
-    // A click without a drag far away starts a new line and clears it.
+    // A click without a drag far away keeps the ruler (#11980); Clear removes it.
+    let before = ruler(&app);
     down(&mut app, 150.0, 80.0, none);
     up(&mut app, 150.0, 80.0);
+    assert_eq!(ruler(&app), before);
+    app.run("image.analysis.rulerTool", json!({"clear": true})).unwrap();
     assert!(ruler(&app).is_none());
     assert_eq!(app.session.active().unwrap().history.past_len(), 0, "the ruler adds no history");
 }
@@ -203,16 +206,16 @@ fn color_sampler_tool_places_moves_and_removes_points() {
     up(&mut app, 20.0, 20.0);
     down(&mut app, 60.0, 40.0, egui::Modifiers::NONE);
     up(&mut app, 60.0, 40.0);
-    assert_eq!(pts(&app), vec![[20.0, 20.0], [60.0, 40.0]]);
+    assert_eq!(pts(&app), vec![[20.5, 20.5], [60.5, 40.5]], "each on its pixel's centre");
     // Drag the first point to a new pixel (committed on release).
     down(&mut app, 20.0, 20.0, egui::Modifiers::NONE);
     mv(&mut app, 30.0, 25.0, egui::Modifiers::NONE);
     up(&mut app, 30.0, 25.0);
-    assert_eq!(pts(&app)[0], [30.0, 25.0]);
+    assert_eq!(pts(&app)[0], [30.5, 25.5]);
     // A click on a point, with no drag, leaves it where it is.
     down(&mut app, 30.0, 25.0, egui::Modifiers::NONE);
     up(&mut app, 30.0, 25.0);
-    assert_eq!(pts(&app)[0], [30.0, 25.0]);
+    assert_eq!(pts(&app)[0], [30.5, 25.5]);
     // ⌥-click removes that one point.
     down(&mut app, 60.0, 40.0, egui::Modifiers::ALT);
     up(&mut app, 60.0, 40.0);
@@ -251,11 +254,11 @@ fn color_sampler_readout_and_crop_removal_report() {
     let l = app.run("view.colorSamplers.list", json!({})).unwrap();
     assert_eq!(l["samplers"].as_array().unwrap().len(), 2);
     assert_eq!(l["samplers"][0]["number"], 1);
-    assert_eq!(l["samplers"][1]["position"], json!([150.0, 90.0]));
+    assert_eq!(l["samplers"][1]["position"], json!([150.5, 90.5]));
     assert!(l["samplers"][0]["rgb"].as_array().is_some_and(|a| a.len() == 3));
     // Cropping to the top-left drops the outside point and reports how many went.
     app.run("image.crop", json!({"x": 0, "y": 0, "width": 10, "height": 10})).unwrap();
-    assert_eq!(app.session.active().unwrap().color_samplers, vec![[5.0, 5.0]]);
+    assert_eq!(app.session.active().unwrap().color_samplers, vec![[5.5, 5.5]]);
     assert!(app.ui.status.contains("removed"), "{}", app.ui.status);
     assert!(!app.ui.status_error);
 }
@@ -271,9 +274,9 @@ fn color_sampler_is_per_document_and_inert_without_one() {
     assert!(app.session.active().unwrap().color_samplers.is_empty());
     down(&mut app, 20.0, 20.0, egui::Modifiers::NONE);
     up(&mut app, 20.0, 20.0);
-    assert_eq!(app.session.active().unwrap().color_samplers, vec![[20.0, 20.0]]);
+    assert_eq!(app.session.active().unwrap().color_samplers, vec![[20.5, 20.5]]);
     app.run("document.activate", json!({"document": 0})).unwrap();
-    assert_eq!(app.session.active().unwrap().color_samplers, vec![[10.0, 10.0]]);
+    assert_eq!(app.session.active().unwrap().color_samplers, vec![[10.5, 10.5]]);
     // With no document the tool says so (no dialog, no panic) and the commands error.
     let mut empty = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
     empty.ui.tool = Tool::ColorSampler;
@@ -295,4 +298,148 @@ fn count_size_fields_send_whole_numbers_the_engine_applies() {
     app.run("count.setGroup", count_size_params(8.0, 20.0)).unwrap();
     let g = &app.session.active().unwrap().doc.measurement.count_groups[0];
     assert_eq!((g.marker_size, g.label_size), (8, 20));
+}
+
+// ---------------------------------------------------------------- Straighten Layer button (#12033)
+
+/// The Ruler options bar, drawn wide enough for its buttons to show.
+fn ruler_bar(mut app: PhotocraftApp) -> egui_kittest::Harness<'static, PhotocraftApp> {
+    use egui::vec2;
+    app.ui.tool = Tool::Ruler;
+    let mut h = egui_kittest::Harness::builder().with_size(vec2(1400.0, 60.0)).build_ui_state(
+        |ui: &mut egui::Ui, app: &mut PhotocraftApp| {
+            if !ui.ctx().fonts(|f| f.families().contains(&egui::FontFamily::Name("medium".into()))) {
+                return;
+            }
+            crate::panels::options_bar(app, ui);
+        },
+        app,
+    );
+    PhotocraftApp::setup_context(&h.ctx, crate::theme::ThemeKind::Pro);
+    h.run_steps(4);
+    h
+}
+
+/// A ruler line to straighten by, without one the button is off for every target.
+fn rule(app: &mut PhotocraftApp) {
+    app.run("image.analysis.rulerTool", json!({"start": [10, 30], "end": [150, 25]})).unwrap();
+}
+
+/// The message of every open error dialog, in the order they were opened.
+fn alerts(app: &PhotocraftApp) -> Vec<&str> {
+    app.ui.dialogs.iter().filter(|d| d.kind == DialogKind::Error).filter_map(|d| d.fields.get("message").and_then(|m| m.as_str())).collect()
+}
+
+/// Each case opens one of the targets #12033 measured, on top of the plain document `app()` makes.
+fn add_layer(app: &mut PhotocraftApp, name: &str) -> u64 {
+    app.run("layer.new.layer", json!({"name": name})).unwrap()["layer"].as_u64().unwrap()
+}
+
+fn on_a_layer(app: &mut PhotocraftApp) {
+    add_layer(app, "Paint");
+}
+
+fn on_the_background(_: &mut PhotocraftApp) {}
+
+fn on_two_layers(app: &mut PhotocraftApp) {
+    let a = add_layer(app, "One");
+    let b = add_layer(app, "Two");
+    app.run("layer.select", json!({"layer": a})).unwrap();
+    app.run("layer.select", json!({"layer": b, "mode": "add"})).unwrap();
+}
+
+fn on_a_group(app: &mut PhotocraftApp) {
+    add_layer(app, "Inner");
+    app.run("layer.groupLayers", json!({})).unwrap();
+}
+
+fn locked(app: &mut PhotocraftApp, key: &str) {
+    let l = add_layer(app, "Colors");
+    app.run("layer.setProps", json!({"layer": l, "locks": {key: true}})).unwrap();
+}
+
+fn on_lock_all(app: &mut PhotocraftApp) {
+    locked(app, "all");
+}
+
+fn on_lock_position(app: &mut PhotocraftApp) {
+    locked(app, "position");
+}
+
+/// #12033: the options bar asks the engine, so the button is greyed out for exactly the targets
+/// `image.analysis.straightenLayer` is off for - the Background, two or more selected layers, a
+/// group, Lock All and Lock Position - and live for a layer.
+#[test]
+fn the_straighten_layer_button_greys_out_where_the_command_is_off() {
+    use egui_kittest::kittest::{NodeT, Queryable};
+    type Case = (&'static str, fn(&mut PhotocraftApp), bool);
+    let cases: [Case; 6] = [
+        ("a pixel layer", on_a_layer, true),
+        ("the Background", on_the_background, false),
+        ("two selected layers", on_two_layers, false),
+        ("a group", on_a_group, false),
+        ("Lock All", on_lock_all, false),
+        ("Lock Position", on_lock_position, false),
+    ];
+    for (what, prepare, live) in cases {
+        let (mut app, _) = app();
+        prepare(&mut app);
+        rule(&mut app);
+        let h = ruler_bar(app);
+        assert_eq!(h.state().session.is_enabled("image.analysis.straightenLayer"), live, "{what}: the command's own check");
+        let button = h.get_by_label("Straighten Layer").accesskit_node();
+        assert_eq!(!button.is_disabled(), live, "{what}: the options-bar button follows the command");
+        // The other Ruler button is unaffected: a ruler line is there to clear in every state.
+        assert!(!h.get_by_label("Clear").accesskit_node().is_disabled(), "{what}: Clear stays on");
+    }
+}
+
+/// A refused click says so. `PhotocraftApp::run` reports what the *command* answered in the status
+/// line, but a refusal raised before it runs - the automation gate a control/MCP-driven click goes
+/// through - returns early, so the button has to report it itself. As the toolbar flyout does
+/// (`a_failed_edit_toolbar_from_the_flyout_reports_its_error_in_the_status_bar`).
+#[test]
+fn a_denied_synthetic_click_reports_the_refusal_instead_of_saying_nothing() {
+    use egui_kittest::kittest::{NodeT, Queryable};
+    let (mut app, _) = app();
+    on_a_layer(&mut app);
+    rule(&mut app);
+    app.automation_input = true;
+    app.services.automation_command =
+        Some(Box::new(|id, _| if id == "image.analysis.straightenLayer" { Err("straightening is denied".into()) } else { Ok(()) }));
+    let mut h = ruler_bar(app);
+    assert!(!h.get_by_label("Straighten Layer").accesskit_node().is_disabled(), "the layer is a valid target");
+    let steps = h.state().session.active().unwrap().history.past_len();
+    h.get_by_label("Straighten Layer").click();
+    h.run_steps(2);
+    let st = h.state();
+    assert_eq!(st.ui.status, "straightening is denied", "the refusal reaches the status line");
+    assert!(st.ui.status_error, "as an error");
+    assert!(alerts(st).is_empty(), "the alert stays the hidden layer's own");
+    let now = st.session.active().unwrap();
+    assert!(now.doc.measurement.ruler.is_some(), "nothing ran: the ruler line is still up");
+    assert_eq!(now.history.past_len(), steps, "and nothing was recorded");
+}
+
+/// #12033: a hidden target layer is the one state that keeps its button. The click answers with the
+/// reference's alert - its measured message and an OK button - instead of the status line, and the
+/// document, its History and the ruler line stay as they were.
+#[test]
+fn a_hidden_layer_keeps_the_button_and_the_click_shows_the_alert() {
+    use egui_kittest::kittest::{NodeT, Queryable};
+    let (mut app, _) = app();
+    let l = app.run("layer.new.layer", json!({"name": "Gone"})).unwrap()["layer"].as_u64().unwrap();
+    app.run("layer.setProps", json!({"layer": l, "visible": false})).unwrap();
+    rule(&mut app);
+    let mut h = ruler_bar(app);
+    assert!(!h.get_by_label("Straighten Layer").accesskit_node().is_disabled(), "a hidden layer keeps the button on");
+    let (before, steps) = (h.state().session.active().unwrap().doc.clone(), h.state().session.active().unwrap().history.past_len());
+    h.get_by_label("Straighten Layer").click();
+    h.run_steps(2);
+    let st = h.state();
+    assert_eq!(alerts(st), [photocraft_engine::analysis_cmds::STRAIGHTEN_HIDDEN_ERROR], "one alert with the reference's text");
+    let now = st.session.active().unwrap();
+    assert!(std::sync::Arc::ptr_eq(&before, &now.doc), "the document was not touched");
+    assert_eq!(now.history.past_len(), steps, "no History step");
+    assert!(now.doc.measurement.ruler.is_some(), "the ruler line is still there");
 }

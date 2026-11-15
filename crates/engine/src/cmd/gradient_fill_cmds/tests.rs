@@ -84,12 +84,14 @@ fn parity(depth: u32, background: &str, extra: Value, select: bool, tol: f32) {
                     s.execute("select.rect", json!({"x": 6, "y": 3, "width": 30, "height": 22, "ellipse": true, "antiAlias": true})).unwrap();
                 }
                 // Linear and Reflected fill layers sample each pixel's top-left corner
-                // (compose::effects::gradient_t, fitted on Photoshop's fills); the painted
-                // gradient samples centres, so its drag is half a pixel further along.
+                // (compose::effects::gradient_t, fitted on Photoshop's fills), the others its
+                // centre; the painted gradient samples a pixel up and left of the centre (#12018),
+                // so its drag is moved by the difference.
                 let mut p = p.clone();
-                if !live && matches!(style, "linear" | "reflected") {
-                    p["from"] = json!([from[0] + 0.5, from[1] + 0.5]);
-                    p["to"] = json!([to[0] + 0.5, to[1] + 0.5]);
+                if !live {
+                    let d = if matches!(style, "linear" | "reflected") { -0.5 } else { -1.0 };
+                    p["from"] = json!([from[0] + d, from[1] + d]);
+                    p["to"] = json!([to[0] + d, to[1] + d]);
                 }
                 s.execute(if live { CREATE } else { "paint.gradient" }, p).unwrap();
                 photocraft_compose::flatten(&s.active().unwrap().doc)

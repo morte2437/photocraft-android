@@ -532,6 +532,107 @@ fn gradient_map_handle_drag_previews_and_commits_once_after_crossing_stops() {
     }
 }
 
+/// #10742: a stop dragged off the strip goes as the Gradient tool's does, with a live preview, and
+/// comes back if the drag returns. Two stops always stay.
+#[test]
+fn gradient_map_stop_dragged_off_the_strip_is_removed_in_one_step() {
+    for depth in [8, 16, 32] {
+        let mut h = app_harness("gradientMap", "rgb", depth);
+        let (id, _) = layer(&h);
+        let four = json!({"layer": id.0, "stops": [[0, "#000000"], [0.25, "#ff0000"], [0.5, "#00ff00"], [1, "#ffffff"]]});
+        h.state_mut().run("layer.setAdjustment", four).unwrap();
+        h.run_steps(3);
+        let before = layer(&h).1;
+        let steps = h.state().session.active().unwrap().history.past_len();
+        let start = map_handle(&h, 0.25);
+        let away = start + vec2(0.0, 90.0);
+        h.hover_at(start);
+        h.run_steps(1);
+        h.drag_at(start);
+        h.run_steps(1);
+        h.hover_at(away);
+        h.run_steps(1);
+        let preview = h.state().live_adjust.as_ref().map(|(_, v)| v["stops"].as_array().map(Vec::len));
+        assert_eq!(preview, Some(Some(3)), "{depth}: the preview drops the stop");
+        assert_eq!(h.state().session.active().unwrap().history.past_len(), steps, "{depth}: dragging records no history");
+        h.drop_at(away);
+        h.run_steps(3);
+        assert_eq!(map_stops(&layer(&h).1), vec![(0.0, [0, 0, 0]), (0.5, [0, 255, 0]), (1.0, [255, 255, 255])], "{depth}: the stop is gone");
+        assert_eq!(h.state().session.active().unwrap().history.past_len(), steps + 1, "{depth}: one history step");
+        h.state_mut().run("edit.undo", json!({})).unwrap();
+        h.run_steps(3);
+        assert_eq!(layer(&h).1, before, "{depth}: undo brings it back");
+
+        // Off the strip and back: the stop stays, with its colour, where the drag ends.
+        let back = map_handle(&h, 0.4);
+        h.hover_at(start);
+        h.run_steps(1);
+        h.drag_at(start);
+        h.run_steps(1);
+        h.hover_at(away);
+        h.run_steps(1);
+        h.hover_at(back);
+        h.run_steps(1);
+        let preview = h.state().live_adjust.as_ref().map(|(_, v)| v["stops"].as_array().map(Vec::len));
+        assert_eq!(preview, Some(Some(4)), "{depth}: the preview has the stop back while it's held");
+        h.drop_at(back);
+        h.run_steps(3);
+        assert_eq!(map_stops(&layer(&h).1), vec![(0.0, [0, 0, 0]), (0.4, [255, 0, 0]), (0.5, [0, 255, 0]), (1.0, [255, 255, 255])], "{depth}: kept");
+        assert_eq!(h.state().session.active().unwrap().history.past_len(), steps + 1, "{depth}: the move is one step");
+    }
+}
+
+/// A drag that ends without its release reaching the strip (the drag taken away: focus lost, the
+/// pointer let go elsewhere) still commits what the preview shows: a stop taken off the strip isn't
+/// left removed with no History step.
+#[test]
+fn gradient_map_stop_drag_that_ends_elsewhere_still_commits() {
+    let mut h = app_harness("gradientMap", "rgb", 8);
+    let (id, _) = layer(&h);
+    let four = json!({"layer": id.0, "stops": [[0, "#000000"], [0.25, "#ff0000"], [0.5, "#00ff00"], [1, "#ffffff"]]});
+    h.state_mut().run("layer.setAdjustment", four).unwrap();
+    h.run_steps(3);
+    let steps = h.state().session.active().unwrap().history.past_len();
+    let start = map_handle(&h, 0.25);
+    let away = start + vec2(0.0, 90.0);
+    h.hover_at(start);
+    h.run_steps(1);
+    h.drag_at(start);
+    h.run_steps(1);
+    h.hover_at(away);
+    h.run_steps(1);
+    // The drag ends without reaching the strip's response, then the button comes up.
+    h.ctx.stop_dragging();
+    h.run_steps(1);
+    h.drop_at(away);
+    h.run_steps(3);
+    assert_eq!(map_stops(&layer(&h).1).len(), 3, "the stop the preview dropped is gone from the layer");
+    assert_eq!(h.state().session.active().unwrap().history.past_len(), steps + 1, "in one History step");
+}
+
+#[test]
+fn gradient_map_last_two_stops_cant_be_dragged_off_the_strip() {
+    let mut h = app_harness("gradientMap", "rgb", 8);
+    let (id, _) = layer(&h);
+    h.state_mut().run("layer.setAdjustment", json!({"layer": id.0, "stops": [[0, "#000000"], [1, "#ffffff"]]})).unwrap();
+    h.run_steps(3);
+    let steps = h.state().session.active().unwrap().history.past_len();
+    let start = map_handle(&h, 0.0);
+    let away = start + vec2(0.0, 90.0);
+    h.hover_at(start);
+    h.run_steps(1);
+    h.drag_at(start);
+    h.run_steps(1);
+    h.hover_at(away);
+    h.run_steps(1);
+    let preview = h.state().live_adjust.as_ref().map(|(_, v)| v["stops"].as_array().map(Vec::len));
+    assert!(preview.is_none_or(|n| n == Some(2)), "the preview keeps both: {preview:?}");
+    h.drop_at(away);
+    h.run_steps(3);
+    assert_eq!(map_stops(&layer(&h).1), vec![(0.0, [0, 0, 0]), (1.0, [255, 255, 255])], "both stay where they were");
+    assert_eq!(h.state().session.active().unwrap().history.past_len(), steps, "nothing to record");
+}
+
 #[test]
 fn gradient_map_strip_adds_selects_and_removes_stops_without_deleting_the_last_pair() {
     let mut h = app_harness("gradientMap", "rgb", 8);
@@ -558,6 +659,57 @@ fn gradient_map_strip_adds_selects_and_removes_stops_without_deleting_the_last_p
     let remove = h.get_by_label("Remove stop").rect().center();
     click(&mut h, remove);
     assert_eq!(layer(&h).1, original, "keep two stops");
+}
+
+/// #10742: a Gradient Map stop dragged down off the bar is removed on release (one history step);
+/// while it is off the bar the live preview already leaves it out, and dragging it back onto the
+/// bar before release puts it back. The last two stops can't be dragged off.
+#[test]
+fn gradient_map_stop_dragged_down_off_the_bar_is_removed_and_dragging_back_cancels() {
+    let mut h = app_harness("gradientMap", "rgb", 8);
+    let (id, _) = layer(&h);
+    h.state_mut().run("layer.setAdjustment", json!({"layer": id.0, "stops": [[0, "#000000"], [0.5, "#ff0000"], [1, "#ffffff"]]})).unwrap();
+    h.run_steps(3);
+    let three = layer(&h).1;
+    let before_cancel = h.state().session.active().unwrap().history.past_len();
+    let live_stops = |h: &Harness<'_, PhotocraftApp>| h.state().live_adjust.as_ref().and_then(|(_, v)| v["stops"].as_array().map(Vec::len));
+    // Off and back: nothing removed.
+    let start = map_handle(&h, 0.5);
+    let away = start + vec2(0.0, 30.0);
+    h.hover_at(start);
+    h.run_steps(1);
+    h.drag_at(start);
+    h.run_steps(1);
+    h.hover_at(start + vec2(0.0, 15.0));
+    h.run_steps(1);
+    h.hover_at(away);
+    h.run_steps(1);
+    assert_eq!(live_stops(&h), Some(2), "off the bar the preview leaves the stop out");
+    h.hover_at(start);
+    h.run_steps(1);
+    assert_eq!(live_stops(&h), Some(3), "back on the bar the stop returns");
+    h.drop_at(start);
+    h.run_steps(3);
+    assert_eq!(map_stops(&layer(&h).1), map_stops(&three), "dragging back cancels the removal");
+    assert_eq!(h.state().session.active().unwrap().history.past_len(), before_cancel, "a cancelled drag adds no history step");
+    // Off and released: removed in one step.
+    let steps = h.state().session.active().unwrap().history.past_len();
+    drag(&mut h, start, away);
+    assert_eq!(map_stops(&layer(&h).1), vec![(0.0, [0, 0, 0]), (1.0, [255, 255, 255])]);
+    assert_eq!(h.state().session.active().unwrap().history.past_len(), steps + 1);
+    assert!(h.state().live_adjust.is_none());
+    h.state_mut().run("edit.undo", json!({})).unwrap();
+    h.run_steps(3);
+    assert_eq!(layer(&h).1, three);
+    h.state_mut().run("edit.redo", json!({})).unwrap();
+    h.run_steps(3);
+    // Two stops stay.
+    let two = layer(&h).1;
+    for at in [0.0, 1.0] {
+        let from = map_handle(&h, at);
+        drag(&mut h, from, from + vec2(0.0, 40.0));
+        assert_eq!(map_stops(&layer(&h).1), map_stops(&two), "two stops always remain");
+    }
 }
 
 #[test]
@@ -657,13 +809,13 @@ fn import_gradients_from_picker(h: &mut Harness<'_, PhotocraftApp>) {
 
 #[test]
 fn gradient_map_picker_imports_grd_without_editing_the_map() {
-    use photocraft_psd::grd::{GrdColor, GrdGradient, GrdStop};
+    use craft_psd::grd::{GrdColor, GrdGradient, GrdStop};
     let mut h = app_harness("gradientMap", "rgb", 16);
     h.state_mut().session.presets.gradients.truncate(1);
     let before = layer(&h);
     let history = h.state().session.active().unwrap().history.past_len();
     let tool = h.state().session.presets.gradient.clone();
-    let bytes = photocraft_psd::grd::write(&[GrdGradient {
+    let bytes = craft_psd::grd::write(&[GrdGradient {
         name: "Imported Teal".into(),
         stops: vec![
             GrdStop { location: 0.0, midpoint: 0.5, color: GrdColor::Rgb([0.0, 0.5, 0.5]) },
@@ -699,10 +851,7 @@ fn gradient_map_picker_import_cancel_and_errors_preserve_state() {
         None,
         Some(FileDialogAnswer::Contents("broken.grd".into(), b"invalid".to_vec())),
         Some(FileDialogAnswer::Contents("old.grd".into(), b"8BGR\0\x03".to_vec())),
-        Some(FileDialogAnswer::Contents(
-            "noise.grd".into(),
-            photocraft_psd::grd::write(&[photocraft_psd::grd::GrdGradient { noise: true, ..Default::default() }]),
-        )),
+        Some(FileDialogAnswer::Contents("noise.grd".into(), craft_psd::grd::write(&[craft_psd::grd::GrdGradient { noise: true, ..Default::default() }]))),
         Some(FileDialogAnswer::Contents("wrong.abr".into(), Vec::new())),
         Some(FileDialogAnswer::Paths(vec!["/nonexistent/photocraft-gradients.grd".into()])),
         Some(FileDialogAnswer::Unavailable("dialog unavailable".into())),
@@ -994,4 +1143,246 @@ fn gradient_map_stop_picker_closed_without_a_colour_changes_nothing() {
         assert_eq!(steps(&h), history, "{button}: no history step");
         assert!(h.state().live_adjust.is_none());
     }
+}
+
+/// #9252: in a Hue/Saturation layer's Properties, dragging the zones between the range handles
+/// moves them as Photoshop does: the fully-on span all four, a fade its own two; one history step
+/// per drag.
+#[test]
+fn hue_saturation_range_zones_drag_their_handles() {
+    let mut h = app_harness("hueSaturation", "rgb", 8);
+    let (id, _) = layer(&h);
+    let mem = crate::adjust_editors::layer_mem(id);
+    h.ctx.data_mut(|d| d.insert_temp(mem.with("hs-range"), 3usize)); // Greens: 75/105…135\165
+    h.run_steps(3);
+    let bars: Rect = h.ctx.data(|d| d.get_temp(mem.with("hs-range-bars"))).expect("the range bars");
+    let x = |deg: f32| bars.left() + deg / 360.0 * bars.width();
+    let y = bars.center().y;
+    let greens = |h: &Harness<'_, PhotocraftApp>| match layer(h).1 {
+        Adjustment::HueSaturation { ranges, .. } => ranges[2].bounds,
+        other => panic!("{other:?}"),
+    };
+    let steps = h.state().session.active().unwrap().history.past_len();
+    drag(&mut h, Pos2::new(x(120.0), y), Pos2::new(x(156.0), y));
+    let b = greens(&h);
+    assert!((b[0] - 111.0).abs() <= 1.0 && (b[3] - 201.0).abs() <= 1.0 && (b[1] - b[0] - 30.0).abs() < 0.5, "all four moved ~36°: {b:?}");
+    assert_eq!(h.state().session.active().unwrap().history.past_len(), steps + 1, "one step");
+    let before = greens(&h);
+    drag(&mut h, Pos2::new(x((before[0] + before[1]) / 2.0), y), Pos2::new(x((before[0] + before[1]) / 2.0 - 18.0), y));
+    let b = greens(&h);
+    assert!((b[0] - (before[0] - 18.0)).abs() <= 1.0 && (b[1] - (before[1] - 18.0)).abs() <= 1.0, "left two moved: {before:?} → {b:?}");
+    assert_eq!([b[2], b[3]], [before[2], before[3]], "right two stay");
+}
+
+/// CodeRabbit on #9272: a move and release that land in the same frame still move the zone; the
+/// release frame applies its position before the drag commits.
+#[test]
+fn a_zone_drag_released_in_the_frame_it_moves_still_moves() {
+    let mut h = app_harness("hueSaturation", "rgb", 8);
+    let (id, _) = layer(&h);
+    let mem = crate::adjust_editors::layer_mem(id);
+    h.ctx.data_mut(|d| d.insert_temp(mem.with("hs-range"), 3usize)); // Greens: 75/105…135\165
+    h.run_steps(3);
+    let bars: Rect = h.ctx.data(|d| d.get_temp(mem.with("hs-range-bars"))).expect("the range bars");
+    let x = |deg: f32| bars.left() + deg / 360.0 * bars.width();
+    let y = bars.center().y;
+    let steps = h.state().session.active().unwrap().history.past_len();
+    let (from, to) = (Pos2::new(x(120.0), y), Pos2::new(x(156.0), y));
+    h.hover_at(from);
+    h.run_steps(1);
+    h.drag_at(from);
+    h.run_steps(1);
+    // One frame: the pointer moves and lets go (the harness's queued events take a frame each,
+    // so both go straight into the next frame's input).
+    let events = &mut h.input_mut().events;
+    events.push(egui::Event::PointerMoved(to));
+    events.push(egui::Event::PointerButton { pos: to, button: egui::PointerButton::Primary, pressed: false, modifiers: egui::Modifiers::NONE });
+    h.run_steps(3);
+    let b = match layer(&h).1 {
+        Adjustment::HueSaturation { ranges, .. } => ranges[2].bounds,
+        other => panic!("{other:?}"),
+    };
+    assert!((b[0] - 111.0).abs() <= 1.0 && (b[3] - 201.0).abs() <= 1.0, "all four moved ~36°: {b:?}");
+    assert_eq!(h.state().session.active().unwrap().history.past_len(), steps + 1, "one step");
+    // A handle released in the frame it moves lands there too.
+    let (from, to) = (Pos2::new(x(b[3]), y), Pos2::new(x(b[3] + 20.0), y));
+    h.hover_at(from);
+    h.run_steps(1);
+    h.drag_at(from);
+    h.run_steps(1);
+    let events = &mut h.input_mut().events;
+    events.push(egui::Event::PointerMoved(to));
+    events.push(egui::Event::PointerButton { pos: to, button: egui::PointerButton::Primary, pressed: false, modifiers: egui::Modifiers::NONE });
+    h.run_steps(3);
+    let after = match layer(&h).1 {
+        Adjustment::HueSaturation { ranges, .. } => ranges[2].bounds,
+        other => panic!("{other:?}"),
+    };
+    assert!((after[3] - (b[3] + 20.0)).abs() <= 1.0 && after[..3] == b[..3], "the right handle moved 20°: {b:?} → {after:?}");
+    // A release followed by more movement in one frame ends where the button let go.
+    let b = after;
+    let (from, to) = (Pos2::new(x((b[1] + b[2]) / 2.0), y), Pos2::new(x((b[1] + b[2]) / 2.0 + 10.0), y));
+    h.hover_at(from);
+    h.run_steps(1);
+    h.drag_at(from);
+    h.run_steps(1);
+    let events = &mut h.input_mut().events;
+    events.push(egui::Event::PointerMoved(to));
+    events.push(egui::Event::PointerButton { pos: to, button: egui::PointerButton::Primary, pressed: false, modifiers: egui::Modifiers::NONE });
+    events.push(egui::Event::PointerMoved(Pos2::new(x(b[3] + 60.0), y)));
+    h.run_steps(3);
+    let last = match layer(&h).1 {
+        Adjustment::HueSaturation { ranges, .. } => ranges[2].bounds,
+        other => panic!("{other:?}"),
+    };
+    assert!(last.iter().zip(&b).all(|(l, b)| (l - (b + 10.0)).abs() <= 1.0), "moved 10° to the release, not past it: {b:?} → {last:?}");
+}
+
+/// FredApps review on #9272: a zone drag across the 0/360 seam. Reds' fully-on span sits on both
+/// ends of the bar; a drag from its middle third at either end (nearer a handle grabs the handle)
+/// moves the whole range intact, and the handles that pass the seam come out at the other end.
+#[test]
+fn hue_saturation_range_zone_drags_across_the_seam() {
+    let mut h = app_harness("hueSaturation", "rgb", 8);
+    let (id, _) = layer(&h);
+    let mem = crate::adjust_editors::layer_mem(id);
+    h.ctx.data_mut(|d| d.insert_temp(mem.with("hs-range"), 1usize)); // Reds: 315/345…15\45
+    h.run_steps(3);
+    let bars: Rect = h.ctx.data(|d| d.get_temp(mem.with("hs-range-bars"))).expect("the range bars");
+    let x = |deg: f32| bars.left() + deg / 360.0 * bars.width();
+    let y = bars.center().y;
+    let reds = |h: &Harness<'_, PhotocraftApp>| match layer(h).1 {
+        Adjustment::HueSaturation { ranges, .. } => ranges[0].bounds,
+        other => panic!("{other:?}"),
+    };
+    let on_circle = |b: [f32; 4]| b.map(|d| d.rem_euclid(360.0).round());
+    let widths = |b: [f32; 4]| [b[1] - b[0], b[2] - b[1], b[3] - b[2]];
+    let mut steps = h.state().session.active().unwrap().history.past_len();
+    // (press, release, where the four handles land on the circle)
+    for (from, to, want) in [
+        // The span's right end, dragged left: 15\45 cross the seam to the right end.
+        (358.0, 298.0, [255.0, 285.0, 315.0, 345.0]),
+        // Back right from its middle: 315\345 cross the seam to the left end.
+        (300.0, 360.0, [315.0, 345.0, 15.0, 45.0]),
+        // The span's left end, dragged right: 315/345 cross the seam to the left end.
+        (2.0, 62.0, [15.0, 45.0, 75.0, 105.0]),
+    ] {
+        let before = reds(&h);
+        drag(&mut h, Pos2::new(x(from), y), Pos2::new(x(to), y));
+        let b = reds(&h);
+        assert!(on_circle(b).iter().zip(&want).all(|(d, w)| (d - w).abs() <= 1.0), "{from}° → {to}°: {before:?} → {b:?}, want {want:?}");
+        assert_eq!(widths(b), widths(before), "{from}° → {to}°: the range moves intact");
+        steps += 1;
+        assert_eq!(h.state().session.active().unwrap().history.past_len(), steps, "{from}° → {to}°: one step");
+    }
+}
+
+/// Selective Color in Properties: the Colors dropdown's choice lives in editor memory, so
+/// switching colour commits nothing, and each colour keeps its own row.
+#[test]
+fn selective_color_properties_switch_colour_without_committing() {
+    let mut h = app_harness("selectiveColor", "rgb", 8);
+    let (_, before) = layer(&h);
+    let steps = h.state().session.active().unwrap().history.past_len();
+    let nudge = |h: &mut Harness<'static, PhotocraftApp>| {
+        let r =
+            h.query_all_by_role(egui::accesskit::Role::Slider).rfind(|n| n.accesskit_node().label().as_deref() == Some("Cyan")).expect("Cyan slider").rect();
+        drag(h, r.center(), Pos2::new(r.right() + 40.0, r.center().y));
+    };
+    nudge(&mut h);
+    let (_, reds) = layer(&h);
+    assert_ne!(reds, before);
+    assert_eq!(h.state().session.active().unwrap().history.past_len(), steps + 1);
+    // Switch to Blues through the Colors dropdown: press it, drag onto the option, release.
+    let named = |n: &egui_kittest::Node<'_>| {
+        let a = n.accesskit_node();
+        a.value().as_deref() == Some("Reds") || a.label().as_deref() == Some("Reds")
+    };
+    let at = h.query_all_by_role(egui::accesskit::Role::ComboBox).find(|n| named(n)).expect("the Colors dropdown").rect().center();
+    h.hover_at(at);
+    h.run_steps(1);
+    h.drag_at(at);
+    h.run_steps(3);
+    let blues = h.query_by_label("Blues").expect("the list opened on the press").rect().center();
+    for k in 1..=6 {
+        h.hover_at(at + (blues - at) * (k as f32 / 6.0));
+        h.run_steps(1);
+    }
+    h.drop_at(blues);
+    h.run_steps(4);
+    assert!(
+        h.query_all_by_role(egui::accesskit::Role::ComboBox).any(|n| {
+            let a = n.accesskit_node();
+            a.value().as_deref() == Some("Blues") || a.label().as_deref() == Some("Blues")
+        }),
+        "the dropdown keeps its choice"
+    );
+    assert_eq!(layer(&h).1, reds, "switching colour changes nothing");
+    assert_eq!(h.state().session.active().unwrap().history.past_len(), steps + 1);
+    assert!(h.state().live_adjust.is_none());
+    nudge(&mut h);
+    let (Adjustment::SelectiveColor { adjustments: first, .. }, (_, Adjustment::SelectiveColor { adjustments: now, .. })) = (&reds, layer(&h)) else {
+        panic!("Selective Color layer")
+    };
+    assert_eq!(now[0], first[0], "Reds untouched by editing Blues");
+    assert_ne!(now[4], [0.0; 4], "Blues edited");
+    assert_eq!(h.state().session.active().unwrap().history.past_len(), steps + 2);
+}
+
+/// The Method radios in Properties commit through the real controls; the current one is a no-op.
+#[test]
+fn selective_color_properties_method_radios_commit() {
+    let mut h = app_harness("selectiveColor", "rgb", 8);
+    let steps = |h: &Harness<'_, PhotocraftApp>| h.state().session.active().unwrap().history.past_len();
+    let start = steps(&h);
+    let radio = |h: &mut Harness<'static, PhotocraftApp>, text: &str| {
+        let at = h.query_all_by_role_and_label(egui::accesskit::Role::RadioButton, text).last().expect("method radio").rect().center();
+        click(h, at);
+    };
+    radio(&mut h, "Absolute");
+    assert!(matches!(layer(&h).1, Adjustment::SelectiveColor { relative: false, .. }));
+    assert_eq!(steps(&h), start + 1);
+    radio(&mut h, "Absolute");
+    assert_eq!(steps(&h), start + 1, "the current method is no step");
+    radio(&mut h, "Relative");
+    assert!(matches!(layer(&h).1, Adjustment::SelectiveColor { relative: true, .. }));
+    assert_eq!(steps(&h), start + 2);
+}
+
+/// #9269: Black & White's Auto button sets the layer's weights from the image under it, as one
+/// history step.
+#[test]
+fn black_white_auto_button_sets_the_weights() {
+    let mut h = app_harness("blackWhite", "rgb", 8);
+    // A red and a blue the default mix turns into the same grey, under the adjustment layer.
+    h.state_mut()
+        .session
+        .edit("setup", |doc, _| {
+            let b = doc.bounds();
+            let bg = doc.layers.first_mut().and_then(|l| l.surface_mut()).unwrap();
+            let fmt = bg.format();
+            let mut data = Vec::new();
+            for _ in b.y0..b.y1 {
+                for x in b.x0..b.x1 {
+                    let c = if x < b.x1 / 2 { [0.776, 0.2, 0.2, 1.0] } else { [0.29, 0.29, 1.0, 1.0] };
+                    data.extend(photocraft_raster::from_rgba(&fmt, c));
+                }
+            }
+            bg.write_region(b, &data);
+            Ok(())
+        })
+        .unwrap();
+    h.run_steps(2);
+    let (_, before) = layer(&h);
+    let steps = h.state().session.active().unwrap().history.past_len();
+    let auto = h.query_all_by_label("Auto").last().map(|n| n.rect().center()).expect("an Auto button");
+    click(&mut h, auto);
+    let (_, after) = layer(&h);
+    let Adjustment::BlackWhite { weights, .. } = &after else { panic!("{after:?}") };
+    let id = layer(&h).0;
+    let expected = h.state_mut().run("image.adjustments.blackWhite.auto", json!({"layer": id.0})).unwrap();
+    let want: Vec<f32> = photocraft_engine::adjust_params::HUE_RANGES.iter().map(|k| expected[*k].as_f64().unwrap() as f32).collect();
+    assert_eq!(weights.to_vec(), want);
+    assert_ne!(after, before, "the red and blue are told apart");
+    assert_eq!(h.state().session.active().unwrap().history.past_len(), steps + 1);
 }

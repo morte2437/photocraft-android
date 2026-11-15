@@ -1,9 +1,9 @@
 use super::{
-    PhotocraftApp, analysis_ui, brush_panel, brush_picker, camera_raw_ui, canvas, dds_options_ui, dialogs, discard_ui, distort_ui, field_wheel, file_open,
-    gpu_canvas, gpu_status, gradient_ui, i18n, jobs_ui, jpeg_options_ui, kys_import, last_brush, layers_panel_ui, monitor_status, native_menu, notices,
-    paint_mouse, palette, panels, prefs_ui, preset_panels, rasterize_prompt, screen_picker, shape_stroke_ui, shortcuts, smart_svg_ui, targa_options_ui,
-    text_field_menu, theme, tiff_options_ui, timeline_ui, titlebar, tool_cursor, tool_memory, transform_tool, type_panels_ui, type_tool, updates_ui, vector_ui,
-    view_cmds, wide_angle_ui, work_area, workspace_ui,
+    PhotocraftApp, analysis_ui, brush_panel, brush_picker, camera_raw_ui, canvas, dds_options_ui, dialogs, discard_ui, distort_ui, gpu_canvas, gpu_status,
+    gradient_ui, i18n, jobs_ui, jpeg_options_ui, kys_import, last_brush, layers_panel_ui, monitor_status, native_menu, notices, paint_mouse, palette, panels,
+    prefs_ui, preset_panels, rasterize_prompt, screen_picker, shape_stroke_ui, shortcuts, smart_svg_ui, targa_options_ui, text_field_menu, theme,
+    tiff_options_ui, timeline_ui, titlebar, tool_cursor, tool_memory, transform_tool, type_panels_ui, type_tool, updates_ui, vector_ui, view_cmds,
+    wide_angle_ui, work_area, workspace_ui,
 };
 
 impl PhotocraftApp {
@@ -21,6 +21,16 @@ impl PhotocraftApp {
 }
 
 impl PhotocraftApp {
+    /// Whether the Home screen is what the canvas area shows this frame. Files opening in the
+    /// background (#210) have tabs before they have documents, so they win over Home. The frame
+    /// draws no tool strip, options bar, status bar or docks under Home, and the canvas area
+    /// draws Home itself; both ask here so they cannot disagree.
+    pub(crate) fn home_screen_up(&mut self) -> bool {
+        let opening = !self.jobs.opens.is_empty();
+        let n = self.session.documents().len();
+        !opening && self.ui.chrome.shows_home(n, self.session.prefs().general.auto_show_home_screen)
+    }
+
     /// Shared logic body. A wrapping host owns the final reset tail after its own work.
     pub fn logic_frame(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
         self.cap_frame_rate();
@@ -43,6 +53,7 @@ impl PhotocraftApp {
         }
         self.last_frame_time = now;
         self.sync_views();
+        crate::memory_warning::tick(self, now);
         crate::type_font_preview::follow_hover(self, ctx);
         self.check_gpu(ctx);
         #[cfg(all(debug_assertions, not(target_arch = "wasm32")))]
@@ -55,6 +66,9 @@ impl PhotocraftApp {
         self.drain_control(ctx);
         native_menu::run(self, ctx);
         view_cmds::leave_full_screen_without_document(self, ctx);
+        // A box drag that ended without a release reaching the Type tool keeps its box, before
+        // the commit below can end the edit.
+        crate::type_box_preview::settle(self);
         // Switching tools commits, also between the Type and Type Mask tools.
         if self.ui.text_edit.as_ref().is_some_and(|ed| !self.ui.tool.is_type() || ed.mask != self.ui.tool.is_type_mask()) {
             type_tool::commit(self);
@@ -64,6 +78,7 @@ impl PhotocraftApp {
         vector_ui::finish_pen_if_left(self);
         transform_tool::end_if_left(self);
         shape_stroke_ui::sync_editor(self, ctx);
+        crate::dock::persist_pending(self, ctx);
         prefs_ui::tick(self, ctx);
         updates_ui::tick(self, ctx);
         monitor_status::poll_frame(self, ctx, frame);
@@ -100,19 +115,19 @@ impl PhotocraftApp {
             }
         }
         // Web drops onto the canvas, read since the last frame: placed below, one at a time.
-        let to_place: Vec<(String, Vec<u8>)> =
-            self.services.place_inbox.as_ref().map(|q| std::mem::take(&mut *q.lock().unwrap_or_else(|e| e.into_inner()))).unwrap_or_default();
-        self.drop_places.extend(to_place.into_iter().map(|(name, bytes)| file_open::DropPlace::Bytes(name, bytes)));
+        self.queue_web_places();
         // Finder double-click / Open With / Dock drops (macOS open-documents events).
         self.drain_os_events(ctx);
         // While files are dragged over the window it gets no pointer events: keep frames coming so
         // the tab strip can follow the pointer.
-        if ctx.input(|i| !i.raw.hovered_files.is_empty()) {
+        let hovering = ctx.input(|i| i.raw.hovered_files.len());
+        if hovering > 0 {
             ctx.request_repaint();
         }
+        crate::file_open::log_drag_over(ctx, hovering);
         let dropped = ctx.input(|i| i.raw.dropped_files.clone());
         if !dropped.is_empty() {
-            let at = self.services.cursor_pos.as_mut().and_then(|f| f(ctx));
+            let at = self.cursor_pos(ctx);
             self.open_dropped(ctx, dropped, at);
             // Files dragged in from another app's window: PhotoCraft comes to the front and takes
             // the keyboard, as Photoshop does, instead of staying behind the source (#5687).
@@ -160,6 +175,8 @@ impl PhotocraftApp {
         // A real UI pass consumes the one in-flight synthetic batch (see `inject_synthetic`).
         self.begin_synthetic_pass(&ctx);
         self.hover_layer = None;
+        // The contextual task bar reports itself again if this frame draws it (#10890).
+        self.ui.task_bar_shown = None;
         i18n::set_current(i18n::Lang::from_pref(&self.session.prefs().interface.language));
         // Fonts registered via set_fonts only take effect next frame; named families would panic now.
         if !self.fonts_ready {
@@ -171,7 +188,7 @@ impl PhotocraftApp {
             // No editor was drawn this pass: end its IME context rather than keep a stale owner.
             type_tool::sync_ime(self, &ctx);
             // The frame's stage record was started with its input: close it here too.
-            self.finish_frame(0.0);
+            self.finish_frame(&ctx, 0.0);
             return;
         }
         let t0 = gpu_canvas::now_ms();
@@ -194,7 +211,7 @@ impl PhotocraftApp {
             self.perf.record_gpu(t);
         }
         self.perf.frame(ui_ms);
-        self.finish_frame(ui_ms);
+        self.finish_frame(&ctx, ui_ms);
         if !drawn {
             return;
         }
@@ -231,16 +248,18 @@ impl PhotocraftApp {
     /// wait modal took the frame (its input, IME and window check already handled).
     fn ui_body(&mut self, ui: &mut egui::Ui) -> bool {
         let ctx = ui.ctx().clone();
+        // Where a pen dragging the window is on the screen, before the title bar reads it.
+        titlebar::note_os_pointer(self, &ctx);
         // A text field's right-click menu, before any field is drawn (text_field_menu.rs).
         text_field_menu::show(&ctx);
-        // The wheel goes to a focused value field before the canvas or a panel sees it (#5473).
-        field_wheel::begin_frame(&ctx);
         // Each painting tool keeps its own brush (#218), so switch the active tool's brush in
         // before anything this frame reads it (the cursor, the options bar, a stroke).
         // Preferences ▸ Type ▸ Recent Fonts: a smaller cap (or 0) trims the existing list at
         // once, not only after the next pick.
         self.sync_recent_fonts();
         paint_mouse::sync_tool_brush(self);
+        // Step by Step and Pause For: play an action's next step once its wait is over (Esc ends it).
+        crate::actions::playback::tick(self, &ctx);
         // A unit typed into a value field (`1in` in a px field) converts at the active document's
         // resolution, as in Photoshop.
         let ppi = self.session.prefs().units_and_rulers.point_size.per_inch();
@@ -279,34 +298,68 @@ impl PhotocraftApp {
         if (chrome || tabbed_in) && self.ui.panels.menu_bar {
             panels::title_bar(self, ui);
         }
-        if (chrome && self.ui.panels.options_bar) || tabbed_in {
+        // Home is only the menu bar and the Home content; the saved panel prefs are untouched.
+        let home = self.home_screen_up();
+        if ((chrome && self.ui.panels.options_bar) || tabbed_in) && !home {
             panels::options_bar(self, ui);
+        } else {
+            // Its Fill help modal is gone with the bar: do not let a stale flag hold the crop's keys.
+            panels::options_bar::close_fill_help(ui.ctx());
         }
-        if chrome && self.ui.panels.status_bar {
+        if chrome && self.ui.panels.status_bar && !home {
             panels::status_bar(self, ui);
         }
-        if (chrome && self.ui.panels.toolbar) || tabbed_in {
-            panels::toolbar(self, ui);
-        }
+        let toolbar_shown = ((chrome && self.ui.panels.toolbar) || tabbed_in) && !home;
         // craft-ui's layout holds the canvas as its protected `canvas` panel.
-        let docking = (chrome && self.ui.panels.dock) || tabbed_in;
-        if docking {
-            panels::dock_area(self, ui);
-        } else {
+        let docking = ((chrome && self.ui.panels.dock) || tabbed_in) && !home;
+        let toolbar_side = self.ui.panels.toolbar_side.resolve();
+        let toolbar_right = toolbar_side == crate::state::ToolbarSide::Right;
+        // The compact layout stacks the dock, rail and toolbar on the dock's physical edge.
+        let dock_right = !crate::direction::is_rtl();
+        let toolbar_at_dock_edge = toolbar_right == dock_right;
+        // The dock-edge layout drops the canvas from craft-ui's split, which is only safe while
+        // nothing else is docked beside it. A panel already beside the canvas keeps the standard
+        // layout so it stays visible and dockable. The layout must not change once a drag starts:
+        // craft-ui records the areas on the press, and swapping the shape cancels the drag.
+        let dock_edge_layout = toolbar_shown && docking && toolbar_at_dock_edge && crate::panel_docking::canvas_alone(self);
+        if dock_edge_layout {
+            // Dock outermost, then its rail, then the toolbox, then the canvas: the toolbox sits
+            // between the canvas and the dock, not outside the dock at the window edge.
+            panels::dock_panel(self, ui);
+            panels::toolbar(self, ui);
             let t = theme::Tokens::get(&ctx);
             let backdrop = if chrome { prefs_ui::pasteboard_color(self).unwrap_or(t.canvas) } else { egui::Color32::BLACK };
             egui::CentralPanel::default().frame(egui::Frame::NONE.fill(backdrop)).show(ui, |ui| {
                 canvas::document_area(self, ui);
             });
-            panels::properties_window(self, &ctx);
+        } else {
+            if toolbar_shown {
+                panels::toolbar(self, ui);
+            }
+            if docking {
+                panels::dock_area(self, ui);
+            } else {
+                let t = theme::Tokens::get(&ctx);
+                let backdrop = if chrome { prefs_ui::pasteboard_color(self).unwrap_or(t.canvas) } else { egui::Color32::BLACK };
+                egui::CentralPanel::default().frame(egui::Frame::NONE.fill(backdrop)).show(ui, |ui| {
+                    canvas::document_area(self, ui);
+                });
+                if !home {
+                    panels::properties_window(self, &ctx);
+                }
+            }
         }
-        brush_panel::window(self, &ctx);
-        preset_panels::windows(self, &ctx);
-        gradient_ui::editor_window(self, &ctx);
-        type_panels_ui::windows(self, &ctx);
-        analysis_ui::windows(self, &ctx);
-        timeline_ui::windows(self, &ctx);
-        workspace_ui::windows(self, &ctx);
+        // The floating editor windows belong to the editor: Home covers them (dialogs and notices
+        // below stay).
+        if !home {
+            brush_panel::window(self, &ctx);
+            preset_panels::windows(self, &ctx);
+            gradient_ui::editor_window(self, &ctx);
+            type_panels_ui::windows(self, &ctx);
+            analysis_ui::windows(self, &ctx);
+            timeline_ui::windows(self, &ctx);
+            workspace_ui::windows(self, &ctx);
+        }
         palette::show(self, &ctx);
         dialogs::show(self, &ctx);
         layers_panel_ui::show_dialog(self, &ctx);

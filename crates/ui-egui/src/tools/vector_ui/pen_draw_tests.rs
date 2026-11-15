@@ -88,7 +88,7 @@ fn drag(h: &mut Harness<'static, PhotocraftApp>, pts: &[[f32; 2]], alt_from: Opt
     h.run_steps(1);
 }
 
-fn click(h: &mut Harness<'static, PhotocraftApp>, p: [f32; 2]) {
+pub(super) fn click(h: &mut Harness<'static, PhotocraftApp>, p: [f32; 2]) {
     drag(h, &[p], None);
 }
 
@@ -245,7 +245,8 @@ fn delete_with_the_pen_deletes_the_finished_work_path_not_the_pixels() {
     for p in [[20.0, 20.0], [120.0, 20.0], [120.0, 100.0]] {
         click(&mut h, p);
     }
-    h.key_press(Key::Enter);
+    // Esc keeps the finished Work Path selected; ↩ would deselect it (#12892).
+    h.key_press(Key::Escape);
     h.run_steps(2);
     let work = |h: &Harness<'static, PhotocraftApp>| h.state().session.active().unwrap().doc.work_path.is_some();
     let red = |h: &Harness<'static, PhotocraftApp>| {

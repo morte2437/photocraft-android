@@ -1,5 +1,5 @@
 use super::*;
-use photocraft_psd::abr::{AbrSample, LegacyBrush, LegacyTip, write_v12};
+use craft_psd::abr::{AbrSample, LegacyBrush, LegacyTip, write_v12};
 use serde_json::json;
 use std::path::PathBuf;
 
@@ -598,10 +598,10 @@ fn a_store_without_previews_makes_them_once_and_then_loads_lazily() {
 
 /// A v6 `.abr` whose presets sit in Photoshop folders (`phry`).
 fn abr_with_folders(presets: &[(&str, &[&str])]) -> Vec<u8> {
-    use photocraft_psd::descriptor::{Descriptor, UnicodeString, Value};
+    use craft_psd::descriptor::{Descriptor, UnicodeString, Value};
     let descs: Vec<Descriptor> = presets.iter().map(|(n, _)| Descriptor::new("brushPreset").with("Nm  ", Value::Text(UnicodeString::new_nul(n)))).collect();
     let folders: Vec<Vec<String>> = presets.iter().map(|(_, f)| f.iter().map(|x| x.to_string()).collect()).collect();
-    photocraft_psd::abr::write_v6_folders(2, &[], &[], &descs, &folders, true).unwrap()
+    craft_psd::abr::write_v6_folders(2, &[], &[], &descs, &folders, true).unwrap()
 }
 
 #[test]
@@ -1135,4 +1135,22 @@ fn migration_preserves_duplicate_names_but_refuses_duplicate_ids() {
     assert!(!opened.warnings.is_empty());
     assert!(mem.read(PATTERNS_FILE, 1 << 20).is_err());
     assert_eq!(mem.read(LEGACY_PATTERNS_FILE, MAX_PATTERNS_BYTES).unwrap(), old);
+}
+
+/// A symlink planted among the presets must not carry a managed write to its target: the
+/// document writer follows links on purpose, the store confines itself to its directory.
+#[cfg(unix)]
+#[test]
+fn a_symlinked_preset_entry_is_refused_not_written_through() {
+    let dir = TempDir::new("symlink");
+    std::fs::create_dir_all(&dir.0).unwrap();
+    let outside = dir.0.join("outside.txt");
+    std::fs::write(&outside, b"victim").unwrap();
+    std::os::unix::fs::symlink(&outside, dir.0.join("planted.json")).unwrap();
+    let be = DirBackend::new(&dir.0);
+    let e = be.write("planted.json", b"{}").unwrap_err();
+    assert!(e.contains("symbolic link"), "{e}");
+    assert_eq!(std::fs::read(&outside).unwrap(), b"victim");
+    be.write("fresh.json", b"{}").unwrap();
+    assert_eq!(be.read("fresh.json", 1024).unwrap(), b"{}");
 }

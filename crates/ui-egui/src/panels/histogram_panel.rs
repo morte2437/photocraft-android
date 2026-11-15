@@ -4,8 +4,10 @@
 //! over the original while an adjustment previews.
 //!
 //! Histograms are counted off the UI thread (`tone::compute_histograms_at`) for the document
-//! revision, source and preview they describe, and kept until one of those changes; the panel
-//! shows the last one with the cached-data warning until the new one lands.
+//! revision, source, selection and preview they describe, and kept until one of those changes;
+//! the panel shows the last one with the cached-data warning until the new one lands. Like
+//! Photoshop's panel it follows the selection (`tone::HistScope::Selection`): a selection change
+//! makes every cached histogram stale, however few pixels it moved.
 
 use std::sync::Arc;
 
@@ -18,7 +20,7 @@ use serde_json::{Value, json};
 
 use crate::PhotocraftApp;
 use crate::theme::Tokens;
-use crate::tone::{self, HistSource, Histograms};
+use crate::tone::{self, HistScope, HistSource, Histograms};
 
 /// Where the panel options are kept between launches (`prefs.dialogs`).
 const OPTIONS_PREF: &str = "histogramPanel";
@@ -261,14 +263,17 @@ pub struct Stats {
     pub clipped: [f64; 2],
 }
 
-/// The statistics of `h`, inspecting `levels` (a level or a range, in either order). None when
-/// nothing was counted.
-pub fn stats(h: &[u32; 256], levels: Option<[u8; 2]>) -> Option<Stats> {
+/// The statistics of `h`, inspecting `levels` (a level or a range, in either order). `pixels` is
+/// the count the Pixels row reports — every pixel the count kept, transparent ones included, so
+/// with a selection it is the selection's size (see [`Histograms::pixel_count`]) — while the
+/// ratios and moments come from the bins, which hold only the visible pixels. None when nothing
+/// was counted.
+pub fn stats(h: &[u32; 256], levels: Option<[u8; 2]>, pixels: u64) -> Option<Stats> {
     let n: u64 = h.iter().map(|v| u64::from(*v)).sum();
-    if n == 0 {
+    if n == 0 && pixels == 0 {
         return None;
     }
-    let nf = n as f64;
+    let nf = n.max(1) as f64;
     let mean = h.iter().enumerate().map(|(i, v)| i as f64 * f64::from(*v)).sum::<f64>() / nf;
     let var = h.iter().enumerate().map(|(i, v)| (i as f64 - mean).powi(2) * f64::from(*v)).sum::<f64>() / nf;
     let mut acc = 0u64;
@@ -284,7 +289,7 @@ pub fn stats(h: &[u32; 256], levels: Option<[u8; 2]>) -> Option<Stats> {
     let count = level.map(|[lo, hi]| sum(lo, hi));
     let percentile = level.map(|[lo, hi]| 100.0 * if lo == hi { sum(0, hi) } else { sum(lo, hi) } as f64 / nf);
     let clipped = [100.0 * f64::from(h[0]) / nf, 100.0 * f64::from(h[255]) / nf];
-    Some(Stats { mean, std_dev: var.sqrt(), median, pixels: n, level, count, percentile, clipped })
+    Some(Stats { mean, std_dev: var.sqrt(), median, pixels, level, count, percentile, clipped })
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -295,7 +300,8 @@ pub fn stats(h: &[u32; 256], levels: Option<[u8; 2]>) -> Option<Stats> {
 pub struct HistKey {
     pub doc: DocId,
     pub revision: u64,
-    /// `tone::tag` of the source and space.
+    /// `tone::tag` of the source, space and selection (the panel counts `HistScope::Selection`,
+    /// so a selection change is a new key however few pixels it moved).
     pub source: u64,
     /// The adjustment preview's display key; 0 for the document itself.
     pub preview: u64,
@@ -352,7 +358,15 @@ fn committed_key(app: &PhotocraftApp) -> Option<(HistKey, ToneSpace, HistSource)
     let space = tone_space(st.doc.mode);
     let (_, source) = resolve_source(st, source_choice(&app.ui.histogram_panel));
     let max_level = if app.hist_uncached == Some((doc, revision)) { 1 } else { max_cache_level(app) };
-    Some((HistKey { doc, revision, source: tone::tag(source, space), preview: 0, max_level }, space, source))
+    // The panel counts the selected pixels (HistScope::Selection), so its key carries the
+    // selection's identity: a selection change makes every cached histogram stale. The mask is
+    // hashed per revision (refreshed by `update`); hashing here is the between-frames cold path.
+    let sel = match app.hist_sel_key {
+        Some((d, r, k)) if d == doc && r == revision => k,
+        _ => tone::selection_key(&st.doc),
+    };
+    let source_tag = tone::tag(source, space, HistScope::Selection, sel);
+    Some((HistKey { doc, revision, source: source_tag, preview: 0, max_level }, space, source))
 }
 
 /// The document an open adjustment previews on the canvas (an Image › Adjustments dialog through
@@ -383,22 +397,43 @@ fn want(app: &mut PhotocraftApp) -> Option<Want> {
     Some(Want { committed, preview, space, source })
 }
 
+/// Refreshes the memoized selection key for the active document's revision: the panel's keying
+/// asks for it every frame, the hash walks every tile of the selection mask, and any change to
+/// the selection arrives as a new document revision — so the same revision always keeps its key.
+fn refresh_sel_key(app: &mut PhotocraftApp) {
+    let Some(st) = app.session.active() else { return };
+    if matches!(app.hist_sel_key, Some((d, r, _)) if d == st.doc.id && r == st.revision) {
+        return;
+    }
+    app.hist_sel_key = Some((st.doc.id, st.revision, tone::selection_key(&st.doc)));
+}
+
 /// Brings the panel's histograms up to date as far as one frame should: lands a finished count,
 /// keeps entries a view-only revision didn't invalidate, and starts the next count (at most one at
 /// a time, at most every 250 ms per entry). `ctx` repaints when a worker delivers.
 pub fn update(app: &mut PhotocraftApp, ctx: &egui::Context) {
-    // A finished worker lands its histogram in the slot its key names. A worker that died
-    // without sending clears the job so the next frame schedules a new one.
+    refresh_sel_key(app);
+    let want = want(app);
+    // A finished worker lands its histogram in the slot its key names — unless it was computed
+    // for another document or selection, which is dropped at the door: caching it would reset
+    // the panel's 250 ms throttle without ever being shown fresh. A result for the same
+    // document and selection still lands when the revision moved on under it (continuous
+    // edits): the panel shows the newer data, marked stale, instead of waiting for an edit-free
+    // moment. A worker that died without sending clears the job so the next frame schedules a
+    // new one.
     if let Some((_, rx)) = &app.hist_job {
         match rx.try_recv() {
             Ok((key, ms, hist)) => {
                 app.perf.span("histogram", ms);
-                // egui's clock works on every target; `gpu_canvas::now_ms` is always 0 on wasm32.
-                let entry = PanelHist { key, at: ctx.input(|i| i.time) * 1000.0, hist };
-                if key.preview == 0 {
-                    app.doc_hist = Some(entry);
-                } else {
-                    app.doc_hist_preview = Some(entry);
+                let wanted = want.as_ref().is_some_and(|w| key.doc == w.committed.doc && key.source == w.committed.source);
+                if wanted {
+                    // egui's clock works on every target; `gpu_canvas::now_ms` is always 0 on wasm32.
+                    let entry = PanelHist { key, at: ctx.input(|i| i.time) * 1000.0, hist };
+                    if key.preview == 0 {
+                        app.doc_hist = Some(entry);
+                    } else {
+                        app.doc_hist_preview = Some(entry);
+                    }
                 }
                 app.hist_job = None;
             }
@@ -406,23 +441,25 @@ pub fn update(app: &mut PhotocraftApp, ctx: &egui::Context) {
             Err(std::sync::mpsc::TryRecvError::Empty) => {}
         }
     }
-    // A revision that changed no pixels (selecting a layer, say) keeps the histogram of the one
-    // before (#125), and an Uncached Refresh with it.
-    if let Some(st) = app.session.active()
-        && tone::view_only(st)
-    {
+    // Revisions that changed no pixels since the histogram's (selecting a layer, say) keep it
+    // (#125), and an Uncached Refresh with it — but only for the same selection: a selection
+    // change moves no pixels yet changes what the panel counts.
+    if let Some(st) = app.session.active() {
         let (doc, rev) = (st.doc.id, st.revision);
-        if app.hist_uncached == Some((doc, rev.wrapping_sub(1))) {
+        if let Some((d, r)) = app.hist_uncached
+            && d == doc
+            && tone::pixels_kept_since(st, r)
+        {
             app.hist_uncached = Some((doc, rev));
         }
-        if let Some(e) = app.doc_hist.as_mut()
-            && e.key.doc == doc
-            && e.key.revision.wrapping_add(1) == rev
-        {
-            e.key.revision = rev;
+        let same_selection = want.as_ref().map(|w| w.committed.source);
+        for e in [app.doc_hist.as_mut(), app.doc_hist_preview.as_mut()].into_iter().flatten() {
+            if e.key.doc == doc && tone::pixels_kept_since(st, e.key.revision) && same_selection.is_none_or(|s| e.key.source == s) {
+                e.key.revision = rev;
+            }
         }
     }
-    let Some(want) = want(app) else { return };
+    let Some(want) = want else { return };
     if want.preview.is_none() {
         app.doc_hist_preview = None;
     }
@@ -468,7 +505,7 @@ fn spawn(app: &mut PhotocraftApp, ctx: &egui::Context, doc: Arc<Document>, key: 
             .name("histogram".into())
             .spawn(move || {
                 let t0 = crate::gpu_canvas::now_ms();
-                let h = Arc::new(tone::compute_histograms_at(&doc, source, space, key.max_level));
+                let h = Arc::new(tone::compute_histograms_at(&doc, source, space, HistScope::Selection, key.max_level));
                 let _ = tx.send((key, crate::gpu_canvas::now_ms() - t0, h));
                 ctx.request_repaint();
             })
@@ -481,7 +518,7 @@ fn spawn(app: &mut PhotocraftApp, ctx: &egui::Context, doc: Arc<Document>, key: 
     };
     if !spawned {
         let t0 = crate::gpu_canvas::now_ms();
-        let h = Arc::new(tone::compute_histograms_at(&doc, source, space, key.max_level));
+        let h = Arc::new(tone::compute_histograms_at(&doc, source, space, HistScope::Selection, key.max_level));
         let _ = tx.send((key, crate::gpu_canvas::now_ms() - t0, h));
     }
     app.hist_job = Some((key, rx));
@@ -705,16 +742,28 @@ fn outline(p: &egui::Painter, r: Rect, h: &[u32; 256], color: Color32) {
 /// The statistics grid: Mean, Std Dev, Median, Pixels | Level, Count, Percentile, Cache Level.
 fn statistics(ui: &mut egui::Ui, h: &Histograms, mode: ColorMode, channel: HistChannel, levels: Option<[u8; 2]>, t: &Tokens) {
     let ch = if channel == HistChannel::Colors { HistChannel::Composite } else { channel };
-    let Some(s) = stats(bins(h, mode, ch), levels) else { return };
+    let histogram = bins(h, mode, ch);
+    let Some(s) = stats(histogram, levels, h.pixel_count) else { return };
+    let no_visible_samples = histogram.iter().all(|&v| v == 0);
     let level = match s.level {
         Some([a, b]) if a == b => a.to_string(),
         Some([a, b]) => format!("{a}..{b}"),
         None => String::new(),
     };
     let rows = [
-        (tl!("Mean:"), format!("{:.2}", s.mean), tl!("Level:"), level),
-        (tl!("Std Dev:"), format!("{:.2}", s.std_dev), tl!("Count:"), s.count.map(|c| c.to_string()).unwrap_or_default()),
-        (tl!("Median:"), s.median.to_string(), tl!("Percentile:"), s.percentile.map(|p| format!("{p:.2}")).unwrap_or_default()),
+        (tl!("Mean:"), if no_visible_samples { "--".into() } else { format!("{:.2}", s.mean) }, tl!("Level:"), level),
+        (
+            tl!("Std Dev:"),
+            if no_visible_samples { "--".into() } else { format!("{:.2}", s.std_dev) },
+            tl!("Count:"),
+            s.count.map(|c| c.to_string()).unwrap_or_default(),
+        ),
+        (
+            tl!("Median:"),
+            if no_visible_samples { "--".into() } else { s.median.to_string() },
+            tl!("Percentile:"),
+            s.percentile.filter(|_| !no_visible_samples).map(|p| format!("{p:.2}")).unwrap_or_default(),
+        ),
         (tl!("Pixels:"), s.pixels.to_string(), tl!("Cache Level:"), h.level.max(1).to_string()),
     ];
     let mono = crate::theme::mono(11.5);
@@ -861,7 +910,7 @@ pub fn inspect(app: &PhotocraftApp) -> Value {
         "current": entry.zip(committed).is_some_and(|(e, k)| e.key == HistKey { preview: e.key.preview, ..k }),
         "cacheLevel": entry.map(|e| e.hist.level.max(1)),
         "maxCacheLevel": max_cache_level(app),
-        "stats": entry.and_then(|e| stats(bins(&e.hist, mode, ch), app.ui.histogram_range)),
+        "stats": entry.and_then(|e| stats(bins(&e.hist, mode, ch), app.ui.histogram_range, e.hist.pixel_count)),
     })
 }
 

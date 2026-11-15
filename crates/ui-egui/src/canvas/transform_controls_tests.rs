@@ -89,14 +89,16 @@ fn floating_square() -> PhotocraftApp {
     app
 }
 
-/// #7538: a selection tool's press on a floating piece's ants drags it; one in the margin its
-/// cut left of the loose marquee draws a new selection, as the ants say.
+/// #7538: a selection tool's press on a floating piece's ants drags its outline (#11368), a ⌘
+/// press the piece; one in the margin its cut left of the loose marquee draws a new selection, as
+/// the ants say.
 #[test]
 fn a_press_in_the_margin_of_a_floating_piece_starts_a_new_selection() {
     let app = floating_square();
     let none = egui::Modifiers::NONE;
     for tool in [Tool::RectMarquee, Tool::Lasso] {
-        assert_eq!(selection_drag_kind(&app, tool, [70.0, 60.0], none), Some(true), "{tool:?}: on the square drags it");
+        assert_eq!(selection_drag_kind(&app, tool, [70.0, 60.0], none), Some(false), "{tool:?}: on the square drags its outline");
+        assert_eq!(selection_drag_kind(&app, tool, [70.0, 60.0], egui::Modifiers::COMMAND), Some(true), "{tool:?}: ⌘ drags the square");
         assert_eq!(selection_drag_kind(&app, tool, [33.0, 28.0], none), None, "{tool:?}: in the old marquee's margin");
     }
 }
@@ -146,13 +148,16 @@ fn several_selected_layers_share_one_frame_that_transforms_them_all() {
     assert!(both.contains_rect(one) && both.width() > one.width() && both.height() > one.height(), "{both:?} frames both");
     let (lt, rb) = (xf.to_doc(both.left_top()), xf.to_doc(both.right_bottom()));
     assert!((lt[0] - 20.0).abs() < 1e-3 && (lt[1] - 30.0).abs() < 1e-3 && (rb[0] - 150.0).abs() < 1e-3 && (rb[1] - 150.0).abs() < 1e-3, "{lt:?} {rb:?}");
-    // The Background never joins the frame.
+    // The Background among them joins the frame, as in Photoshop; its handles refuse (#11101).
     let bg = app.session.active().unwrap().doc.layers[0].id;
     app.session.execute("layer.select", json!({"layer": bg.0, "mode": "add"})).unwrap();
+    assert_eq!(transform_controls_layers(&app).len(), 3);
+    assert_eq!(transform_controls_rect(&app, &xf), Some(Rect::from_min_size(Pos2::ZERO, vec2(200.0, 200.0))));
+    app.session.execute("layer.select", json!({"layer": bg.0, "mode": "toggle"})).unwrap();
     assert_eq!(transform_controls_layers(&app).len(), 2);
     assert_eq!(transform_controls_rect(&app, &xf), Some(both));
     let ctx = egui::Context::default();
-    assert!(begin_transform_controls_at(&mut app, &ctx, &xf, both.right_bottom()));
+    assert_eq!(begin_transform_controls_at(&mut app, &ctx, &xf, both.right_bottom()), ControlsPress::Started);
     let t = app.ui.transform.as_ref().expect("the shared frame's handle starts Free Transform");
     assert_eq!(t.rect, [20.0, 30.0, 150.0, 150.0]);
     assert_eq!(t.layers, [a.0, b.0]);
@@ -173,7 +178,7 @@ fn move_transform_controls_start_free_transform_for_vector_shapes() {
     assert!(transform_controls_hit(r, r.right_bottom()));
 
     let ctx = egui::Context::default();
-    assert!(begin_transform_controls_at(&mut app, &ctx, &xf, r.right_bottom()));
+    assert_eq!(begin_transform_controls_at(&mut app, &ctx, &xf, r.right_bottom()), ControlsPress::Started);
     let t = app.ui.transform.as_ref().expect("control press starts Free Transform");
     assert_eq!(t.rect, [20.0, 30.0, 100.0, 70.0]);
 }
@@ -210,7 +215,7 @@ fn hiding_extras_hides_the_move_transform_controls() {
     assert!(transform_controls_rect(&app, &xf).is_none(), "no box with Extras hidden");
     assert_eq!(painted(&mut app), 0, "nothing is drawn");
     // Hidden handles don't act: a press on a corner doesn't start Free Transform.
-    assert!(!begin_transform_controls_at(&mut app, &ctx, &xf, shown.right_bottom()));
+    assert_eq!(begin_transform_controls_at(&mut app, &ctx, &xf, shown.right_bottom()), ControlsPress::Missed);
     assert!(app.ui.transform.is_none());
     assert!(app.ui.tool_options.move_show_transform, "Show Transform Controls is unchanged");
     assert_eq!(app.session.active().unwrap().doc.layers, layer, "the layer is unchanged");
@@ -235,7 +240,7 @@ fn move_transform_controls_follow_floating_selected_pixels() {
     let r = transform_controls_rect(&app, &xf).unwrap();
     assert_eq!(r, Rect::from_min_max(pos2(200.0, 150.0), pos2(300.0, 210.0)));
     let ctx = egui::Context::default();
-    assert!(begin_transform_controls_at(&mut app, &ctx, &xf, r.right_bottom()));
+    assert_eq!(begin_transform_controls_at(&mut app, &ctx, &xf, r.right_bottom()), ControlsPress::Started);
     assert_eq!(app.ui.transform.as_ref().unwrap().rect, [200.0, 150.0, 300.0, 210.0]);
 }
 
@@ -256,7 +261,7 @@ fn move_transform_controls_frame_the_selection() {
     let r = transform_controls_rect(&app, &xf).unwrap();
     assert_eq!(r, Rect::from_min_max(pos2(60.0, 80.0), pos2(160.0, 200.0)));
     let ctx = egui::Context::default();
-    assert!(begin_transform_controls_at(&mut app, &ctx, &xf, r.right_bottom()));
+    assert_eq!(begin_transform_controls_at(&mut app, &ctx, &xf, r.right_bottom()), ControlsPress::Started);
     assert_eq!(app.ui.transform.as_ref().unwrap().rect, [60.0, 80.0, 160.0, 200.0]);
 }
 
@@ -296,7 +301,7 @@ fn free_transform_on_a_locked_layer_is_refused_up_front() {
     let xf =
         ViewXform { rect: Rect::from_min_size(Pos2::ZERO, vec2(200.0, 200.0)), zoom: 1.0, center: [100.0, 100.0], flip: false, rotation: 0.0, aspect: 1.0 };
     let r = transform_controls_rect(&app, &xf).unwrap();
-    assert!(!begin_transform_controls_at(&mut app, &ctx, &xf, r.right_bottom()));
+    assert_eq!(begin_transform_controls_at(&mut app, &ctx, &xf, r.right_bottom()), ControlsPress::Missed);
     assert!(app.ui.transform.is_none());
     assert_eq!(errors(&app), [crate::transform_tool::LOCKED]);
 }
@@ -323,21 +328,20 @@ fn move_transform_controls_show_resize_and_rotate_cursors_before_first_interacti
         (r.center_bottom(), egui::CursorIcon::ResizeVertical),
         (r.right_center(), egui::CursorIcon::ResizeHorizontal),
         (r.left_center(), egui::CursorIcon::ResizeHorizontal),
-        // Between handles: the rotation band (a point above the top-centre handle is that handle),
-        // where the curved rotate arrow replaces the pointer (#4658).
+        // Just beyond the outward edge band, the curved rotate arrow replaces the pointer (#4658).
         (pos2(r.left() + r.width() * 0.25, r.top() - 12.0), egui::CursorIcon::None),
     ] {
         assert_eq!(transform_controls_cursor(r, p), Some(expected), "hover at {p:?}");
         assert!(transform_controls_hit(r, p), "same region must start a transform");
     }
-    assert_eq!(transform_controls_cursor(r, r.center()), None, "interior stays Move");
-    assert_eq!(transform_controls_cursor(r, pos2(r.center().x, r.top() - 30.0)), None);
-    // The rotate arrow bends round the nearest corner, pointing into the box; handles and the
-    // interior have none.
-    let into = |p: Pos2| transform_controls_turn(r, p).map(|v| (v.x.signum(), v.y.signum()));
-    assert_eq!(into(pos2(r.left() + r.width() * 0.25, r.top() - 12.0)), Some((1.0, 1.0)), "top left");
-    assert_eq!(into(pos2(r.right() + 12.0, r.bottom() - r.height() * 0.25)), Some((-1.0, -1.0)), "bottom right");
-    assert_eq!(into(pos2(r.left() - 12.0, r.bottom() + 12.0)), Some((1.0, -1.0)), "beyond the bottom-left corner");
+    assert_eq!(transform_controls_cursor(r, r.center()), Some(egui::CursorIcon::Default), "interior uses the default arrow");
+    assert_eq!(transform_controls_cursor(r, pos2(r.center().x, r.top() - 30.0)), Some(egui::CursorIcon::None));
+    // The rotate arrow points into the nearest edge or corner. Handles and the interior have none.
+    let into = |p: Pos2| transform_controls_turn(r, p);
+    assert_eq!(into(pos2(r.left() + r.width() * 0.25, r.top() - 12.0)), Some(vec2(0.0, 16.0)), "top edge");
+    assert_eq!(into(pos2(r.right() + 12.0, r.bottom() - r.height() * 0.25)), Some(vec2(-16.0, 0.0)), "right edge");
+    let corner = into(pos2(r.left() - 12.0, r.bottom() + 12.0)).unwrap();
+    assert!(corner.x > 0.0 && corner.y < 0.0, "beyond the bottom-left corner");
     assert_eq!(into(r.left_top()), None);
     assert_eq!(into(r.center()), None);
 
@@ -346,7 +350,7 @@ fn move_transform_controls_show_resize_and_rotate_cursors_before_first_interacti
     let next = transform_controls_rect(&app, &xf).expect("new active shape controls");
     assert_ne!(r, next);
     assert_eq!(transform_controls_cursor(next, next.right_bottom()), Some(egui::CursorIcon::ResizeNwSe));
-    assert_eq!(transform_controls_cursor(next, next.center()), None);
+    assert_eq!(transform_controls_cursor(next, next.center()), Some(egui::CursorIcon::Default));
 }
 
 #[test]
@@ -356,4 +360,43 @@ fn transform_control_hit_keeps_move_interior_free_and_has_rotation_band() {
     assert!(transform_controls_hit(r, pos2(60.0, 18.0)));
     assert!(!transform_controls_hit(r, r.center()));
     assert!(!transform_controls_hit(r, pos2(60.0, 4.0)));
+}
+
+#[test]
+fn the_background_among_several_joins_the_frame_and_its_handles_refuse() {
+    // Measured in the reference application (#11101): the box frames them all, the Background
+    // included, and a handle drag shows its locked alert and changes nothing.
+    let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
+    app.session.execute("file.new", json!({"width": 200, "height": 200})).unwrap();
+    app.session.execute("shape.create", json!({"kind": "rect", "rect": [20, 30, 40, 40], "fill": "#ff0000"})).unwrap();
+    let a = app.session.active().unwrap().active_layer.unwrap();
+    app.session.execute("shape.create", json!({"kind": "rect", "rect": [100, 120, 50, 30], "fill": "#ff0000"})).unwrap();
+    let b = app.session.active().unwrap().active_layer.unwrap();
+    let bg = app.session.active().unwrap().doc.layers[0].id;
+    app.session.execute("layer.select", json!({"layer": bg.0, "mode": "add"})).unwrap();
+    app.sync_views();
+    app.ui.tool = Tool::Move;
+    app.ui.tool_options.move_show_transform = true;
+    let xf =
+        ViewXform { rect: Rect::from_min_size(Pos2::ZERO, vec2(200.0, 200.0)), zoom: 1.0, center: [100.0, 100.0], flip: false, rotation: 0.0, aspect: 1.0 };
+    let r = transform_controls_rect(&app, &xf).expect("the box frames them all");
+    assert_eq!(r, Rect::from_min_size(Pos2::ZERO, vec2(200.0, 200.0)), "the Background included");
+    let before = app.session.active().unwrap().doc.clone();
+    let ctx = egui::Context::default();
+    assert_eq!(begin_transform_controls_at(&mut app, &ctx, &xf, r.right_bottom()), ControlsPress::Refused, "the press is taken, not a move");
+    assert!(app.ui.transform.is_none(), "no box opens");
+    let alerts: Vec<_> =
+        app.ui.dialogs.iter().filter(|d| d.kind == crate::state::DialogKind::Error).filter_map(|d| d.fields.get("message")?.as_str()).collect();
+    assert_eq!(alerts, [super::transform_controls::CONTROLS_LOCKED]);
+    assert!(app.session.active().unwrap().doc == before, "nothing changed");
+    // The Background alone: no box at all.
+    app.session.execute("layer.select", json!({"layer": bg.0})).unwrap();
+    assert_eq!(transform_controls_rect(&app, &xf), None);
+    // Without the Background the handles start Free Transform, as before.
+    app.ui.dialogs.clear();
+    app.session.execute("layer.select", json!({"layer": a.0})).unwrap();
+    app.session.execute("layer.select", json!({"layer": b.0, "mode": "add"})).unwrap();
+    let r = transform_controls_rect(&app, &xf).unwrap();
+    assert_eq!(begin_transform_controls_at(&mut app, &ctx, &xf, r.right_bottom()), ControlsPress::Started);
+    assert_eq!(app.ui.transform.as_ref().unwrap().layers, [a.0, b.0]);
 }

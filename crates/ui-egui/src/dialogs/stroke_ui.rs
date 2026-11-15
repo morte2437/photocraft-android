@@ -1,11 +1,9 @@
 //! Edit › Stroke…: a Photoshop-style options dialog for the existing `edit.stroke` command.
 //! The engine remains directly callable with parameters by CLI, MCP and Actions.
 
-use egui::{Align2, Sense, pos2, vec2};
 use serde_json::{Map, Value, json};
 
 use crate::PhotocraftApp;
-use crate::theme::Tokens;
 
 pub const COMMAND: &str = "edit.stroke";
 const MARK: &str = "__stroke";
@@ -52,33 +50,57 @@ pub fn fields(app: &PhotocraftApp) -> Map<String, Value> {
     f
 }
 
+/// Open Stroke with the current editing target, retaining the command's channel-view behavior.
 pub fn open(app: &mut PhotocraftApp) -> u64 {
-    let f = fields(app);
+    let mut f = fields(app);
+    let target = app.with_mask_target(COMMAND, json!({}));
+    f.insert("__target".into(), target.get("target").cloned().unwrap_or_else(|| crate::canvas::paint_target(app)));
+    if let Some(st) = app.session.active() {
+        f.insert("__document".into(), json!(st.doc.id.0));
+        f.insert("__layer".into(), json!(st.active_layer));
+    }
     app.ui.open_dialog(crate::state::DialogKind::Command, f)
 }
 
-/// Only Stroke params are passed to the engine; private UI markers are ignored.
+/// Pass Stroke choices and the captured editing target, leaving other private markers out.
 pub fn params(f: &Map<String, Value>) -> Value {
-    Value::Object(KEYS.iter().filter_map(|k| f.get(*k).map(|v| (k.to_string(), v.clone()))).collect())
+    let mut p: Map<String, Value> = KEYS.iter().filter_map(|k| f.get(*k).map(|v| (k.to_string(), v.clone()))).collect();
+    if let Some(target) = f.get("__target") {
+        p.insert("target".into(), target.clone());
+    }
+    Value::Object(p)
 }
 
+/// OK: runs `edit.stroke` with the dialog's settings and, when it succeeds, remembers them for
+/// the next time the dialog opens.
 pub fn confirm(app: &mut PhotocraftApp, f: &Map<String, Value>) -> Result<Value, String> {
-    let remembered = params(f);
-    let result = app.run(COMMAND, remembered.clone());
+    let st = app.session.active().ok_or(tl!("The document is closed"))?;
+    if f.get("__document").and_then(Value::as_u64) != Some(st.doc.id.0) || f.get("__layer") != Some(&json!(st.active_layer)) {
+        return Err(tl!("The document or active layer changed. Open Stroke again.").into());
+    }
+    let result = app.run(COMMAND, params(f));
     if result.is_ok() {
-        app.session.prefs.edit(|p| p.dialogs.insert(COMMAND.into(), remembered));
+        let remembered = KEYS.iter().filter_map(|k| f.get(*k).map(|v| (k.to_string(), v.clone()))).collect();
+        app.session.prefs.edit(|p| p.dialogs.insert(COMMAND.into(), Value::Object(remembered)));
     }
     result
 }
 
-fn label(ui: &mut egui::Ui, text: &str) {
-    let t = Tokens::get(ui.ctx());
-    let (r, _) = ui.allocate_exact_size(vec2(112.0, 22.0), Sense::hover());
-    ui.painter().text(pos2(r.right() - 6.0, r.center().y), Align2::RIGHT_CENTER, text, egui::FontId::proportional(12.0), t.text_dim);
-}
+/// Label column bounds for [`crate::widgets::label_column_width`]: the English labels' width, and a cap.
+const LABEL_MIN_W: f32 = 112.0;
+const LABEL_MAX_W: f32 = 240.0;
+/// The labels above the Blending section, measured with its own in the current language.
+const LABELS: [&str; 3] = ["Width:", "Color:", "Location:"];
 
+/// The Stroke (Width, Color) and Location sections and the shared Blending section, all their
+/// labels in one column measured over [`LABELS`] and the Blending labels together.
 pub fn body(ui: &mut egui::Ui, f: &mut Map<String, Value>) {
     ui.spacing_mut().item_spacing.y = 6.0;
+    let labels: Vec<&str> = LABELS.iter().chain(&crate::dialog_blend_ui::LABELS).copied().map(crate::i18n::t).collect();
+    let label_w = crate::widgets::label_column_width(ui, &labels, LABEL_MIN_W, LABEL_MAX_W);
+    let label = |ui: &mut egui::Ui, text: &str| {
+        crate::widgets::column_label(ui, text, label_w);
+    };
     crate::widgets::section_label(ui, tl!("Stroke"));
     crate::widgets::hairline(ui);
     ui.horizontal(|ui| {
@@ -109,7 +131,7 @@ pub fn body(ui: &mut egui::Ui, f: &mut Map<String, Value>) {
             f.insert("location".into(), json!(location));
         }
     });
-    crate::dialog_blend_ui::body(ui, f, "stroke");
+    crate::dialog_blend_ui::body(ui, f, "stroke", label_w);
 }
 
 #[cfg(test)]

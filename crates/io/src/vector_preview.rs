@@ -14,6 +14,10 @@ const MAX_BYTES: usize = 16 * 1024 * 1024;
 const MAX_PIXELS: u64 = 24_000_000;
 const PREFIX: usize = 44;
 
+fn svg_metadata_limits() -> craft_svg::tree::Limits {
+    craft_svg::tree::Limits { bytes: MAX_BYTES, ..Default::default() }
+}
+
 /// Recognize native-vector payloads by content; names never authorize a preview.
 pub fn is_native_source(source: &[u8]) -> bool {
     source.starts_with(b"%PDF-") || source.starts_with(b"%!PS-Adobe-") || source.starts_with(&[0xc5, 0xd0, 0xd3, 0xc6])
@@ -46,13 +50,7 @@ pub fn frame_metadata(preview: &VectorPreview, expected_source_hash: [u8; 32]) -
         return None;
     }
     let text = std::str::from_utf8(&preview.svg).ok()?;
-    let parsed = roxmltree::Document::parse(text).ok()?;
-    let root = parsed.root_element();
-    if root.tag_name().name() != "svg" {
-        return None;
-    }
-    let dimension = |key| root.attribute(key)?.parse::<f64>().ok();
-    let (width, height) = dimension("width").zip(dimension("height"))?;
+    let (width, height) = craft_svg::tree::root_unitless_size(text, &svg_metadata_limits()).ok()??;
     (width.is_finite() && height.is_finite() && width > 0.0 && height > 0.0 && width <= 16384.0 && height <= 16384.0 && width * height <= MAX_PIXELS as f64)
         .then_some((width, height))
 }
@@ -68,10 +66,7 @@ pub fn frame(preview: &VectorPreview, source: &[u8]) -> Option<(f64, f64)> {
 /// itself is the frame; non-finite, oversized or mismatched dimensions give `None`.
 pub(crate) fn frame_for_svg(svg: &[u8], size: Size) -> Option<(f64, f64)> {
     let text = std::str::from_utf8(svg).ok()?;
-    let parsed = roxmltree::Document::parse(text).ok()?;
-    let root = parsed.root_element();
-    let dimension = |key| root.attribute(key).and_then(|value| value.parse::<f64>().ok());
-    let Some((width, height)) = dimension("width").zip(dimension("height")) else {
+    let Some((width, height)) = craft_svg::tree::root_unitless_size(text, &svg_metadata_limits()).ok()? else {
         // A general SVG may spell lengths in physical units. Its validated display canvas is
         // the fallback; our normalized native previews always write unitless source pixels.
         return Some((f64::from(size.width), f64::from(size.height)));
@@ -384,7 +379,7 @@ mod tests {
         smart.vector_preview = Some(preview.clone());
         doc.layers.push(Layer::new("native", LayerContent::Smart(smart)));
         let out = crate::export(&doc, "psd", &Default::default()).unwrap();
-        let mut file = photocraft_psd::PsdFile::from_bytes(&out.bytes).unwrap();
+        let mut file = craft_psd::PsdFile::from_bytes(&out.bytes).unwrap();
         let record = file.layers()[0].clone();
         *file.layers_mut() = vec![record; 100];
         let before = HASHED_SOURCE_BYTES.with(std::cell::Cell::get);
@@ -450,7 +445,7 @@ mod tests {
         assert_eq!(after.0 - before.0, source.len(), "the shared native source must not be hashed per layer or per use");
         assert_eq!(after.1 - before.1, 1, "the shared preview must not be rendered per layer or per use");
         assert_eq!(after.2 - before.2, source.len(), "the conversion cache must not re-hash the shared Embedded owner per layer");
-        let file = photocraft_psd::PsdFile::from_bytes(&out.bytes).unwrap();
+        let file = craft_psd::PsdFile::from_bytes(&out.bytes).unwrap();
         assert!(file.layers().iter().all(|layer| layer.block(&PSD_KEY).is_some()));
         let back = check(&out.bytes);
 

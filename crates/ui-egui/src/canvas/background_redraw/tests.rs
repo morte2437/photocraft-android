@@ -600,6 +600,34 @@ fn a_compositor_build_failure_shows_its_reason() {
 }
 
 #[test]
+fn completed_compositor_build_refreshes_an_unchanged_cached_document() {
+    let _gpu = photocraft_testkit::gpu_lock();
+    for success in [true, false] {
+        let Some(mut g) = gpu_app() else { return };
+        let gpu = g.harness.state().gpu.as_ref().expect("GPU canvas").clone();
+        gpu.simulate_compositor_build();
+        g.harness.state_mut().run("file.new", json!({"width": 400, "height": 300, "background": "#336699"})).expect("new");
+        g.harness.step();
+        settle(&mut g);
+        let doc = g.harness.state().session.active().expect("document").doc.id;
+        let revision = g.harness.state().session.active().expect("document").revision;
+        assert_eq!(render_path_of(&g).0, Some("compositorBuilding"));
+        assert!(gpu.simulate_compositor_completion(success), "test compositor must build");
+        g.harness.step();
+        settle(&mut g);
+        g.harness.run_steps(2);
+        assert_eq!(g.harness.state().session.active().expect("document").revision, revision);
+        if success {
+            assert!(on_gpu_canvas(&g), "successful build should replace the temporary reason: {:?}", render_path_of(&g));
+        } else {
+            assert_eq!(render_path_of(&g).0, Some("compositorBuild"));
+            assert!(g.harness.state().perf.gpu_fallback.as_deref().is_some_and(|s| s.contains("simulated build failure")));
+            assert_matches_synchronous(&mut g, doc);
+        }
+    }
+}
+
+#[test]
 fn a_canvas_over_the_texture_budget_records_its_reason() {
     let _gpu = photocraft_testkit::gpu_lock();
     let Some(mut g) = gpu_app() else { return };

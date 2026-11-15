@@ -45,6 +45,7 @@ pub(crate) fn layer_identity(layer: &Layer, h: &mut std::collections::hash_map::
                 layer_identity(c, h, pin);
             }
             format!("{:?}{:?}", g.artboard, g.frame_stroke).hash(h);
+            format!("{:?}", layer.frame).hash(h);
         }
         LayerContent::Fill(f) => {
             format!("{f:?}").hash(h);
@@ -273,6 +274,13 @@ fn evict_fx_cache_over_budget(key: u64) {
         if let Some(s) = c.map.remove(&old) {
             c.bytes = c.bytes.saturating_sub(s.get().map_or(0, |e| e.bytes));
         }
+    }
+    // The current entry alone over the budget: its callers hold the maps, the cache must not.
+    if c.bytes > budget
+        && let Some(s) = c.map.remove(&key)
+    {
+        c.order.retain(|k| *k != key);
+        c.bytes = c.bytes.saturating_sub(s.get().map_or(0, |e| e.bytes));
     }
 }
 

@@ -27,7 +27,7 @@ fn main() {
 
 fn run_file(path: &str) {
     let bytes = std::fs::read(path).unwrap();
-    let file = photocraft_psd::PsdFile::from_bytes(&bytes).unwrap();
+    let file = craft_psd::PsdFile::from_bytes(&bytes).unwrap();
     let mut imp = photocraft_io::import(path, &bytes).unwrap();
     configure_visibility(&mut imp.document.layers);
     let doc = &imp.document;
@@ -360,15 +360,15 @@ fn print_layer_details(doc: &photocraft_doc::Document) {
         for (k, v) in &l.psd_blocks {
             if k == b"lfx2" || k == b"lmfx" {
                 // Recursively list descriptor keys (effects), skipping colour stop lists.
-                fn walk(d: &photocraft_psd::descriptor::Descriptor, depth: usize, out: &mut Vec<String>) {
+                fn walk(d: &craft_psd::descriptor::Descriptor, depth: usize, out: &mut Vec<String>) {
                     for (k, v) in &d.items {
                         let key = match k {
-                            photocraft_psd::descriptor::Id::Code(c) => String::from_utf8_lossy(c).to_string(),
+                            craft_psd::descriptor::Id::Code(c) => String::from_utf8_lossy(c).to_string(),
                             other => String::from_utf8_lossy(other.as_bytes()).to_string(),
                         };
                         let vs = format!("{v:?}");
                         match v {
-                            photocraft_psd::descriptor::Value::Descriptor(sub) => {
+                            craft_psd::descriptor::Value::Descriptor(sub) => {
                                 out.push(format!("{}{key}:", "  ".repeat(depth)));
                                 walk(sub, depth + 1, out);
                             }
@@ -376,7 +376,7 @@ fn print_layer_details(doc: &photocraft_doc::Document) {
                         }
                     }
                 }
-                if let Ok((vd, _)) = photocraft_psd::descriptor::VersionedDescriptor::parse_prefix(&v[4..]) {
+                if let Ok((vd, _)) = craft_psd::descriptor::VersionedDescriptor::parse_prefix(&v[4..]) {
                     let mut out = Vec::new();
                     walk(&vd.descriptor, 3, &mut out);
                     for l in out.iter().filter(|l| !l.trim_start().starts_with("Clrs") && !l.trim_start().starts_with("Trns")) {
@@ -385,13 +385,13 @@ fn print_layer_details(doc: &photocraft_doc::Document) {
                 }
             }
             if k == b"TySh"
-                && let Some(Ok((vd, _))) = v.get(52..).map(photocraft_psd::descriptor::VersionedDescriptor::parse_prefix)
+                && let Some(Ok((vd, _))) = v.get(52..).map(craft_psd::descriptor::VersionedDescriptor::parse_prefix)
             {
                 // Text bounds (text space) and the transform.
                 let t: Vec<f64> = (0..6).map(|i| f64::from_be_bytes(v[2 + i * 8..10 + i * 8].try_into().unwrap())).collect();
                 println!("    TySh transform {t:?}");
                 for key in ["bounds", "boundingBox"] {
-                    if let Some(photocraft_psd::descriptor::Value::Descriptor(d)) = vd.descriptor.get(key) {
+                    if let Some(craft_psd::descriptor::Value::Descriptor(d)) = vd.descriptor.get(key) {
                         let n: Vec<String> = d.items.iter().map(|(k, v)| format!("{}={v:?}", String::from_utf8_lossy(k.as_bytes()))).collect();
                         println!("    TySh {key}: {}", n.join(" "));
                     }
@@ -399,7 +399,7 @@ fn print_layer_details(doc: &photocraft_doc::Document) {
             }
             if k == b"GdFl" {
                 // Skip the 4-byte version before the descriptor.
-                if let Ok((vd, _)) = photocraft_psd::descriptor::VersionedDescriptor::parse_prefix(v) {
+                if let Ok((vd, _)) = craft_psd::descriptor::VersionedDescriptor::parse_prefix(v) {
                     println!(
                         "    GdFl keys: {:?}",
                         vd.descriptor
@@ -409,7 +409,7 @@ fn print_layer_details(doc: &photocraft_doc::Document) {
                             .map(|(k, v)| format!(
                                 "{:?}={}",
                                 match k {
-                                    photocraft_psd::descriptor::Id::Code(c) => String::from_utf8_lossy(c).to_string(),
+                                    craft_psd::descriptor::Id::Code(c) => String::from_utf8_lossy(c).to_string(),
                                     other => format!("{other:?}"),
                                 },
                                 format!("{v:?}").chars().take(120).collect::<String>()
@@ -422,24 +422,24 @@ fn print_layer_details(doc: &photocraft_doc::Document) {
     }
 }
 
-fn dump_filter_effects(file: &photocraft_psd::PsdFile) {
+fn dump_filter_effects(file: &craft_psd::PsdFile) {
     if std::env::var_os("DUMP_FX").is_some() {
-        fn walk(d: &photocraft_psd::descriptor::Descriptor, depth: usize) {
+        fn walk(d: &craft_psd::descriptor::Descriptor, depth: usize) {
             for (k, v) in &d.items {
                 let key = String::from_utf8_lossy(k.as_bytes()).to_string();
                 if key == "Clrs" || key == "Trns" {
                     continue;
                 }
                 match v {
-                    photocraft_psd::descriptor::Value::Descriptor(sub) => {
+                    craft_psd::descriptor::Value::Descriptor(sub) => {
                         println!("{}{key}:", "  ".repeat(depth));
                         walk(sub, depth + 1);
                     }
-                    photocraft_psd::descriptor::Value::Text(t) => println!("{}{key} = {:?}", "  ".repeat(depth), t.to_string_lossy()),
-                    photocraft_psd::descriptor::Value::List(items) if items.iter().all(|i| matches!(i, photocraft_psd::descriptor::Value::Descriptor(_))) => {
+                    craft_psd::descriptor::Value::Text(t) => println!("{}{key} = {:?}", "  ".repeat(depth), t.to_string_lossy()),
+                    craft_psd::descriptor::Value::List(items) if items.iter().all(|i| matches!(i, craft_psd::descriptor::Value::Descriptor(_))) => {
                         println!("{}{key} = [{} items]", "  ".repeat(depth), items.len());
                         for (i, it) in items.iter().enumerate() {
-                            if let photocraft_psd::descriptor::Value::Descriptor(sub) = it {
+                            if let craft_psd::descriptor::Value::Descriptor(sub) = it {
                                 println!("{}[{i}]:", "  ".repeat(depth + 1));
                                 walk(sub, depth + 2);
                             }
@@ -452,7 +452,7 @@ fn dump_filter_effects(file: &photocraft_psd::PsdFile) {
         for rec in file.layers() {
             println!("-- layer {:?} rect {:?}", String::from_utf8_lossy(&rec.name), rec.rect);
             if let Some(b) = rec.block(b"lmfx").or(rec.block(b"lfx2")).or(rec.block(b"lfxs"))
-                && let Ok((vd, _)) = photocraft_psd::descriptor::VersionedDescriptor::parse_prefix(&b.data[4..])
+                && let Ok((vd, _)) = craft_psd::descriptor::VersionedDescriptor::parse_prefix(&b.data[4..])
             {
                 walk(&vd.descriptor, 1);
             }
@@ -481,7 +481,7 @@ fn corpus_summary(root: &std::path::Path) {
     let row = |p: &std::path::PathBuf| -> Row {
         let name = p.strip_prefix(root).unwrap_or(p).display().to_string();
         let Ok(bytes) = std::fs::read(p) else { return (name, None) };
-        let Ok(file) = photocraft_psd::PsdFile::from_bytes(&bytes) else { return (name, None) };
+        let Ok(file) = craft_psd::PsdFile::from_bytes(&bytes) else { return (name, None) };
         let Ok(imp) = photocraft_io::import(&name, &bytes) else { return (name, None) };
         if file.has_real_merged_data() == Some(false) || file.layers().is_empty() {
             return (name, None);

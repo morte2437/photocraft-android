@@ -248,8 +248,13 @@ pub fn button(
     };
     let escape = ui.input(|i| i.key_pressed(egui::Key::Escape));
     let outside = popup.is_some_and(|p| p.response.clicked_elsewhere()) && !children.clicked && !response.clicked();
+    // A command shortcut closes it, as it does egui's own popups (#9065).
+    let close = outside || crate::menu_keys::popups_closed(ui.ctx()) || escape && !children.shown;
+    if !close {
+        crate::menu_keys::own_popup_shown(ui.ctx());
+    }
     ui.data_mut(|d| d.insert_temp(egui::Id::unique(("stroke-children", key)), children.ids));
-    if outside || escape && !children.shown {
+    if close {
         close_children(ui.ctx(), key);
         *editor = None;
         if escape {

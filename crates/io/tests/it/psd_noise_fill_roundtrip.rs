@@ -5,11 +5,11 @@
 //! imported as pixels and the export dropped the `GdFl` (`RASTER_STALE_KEYS`), so opening and
 //! re-saving a file silently turned the fill layer into a plain pixel layer.
 
+use craft_psd::descriptor::{Descriptor, Id, UnicodeString, Value, VersionedDescriptor};
+use craft_psd::testgen;
+use craft_psd::{Compression, LayerRecord, PsdFile, TaggedBlock, Version};
 use photocraft_doc::{Fill, LayerContent};
 use photocraft_io::*;
-use photocraft_psd::descriptor::{Descriptor, Id, UnicodeString, Value, VersionedDescriptor};
-use photocraft_psd::testgen;
-use photocraft_psd::{Compression, LayerRecord, PsdFile, TaggedBlock, Version};
 
 /// Photoshop's default Noise gradient (RGB, min 0/0/0, max 100/100/100) as `GdFl` block data.
 fn default_noise_gdfl() -> Vec<u8> {

@@ -2,7 +2,7 @@ use super::export::{CELL_SIZE, blend_options, is_meta, pi, rgbc, whole};
 use super::placed::enumv;
 use super::{
     BlendMode, Descriptor, Id, J, Map, ReferenceItem, SmartFilter, UNSUPPORTED_FILTER, UnicodeString, Value, bool_or, camera_raw, displace, enum_of, get_desc,
-    hue_sat, json, num, perspective_warp, text_of,
+    hue_sat, json, num, perspective_warp, puppet, text_of,
 };
 
 // ---------- the filters we model ----------
@@ -781,10 +781,10 @@ pub(super) fn gallery_item(f: &SmartFilter) -> Result<Descriptor, String> {
         let params = e.get("params").filter(|v| v.is_object()).unwrap_or(e);
         if let Some(k) = params.as_object().and_then(|o| {
             o.keys().find(|k| {
-                !is_meta(k)
-                    && !["filter", "params", "visible"].contains(&k.as_str())
-                    && !g.settings.iter().any(|(_, ours)| ours == k)
-                    && !(key == "halftonePattern" && *k == "patternType")
+                !(is_meta(k)
+                    || ["filter", "params", "visible"].contains(&k.as_str())
+                    || g.settings.iter().any(|(_, ours)| ours == k)
+                    || key == "halftonePattern" && *k == "patternType")
             })
         }) {
             return Err(format!("gallery setting `{key}.{k}` has no PSD equivalent"));
@@ -867,6 +867,7 @@ pub fn filter_from_item(item: &Descriptor) -> SmartFilter {
         Some(displace::CLASS) => displace::import_params(item).map(|p| (displace::COMMAND, p)),
         Some(hue_sat::CLASS) => fltr.and_then(hue_sat::import_params).map(|p| (hue_sat::COMMAND, p)),
         Some(perspective_warp::CLASS) => perspective_warp::import_params(item).map(|p| (perspective_warp::COMMAND, p)),
+        Some(puppet::CLASS) => puppet::import_params(item).map(|p| (puppet::COMMAND, p)),
         Some(GALLERY_CLASS) => fltr.and_then(|f| gallery_params(item, f)).map(|p| (GALLERY_COMMAND, p)),
         Some(c @ ("Fbrs" | "Clds" | "DfrC")) => fltr.and_then(|f| coloured_params(c, item, f)),
         // A `Fltr` that is there but not a descriptor is settings we can't read: kept verbatim

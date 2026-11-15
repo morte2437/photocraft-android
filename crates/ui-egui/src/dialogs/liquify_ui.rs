@@ -9,7 +9,7 @@
 //! OK runs `filter.liquify` with the same strokes and gets the same field.
 
 use egui::{Align2, Color32, FontId, Pos2, Rect as ERect, Sense, Stroke, TextureHandle, pos2, vec2};
-use photocraft_algo::liquify::{LiquifyField, LiquifyStroke, LiquifyTool, ProxyImage, auto_cell};
+use photocraft_algo::liquify::{LiquifyField, LiquifyStroke, LiquifyTool, MAX_LIVE_MS, ProxyImage, auto_cell};
 use photocraft_doc::{DocId, Document, LayerId};
 use photocraft_geom::Rect;
 use photocraft_raster::Surface;
@@ -191,8 +191,11 @@ impl LiquifyOpts {
         if let Some(t) = v.get("tool") {
             let tool: LiquifyTool = serde_json::from_value(t.clone()).map_err(|e| format!("bad tool: {e}"))?;
             // Strokes can twirl counterclockwise, but no tool does: hold Alt with Twirl Clockwise.
-            if !LiquifyTool::ALL.contains(&tool) {
+            if tool == LiquifyTool::TwirlCcw {
                 return Err(format!("{t} is not a Liquify tool: choose twirlCw and hold Alt (Option) to twirl counterclockwise"));
+            }
+            if !LiquifyTool::ALL.contains(&tool) {
+                return Err(format!("{t} is not a Liquify tool"));
             }
             self.tool = tool;
         }
@@ -265,6 +268,54 @@ pub struct LiquifyDialog {
     pub preview_ms: f64,
     /// The smart filter being edited: OK updates it instead of adding a new Liquify filter.
     smart_filter: Option<usize>,
+    /// Preview (P): off, the image is drawn unwarped while strokes still change the field, as
+    /// Photoshop's Preview checkbox does (#7905). Every opening starts with it on.
+    pub preview: bool,
+    /// The undisplaced field drawn while Preview is off. It is as large as `field`, so it exists
+    /// only while Preview is off: made when Preview is turned off, freed when it's turned back on.
+    identity: Option<LiquifyField>,
+    /// The document's selection when the dialog opened, which OK applies Liquify through: the
+    /// preview mixes the same way (#9541). `None` without one.
+    selection: Option<PreviewSelection>,
+}
+
+/// The selection a Liquify preview is shown through, as the engine applies it on OK
+/// (`distort_cmds::mix_by_selection`): the result over the original by its coverage. On a smart
+/// object with a filter mask it is that mask, which the engine shows every filter through.
+struct PreviewSelection {
+    mask: photocraft_doc::LayerMask,
+    /// Coverage at each proxy pixel (row-major, the proxy's size).
+    proxy: Vec<f32>,
+    /// What shows where the mask hides the result, when that isn't the dialog's source: a filter
+    /// mask shows the smart object's placed pixels, without any filter (`filter_mask::mix`). With
+    /// its proxy, the same size as the dialog's.
+    base: Option<(Surface, ProxyImage)>,
+}
+
+impl PreviewSelection {
+    /// `sel` with its coverage sampled at `proxy`'s pixels. Kept even when every proxy pixel is
+    /// selected: a gap narrower than a proxy pixel still shows in the source-resolution crop.
+    fn new(mask: photocraft_doc::LayerMask, proxy: &ProxyImage, base: Option<Surface>) -> Self {
+        let (bx, by, s) = (f64::from(proxy.bounds.x0), f64::from(proxy.bounds.y0), proxy.scale);
+        let mut cov = Vec::with_capacity(proxy.w * proxy.h);
+        for y in 0..proxy.h {
+            let dy = (by + (y as f64 + 0.5) * s).floor() as i32;
+            for x in 0..proxy.w {
+                let dx = (bx + (x as f64 + 0.5) * s).floor() as i32;
+                cov.push(mask.value(dx, dy).clamp(0.0, 1.0));
+            }
+        }
+        let base = base.map(|b| {
+            let p = ProxyImage::new(&b, proxy.bounds, PROXY_SIDE);
+            (b, p)
+        });
+        PreviewSelection { mask, proxy: cov, base }
+    }
+}
+
+/// `new` over `old` (premultiplied RGBA8) by coverage `c`.
+fn mix(new: [u8; 4], old: [f32; 4], c: f32) -> [u8; 4] {
+    std::array::from_fn(|k| (f32::from(new[k]) * c + old[k].clamp(0.0, 1.0) * 255.0 * (1.0 - c) + 0.5).clamp(0.0, 255.0) as u8)
 }
 
 fn union(a: Option<[usize; 4]>, b: [usize; 4]) -> Option<[usize; 4]> {
@@ -297,6 +348,7 @@ impl LiquifyDialog {
             "strokes": self.strokes.len() + usize::from(self.cur.is_some()),
             "redo": self.redo.len(),
             "meshSize": self.cell,
+            "preview": self.preview,
             "maxDisplacement": self.field.max_displacement(),
             "proxy": [self.proxy.w, self.proxy.h],
             "dabMs": self.dab_ms,
@@ -345,11 +397,15 @@ impl LiquifyDialog {
         self.last_dab = now;
     }
 
+    /// Continues the stroke to `p`. The point is recorded live, with the milliseconds since the
+    /// previous one, so the brush follows the pointer exactly and the stationary tools work by
+    /// real elapsed time ([`LiquifyField::stroke_segment_live`]); OK replays the same.
     fn extend(&mut self, p: [f64; 3], now: f64) {
         let Some((mut s, last)) = self.cur.take() else { return };
+        let ms = if (now - self.last_dab).is_finite() { (now - self.last_dab).max(0.0) } else { 0.0 };
         let t0 = crate::gpu_canvas::now_ms();
-        let d = self.field.stroke_segment(&s, last, p);
-        s.points.push(p.to_vec());
+        let d = self.field.stroke_segment_live(&s, last, p, ms);
+        s.points.push(vec![p[0], p[1], p[2], ms]);
         self.mark(d, matches!(s.tool, LiquifyTool::Freeze | LiquifyTool::Thaw));
         self.render_dirty();
         self.dab_ms = crate::gpu_canvas::now_ms() - t0;
@@ -438,14 +494,72 @@ impl LiquifyDialog {
     /// Re-renders the dirty proxy pixels into `out` (the texture upload happens in `show`).
     fn render_dirty(&mut self) {
         if let Some(r) = self.dirty {
-            if let Some(source) = &self.native_proxy {
-                let bounds = Rect::new(0, 0, self.proxy.w as i32, self.proxy.h as i32);
-                let dirty = Rect::new(r[0] as i32, r[1] as i32, r[2] as i32, r[3] as i32);
-                render_components(source, bounds, &self.field, self.proxy.scale, &self.target, bounds, dirty, &mut self.out);
-            } else {
-                self.proxy.render(&self.field, r, &mut self.out);
+            self.render_proxy(r);
+        }
+    }
+
+    /// Renders proxy pixels `r` through the field, then through the selection.
+    fn render_proxy(&mut self, r: [usize; 4]) {
+        let field = self.identity.as_ref().filter(|_| !self.preview).unwrap_or(&self.field);
+        if let Some(source) = &self.native_proxy {
+            let bounds = Rect::new(0, 0, self.proxy.w as i32, self.proxy.h as i32);
+            let dirty = Rect::new(r[0] as i32, r[1] as i32, r[2] as i32, r[3] as i32);
+            render_components(source, bounds, field, self.proxy.scale, &self.target, bounds, dirty, &mut self.out);
+        } else {
+            self.proxy.render(field, r, &mut self.out);
+        }
+        let Some(sel) = &self.selection else { return };
+        let w = self.proxy.w;
+        for y in r[1]..r[3].min(self.proxy.h) {
+            for x in r[0]..r[2].min(w) {
+                let i = y * w + x;
+                let old = match &sel.base {
+                    Some((_, p)) => p.px.get(i),
+                    None => self.proxy.px.get(i),
+                };
+                if let (Some(c), Some(old), Some(new)) = (sel.proxy.get(i), old, self.out.get_mut(i))
+                    && *c < 1.0
+                {
+                    *new = mix(*new, *old, *c);
+                }
             }
         }
+    }
+
+    /// Mixes the source-resolution preview's `dirty` pixels (document px, within `bounds`) over
+    /// the original by the selection.
+    fn select_view(&mut self, bounds: Rect, dirty: Rect) {
+        let Some(sel) = &self.selection else { return };
+        let (w, dw) = (bounds.width() as usize, dirty.width() as usize);
+        // One row of originals at a time: the crop can be millions of pixels.
+        let mut old = vec![[0.0f32; 4]; dw];
+        for y in dirty.y0..dirty.y1 {
+            sel.base.as_ref().map_or(&self.source, |(b, _)| b).read_rgba_into(Rect::new(dirty.x0, y, dirty.x1, y + 1), &mut old);
+            for x in dirty.x0..dirty.x1 {
+                let c = sel.mask.value(x, y).clamp(0.0, 1.0);
+                if c >= 1.0 {
+                    continue;
+                }
+                let at = ((y - bounds.y0) as usize) * w + (x - bounds.x0) as usize;
+                if let (Some(new), Some(o)) = (self.view_out.get_mut(at), old.get((x - dirty.x0) as usize)) {
+                    // Straight to premultiplied, as the preview's pixels are.
+                    let o = [o[0] * o[3], o[1] * o[3], o[2] * o[3], o[3]];
+                    *new = mix(*new, o, c);
+                }
+            }
+        }
+    }
+
+    /// Turns Preview on or off: the whole preview is redrawn with, or without, the warp.
+    pub fn set_preview(&mut self, on: bool) {
+        if on == self.preview {
+            return;
+        }
+        self.identity = (!on).then(|| LiquifyField::new(self.canvas, self.cell));
+        self.preview = on;
+        self.dirty = Some([0, 0, self.proxy.w, self.proxy.h]);
+        self.render_dirty();
+        self.view_dirty = self.view_bounds;
     }
 
     /// Builds or updates the visible source-resolution viewport. At ordinary zoom the whole-layer
@@ -494,10 +608,11 @@ impl LiquifyDialog {
             return;
         }
         let started = crate::gpu_canvas::now_ms();
+        let field = self.identity.as_ref().filter(|_| !self.preview).unwrap_or(&self.field);
         let rendered = if self.native_proxy.is_some() {
-            render_components(&self.source, self.canvas, &self.field, 1.0, &self.target, bounds, dirty, &mut self.view_out)
+            render_components(&self.source, self.canvas, field, 1.0, &self.target, bounds, dirty, &mut self.view_out)
         } else {
-            ProxyImage::render_full_resolution(&self.source, &self.field, bounds, dirty, &mut self.view_out, &mut self.view_source_scratch)
+            ProxyImage::render_full_resolution(&self.source, field, bounds, dirty, &mut self.view_out, &mut self.view_source_scratch)
         };
         if !rendered {
             self.view_bounds = None;
@@ -505,6 +620,7 @@ impl LiquifyDialog {
             self.preview_ms = crate::gpu_canvas::now_ms() - started;
             return;
         }
+        self.select_view(bounds, dirty);
         let x0 = (dirty.x0 - bounds.x0) as usize;
         let y0 = (dirty.y0 - bounds.y0) as usize;
         let x1 = (dirty.x1 - bounds.x0) as usize;
@@ -573,8 +689,17 @@ impl LiquifyDialog {
 
 /// Opens the dialog on the active layer.
 pub fn open(app: &mut PhotocraftApp, ctx: &egui::Context) -> Result<(), String> {
-    let (layer, surf, _) = crate::distort_ui::active_filter_target(app)?;
-    let canvas = app.session.active().ok_or("no document")?.doc.bounds();
+    let (layer, mut surf, _) = crate::distort_ui::active_filter_target(app)?;
+    let doc = &app.session.active().ok_or("no document")?.doc;
+    let canvas = doc.bounds();
+    // A smart object's pixels are its filters mixed through its filter mask; OK adds the Liquify
+    // above the filters themselves, so that is what it edits.
+    if let Some(photocraft_doc::LayerContent::Smart(sm)) = doc.layer(layer).map(|l| &l.content)
+        && sm.filter_mask.is_some()
+        && let Ok(Some(filtered)) = photocraft_engine::smart_cmds::render_below_filter(doc, sm, sm.smart_filters.len())
+    {
+        surf = filtered;
+    }
     open_on(app, ctx, layer, surf, Vec::new(), auto_cell(canvas), None)
 }
 
@@ -615,6 +740,21 @@ fn open_on(
     let colors = photocraft_engine::color_channels::explicit(&json!({"target":target}), surf.format().mode.color_channels()).map_err(|e| e.to_string())?;
     let native_proxy = colors.map(|_| crate::gallery_ui::reduce(&surf, canvas, proxy.scale as u32));
     let out = vec![[0u8; 4]; proxy.w * proxy.h];
+    // A smart object's filter mask shows every filter through it, a new Liquify too, whatever is
+    // selected (`smart_cmds::add_smart_filter`), over the placed pixels without any filter.
+    // Otherwise a new Liquify goes through the selection; a smart filter being edited has none.
+    let selection = match st.doc.layer(layer).map(|l| &l.content) {
+        Some(photocraft_doc::LayerContent::Smart(sm)) if sm.filter_mask.is_some() => sm.filter_mask.clone().map(|mask| {
+            let placed = photocraft_engine::smart_cmds::render_below_filter(&st.doc, sm, 0).ok().flatten();
+            PreviewSelection::new(mask, &proxy, placed)
+        }),
+        _ => st
+            .doc
+            .selection
+            .clone()
+            .filter(|_| smart_filter.is_none())
+            .map(|sel| PreviewSelection::new(photocraft_doc::LayerMask { surface: sel, ..photocraft_doc::LayerMask::reveal_all() }, &proxy, None)),
+    };
     let center = [f64::from(canvas.x0 + canvas.x1) / 2.0, f64::from(canvas.y0 + canvas.y1) / 2.0];
     let mut d = LiquifyDialog {
         document: st.doc.id,
@@ -651,12 +791,20 @@ fn open_on(
         dab_ms: 0.0,
         preview_ms: 0.0,
         smart_filter,
+        preview: true,
+        identity: None,
+        selection,
     };
     // A sensible starting brush (about a tenth of the image), then the settings last used, so
     // Liquify opens as it was left (#418). Saved values are clamped; a bad one is skipped.
     d.opts.size = ((canvas.width().max(canvas.height()) as f32) / 10.0).round().clamp(10.0, 1500.0);
     if let Some(saved) = app.session.prefs().dialogs.get(REMEMBERED) {
-        let _ = d.opts.apply(saved);
+        // Older versions had a Twirl Counterclockwise tool; its saved choice is Twirl Clockwise now.
+        let mut saved = saved.clone();
+        if saved.get("tool").and_then(Value::as_str) == Some("twirlCcw") {
+            saved["tool"] = json!("twirlCw");
+        }
+        let _ = d.opts.apply(&saved);
     }
     // Layer ids belong to one document: a remembered backdrop Use starts at All Layers.
     d.opts.backdrop_layer = None;
@@ -720,6 +868,9 @@ pub fn control(app: &mut PhotocraftApp, ui: &Value) -> Result<Value, String> {
     applied?;
     let num = |k: &str| ui.get(k).and_then(Value::as_f64).map(|v| v as f32);
     let flag = |k: &str| ui.get(k).and_then(Value::as_bool);
+    if let Some(on) = flag("preview") {
+        d.set_preview(on);
+    }
     if flag("undo") == Some(true) {
         d.undo();
     }
@@ -766,11 +917,13 @@ fn brush_resize_gesture(mods: egui::Modifiers, secondary: bool) -> bool {
 }
 
 /// Horizontal motion sets the diameter (the circle's edge follows the pointer). Vertical motion
-/// sets density, Liquify's edge falloff, over the same 200 px travel the canvas uses for hardness.
+/// sets density, Liquify's edge falloff, over 200 px of travel.
 fn resized_brush(start_size: f32, start_density: f32, dx: f32, dy: f32, zoom: f32) -> (f32, f32) {
     // Liquify stores density as 0–100; the shared brush gesture works on normalized hardness.
     // Use the same zoom-corrected screen movement and size limits as the main canvas.
     let zoom = if zoom.is_finite() && zoom > 0.0 { zoom } else { 1.0 };
+    // Density keeps its 200 px travel; the canvas hardness took Photoshop's slower rate (#11891).
+    let dy = dy * crate::brush_resize::HARDNESS_TRAVEL / 200.0;
     let (size, density) = crate::brush_resize::resized((start_size, start_density / 100.0), f64::from(dx / zoom), f64::from(dy / zoom), zoom);
     (size, (density * 100.0).round())
 }
@@ -779,7 +932,37 @@ fn resized_brush(start_size: f32, start_density: f32, dx: f32, dy: f32, zoom: f3
 /// pointer-down subtracts from the freeze mask (lasso), reverses a twirl and swaps Pucker/Bloat;
 /// Shift adds to the mask, same as no modifier.
 pub fn pointer(app: &mut PhotocraftApp, ev: ToolEvent, mods: egui::Modifiers) {
-    let now = crate::gpu_canvas::now_ms();
+    pointer_at(app, ev, mods, crate::gpu_canvas::now_ms());
+}
+
+/// One frame's queued pointer events, at frame time `now` (ms). The frame's moves share the time
+/// since the last point evenly, as they would arriving one per frame: the events are handled one
+/// after another, so reading the clock for each gave the first move nearly the whole frame and
+/// the rest only processing time, which changed the stationary tools' strength and where it
+/// landed. After a stall the frame counts for at most [`MAX_LIVE_MS`] in all, as one point would.
+fn dispatch_frame(app: &mut PhotocraftApp, events: Vec<ToolEvent>, mods: egui::Modifiers, now: f64) {
+    let moves = events.iter().filter(|e| matches!(e, ToolEvent::Move { .. })).count();
+    let mut start = now;
+    if let Some(d) = app.distort.liquify.as_mut().filter(|d| d.cur.is_some()) {
+        if now - d.last_dab > MAX_LIVE_MS {
+            d.last_dab = now - MAX_LIVE_MS;
+        }
+        start = d.last_dab;
+    }
+    let mut k = 0usize;
+    for ev in events {
+        let t = if matches!(ev, ToolEvent::Move { .. }) && start.is_finite() && start < now {
+            k += 1;
+            start + (now - start) * k as f64 / moves as f64
+        } else {
+            now
+        };
+        pointer_at(app, ev, mods, t);
+    }
+}
+
+/// [`pointer`] at time `now` (ms).
+fn pointer_at(app: &mut PhotocraftApp, ev: ToolEvent, mods: egui::Modifiers, now: f64) {
     let Some(d) = app.distort.liquify.as_mut() else { return };
     match ev {
         ToolEvent::Down { x, y, pressure } => {
@@ -838,6 +1021,11 @@ pub fn keys(app: &mut PhotocraftApp, ctx: &egui::Context) {
             "view.fitOnScreen" => 0.0,
             _ => 1.0,
         };
+    }
+    // P toggles Preview, as in Photoshop (#7905).
+    if ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::P)) {
+        let on = !d.preview;
+        d.set_preview(on);
     }
     // Ctrl+H (Hide Extras) toggles the red freeze-mask overlay; the mask itself stays active.
     if ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::H)) {
@@ -1078,7 +1266,9 @@ pub fn show(app: &mut PhotocraftApp, ctx: &egui::Context) {
         let right = ERect::from_min_size(pos2(body.right() - RIGHT_W, body.top()), vec2(RIGHT_W, body.height()));
         painter.rect_filled(right, 0.0, t.dock);
         painter.line_segment([right.left_top(), right.left_bottom()], Stroke::new(1.0, t.separator));
-        let mut props = ui.new_child(egui::UiBuilder::new().max_rect(right.shrink2(vec2(14.0, 12.0))));
+        // The properties scroll above the Preview row and the buttons.
+        let props_rect = ERect::from_min_max(right.min + vec2(14.0, 12.0), pos2(right.right() - 14.0, (right.bottom() - 84.0).max(right.top() + 12.0)));
+        let mut props = ui.new_child(egui::UiBuilder::new().max_rect(props_rect));
         egui::ScrollArea::vertical().id_salt("liquify-props").show(&mut props, |ui| {
             ui.spacing_mut().item_spacing.y = 6.0;
             widgets::section_label(ui, tl!("Brush Tool Options"));
@@ -1153,6 +1343,15 @@ pub fn show(app: &mut PhotocraftApp, ctx: &egui::Context) {
                 .size(11.0),
             );
         });
+        // Preview, centred above OK and Cancel as in Photoshop (#7905).
+        let label_w = ui.fonts_mut(|f| f.layout_no_wrap(tl!("Preview").to_owned(), egui::TextStyle::Body.resolve(ui.style()), t.text).size().x);
+        let row_w = (label_w + 30.0).min(RIGHT_W - 28.0);
+        let preview_row = ERect::from_center_size(pos2(right.center().x, right.bottom() - 64.0), vec2(row_w, 24.0));
+        let mut pr = ui.new_child(egui::UiBuilder::new().max_rect(preview_row).layout(egui::Layout::left_to_right(egui::Align::Center)));
+        let mut preview = d.preview;
+        if widgets::checkbox(&mut pr, &mut preview, tl!("Preview")).changed() {
+            d.set_preview(preview);
+        }
         // Footer buttons.
         let foot = ERect::from_min_size(pos2(right.left() + 14.0, right.bottom() - 48.0), vec2(RIGHT_W - 28.0, 32.0));
         let mut fb = ui.new_child(egui::UiBuilder::new().max_rect(foot).layout(egui::Layout::right_to_left(egui::Align::Center)));
@@ -1306,9 +1505,21 @@ pub fn show(app: &mut PhotocraftApp, ctx: &egui::Context) {
                 events.push(ToolEvent::Down { x: q[0], y: q[1], pressure: pr });
             } else if resp.dragged() || resp.is_pointer_button_down_on() {
                 let moved = d.cur.as_ref().is_some_and(|(_, l)| l[0] != q[0] || l[1] != q[1]);
-                // Stationary tools keep working while the brush is held still (30 dabs/s).
-                let held = d.opts.tool.is_stationary() && crate::gpu_canvas::now_ms() - d.last_dab > 33.0;
-                if moved || held {
+                // Stationary tools keep working while the brush is held still: a point every
+                // frame, each worth the time since the last, so the speed is the same at any
+                // frame rate and never stalls while the brush creeps.
+                let held = d.opts.tool.is_stationary();
+                // Every pointer position the platform reported this frame, not just the last, so
+                // a quick curved stroke keeps its curve instead of being cut into one straight
+                // chord per frame, and a detour that returns to where it began is not dropped.
+                let path: Vec<Pos2> =
+                    ui.input(|i| i.events.iter().filter_map(|e| if let egui::Event::PointerMoved(p) = e { Some(*p) } else { None }).collect());
+                let detour = path.len() > 1;
+                for p in path.iter().take(path.len().saturating_sub(1)) {
+                    let m = to_doc(d, area, *p);
+                    events.push(ToolEvent::Move { x: m[0], y: m[1], pressure: pr });
+                }
+                if moved || held || detour {
                     events.push(ToolEvent::Move { x: q[0], y: q[1], pressure: pr });
                 }
                 ctx.request_repaint();
@@ -1321,9 +1532,7 @@ pub fn show(app: &mut PhotocraftApp, ctx: &egui::Context) {
             events.push(ToolEvent::Up { x: q[0], y: q[1] });
         }
     });
-    for ev in events {
-        pointer(app, ev, mods);
-    }
+    dispatch_frame(app, events, mods, crate::gpu_canvas::now_ms());
     match action {
         Some("ok") => {
             let _ = commit(app);

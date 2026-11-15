@@ -2,7 +2,10 @@
 //! letter picks one (⇧⌥M Multiply, ⇧⌥S Screen…). With a painting tool that has a Mode of its own
 //! (`tool_modes`: Brush, Pencil, Paint Bucket, Gradient, the stamps, History Brush, Healing) they
 //! set that tool's mode within its menu and never the layer's. With a tool that has no blend mode
-//! (Move, the selection tools, the Erasers…) they set every selected layer's mode.
+//! (Move, the selection tools, the Erasers…) they set every selected layer's mode. With the Color
+//! Replacement tool the ⇧⌥ letters for Normal, Multiply, Hue and Luminosity set the active layer's
+//! mode too and its own Mode stays, as measured in the reference application (#11928); its other
+//! letters, the letters with several layers selected, and ⇧+ / ⇧− do nothing.
 //! The step list wraps at either end. Each press is one call of an engine command
 //! (`tools.setBrush`, `layer.setProps` with every target layer), so it is one undo step.
 
@@ -32,8 +35,7 @@ pub enum Pick {
     Mode(BlendMode),
     /// Painting tools only: paint transparency.
     Clear,
-    /// Painting tools only: paint behind the layer's pixels. Not implemented yet, so ⇧⌥Q is taken
-    /// (it must not reach another binding) and does nothing.
+    /// Brush, Pencil and Pattern Stamp: paint behind the layer's pixels.
     Behind,
 }
 
@@ -150,6 +152,10 @@ enum Target {
     /// nothing, and never reach the layer.
     Nothing,
     Layers,
+    /// The ⇧⌥ letters for these modes set the active layer's mode while it is the only one
+    /// selected; the other letters, several selected layers and ⇧+ / ⇧− do nothing (the Color
+    /// Replacement tool, #11928: only these letters on one layer were measured).
+    LayerLetters(&'static [BlendMode]),
 }
 
 fn target(tool: Tool) -> Target {
@@ -157,7 +163,9 @@ fn target(tool: Tool) -> Target {
         return Target::Tool(modes);
     }
     match tool {
-        Tool::SpotHealing | Tool::ColorReplacement | Tool::Blur | Tool::Sharpen | Tool::Smudge | Tool::ArtHistoryBrush => Target::Nothing,
+        Tool::SpotHealing | Tool::Blur | Tool::Sharpen | Tool::Smudge | Tool::ArtHistoryBrush => Target::Nothing,
+        // Its ⇧⌥ letters set the active layer's mode and leave the tool's own Mode (#11928).
+        Tool::ColorReplacement => Target::LayerLetters(&[BlendMode::Normal, BlendMode::Multiply, BlendMode::Hue, BlendMode::Luminosity]),
         // Photoshop's ⇧⌥S/M/H pick the Dodge and Burn Range and ⇧⌥D/S the Sponge's mode: never
         // the layer's.
         Tool::Dodge | Tool::Burn | Tool::Sponge => Target::Nothing,
@@ -203,10 +211,19 @@ fn set_tool_mode(app: &mut PhotocraftApp, mode: Option<BlendMode>) {
         _ => {}
     }
     crate::paint_mouse::sync_tool_brush(app);
+    // Behind is one of the painting modes in the reference application: picking any other mode
+    // (Clear too) leaves it, in the same one command (#11896). With Behind off, as before.
+    let mut brush = serde_json::Map::new();
     if let Some(m) = mode
         && let Ok(m) = serde_json::to_value(m)
     {
-        let _ = app.run("tools.setBrush", json!({ "brush": { "mode": m } }));
+        brush.insert("mode".into(), m);
+    }
+    if app.session.tools.brush.behind {
+        brush.insert("behind".into(), json!(false));
+    }
+    if !brush.is_empty() {
+        let _ = app.run("tools.setBrush", json!({ "brush": brush }));
     }
 }
 
@@ -243,7 +260,7 @@ pub fn press(app: &mut PhotocraftApp, step: i32) {
                 set_tool_mode(app, mode);
             }
         }
-        Target::Nothing => {}
+        Target::Nothing | Target::LayerLetters(_) => {}
         Target::Layers => {
             let Some(st) = app.session.active() else { return };
             let Some(layer) = st.active_layer.and_then(|id| st.doc.layer(id)) else { return };
@@ -265,12 +282,35 @@ pub fn pick_mode(app: &mut PhotocraftApp, pick: Pick) {
     let want = match pick {
         Pick::Mode(m) => Some(m),
         Pick::Clear => None,
-        Pick::Behind => return,
+        Pick::Behind => {
+            let item = crate::brush_mode_menu::Item::Behind;
+            let tool = app.ui.tool;
+            if app.session.active().is_none() || !crate::brush_mode_menu::enabled(app, item) {
+                return;
+            }
+            let Some((id, params)) = crate::brush_mode_menu::engine_call(app, tool, item) else { return };
+            crate::paint_mouse::sync_tool_brush(app);
+            if app.run(id, params).is_ok() {
+                match tool {
+                    Tool::Brush => app.ui.tool_options.brush_clear = false,
+                    Tool::Pencil => app.ui.tool_options.pencil_clear = false,
+                    _ => {}
+                }
+            }
+            return;
+        }
     };
     match target(app.ui.tool) {
         Target::Tool(modes) if modes.contains(&want) => set_tool_mode(app, want),
         Target::Layers => {
             if let Some(m) = want {
+                set_layers_mode(app, m);
+            }
+        }
+        Target::LayerLetters(modes) => {
+            // Only one selected layer was measured; several keep today's (nothing).
+            let one = app.session.active().is_some_and(|st| st.selected_layers().len() == 1);
+            if let Some(m) = want.filter(|m| one && modes.contains(m)) {
                 set_layers_mode(app, m);
             }
         }
@@ -280,3 +320,15 @@ pub fn pick_mode(app: &mut PhotocraftApp, pick: Pick) {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+#[path = "../brush_behind_key_tests.rs"]
+mod brush_behind_key_tests;
+
+#[cfg(test)]
+#[path = "../color_replacement_blend_keys_tests.rs"]
+mod color_replacement_blend_keys_tests;
+
+#[cfg(test)]
+#[path = "../brush_blend_keys_behind_tests.rs"]
+mod brush_blend_keys_behind_tests;

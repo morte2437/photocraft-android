@@ -9,7 +9,8 @@ use base64::Engine as _;
 use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::{CallToolResult, ContentBlock as Content};
-use rmcp::{ErrorData as McpError, ServerHandler, ServiceExt, tool, tool_router};
+use rmcp::service::RequestContext;
+use rmcp::{ErrorData as McpError, RoleServer, ServerHandler, ServiceExt, tool, tool_router};
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -17,6 +18,7 @@ use serde_json::{Value, json};
 use crate::bridge::BridgeClient;
 use crate::budgets::{BatchReplyBudget, MAX_PREVIEW_SIDE, check_png, json_bytes};
 use crate::headless::Headless;
+use crate::live::{Live, LiveConfig, Target};
 use crate::security::MAX_BATCH_STEPS;
 use crate::{AuthorizedWorkspace, AutomationError, files};
 
@@ -26,6 +28,9 @@ pub enum Backend {
     Headless(Arc<Mutex<Headless>>),
     /// A running desktop app reached over the control protocol.
     Bridge(Arc<BridgeClient>),
+    /// The desktop app found through its connection file before each call, or the closed-app
+    /// choice (plain `photocraft-cli mcp`, see [`crate::live`]).
+    Live(Arc<Live>),
 }
 
 #[derive(Clone)]
@@ -49,7 +54,8 @@ pub struct DocIndex {
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct OpenParams {
-    /// Path beneath the configured automation read root: relative (forward slashes) or absolute.
+    /// Path beneath the configured automation read roots: relative (forward slashes, searched
+    /// in launch order) or absolute. Only a missing file tries the next root.
     pub path: String,
     /// Explicitly approve high-memory PSD/PSB imports that fit within the hard memory budget.
     #[serde(default)]
@@ -112,6 +118,11 @@ pub struct ExportLayersParams {
     /// Encoder quality, 0..12, for the formats that take one.
     #[serde(default)]
     pub quality: Option<f64>,
+    /// PSD/PSB: write the real merged image (Photoshop's Maximize Compatibility); false writes
+    /// Photoshop's white placeholder (Bitmap, Indexed Color and Duotone documents still write the
+    /// real image). Unset: the engine's Preferences › File Handling decides.
+    #[serde(default, rename = "maximizeCompatibility")]
+    pub maximize_compatibility: Option<bool>,
 }
 
 #[derive(Debug, Default, Deserialize, JsonSchema)]
@@ -173,6 +184,7 @@ pub struct SaveParams {
     /// The extension selects the format. Omit to write back to the document's own file, which
     /// works only for a PSD, PSB or .pcraft file kept in its own format; any other save needs
     /// `path`, so a flattened or converted copy never replaces the opened file.
+    /// A document opened from a different read capability needs an explicit path first.
     #[serde(default)]
     pub path: Option<String>,
     /// Format override as an extension (pcraft, psd, png, jpg, tif, webp, exr, …).
@@ -209,10 +221,21 @@ pub struct SaveParams {
     /// DDS: also write the full mip chain, each level a box filter of the one above.
     #[serde(default, rename = "ddsMipmaps")]
     pub dds_mipmaps: bool,
+    /// PDF: write the spot channels as overprinting Separation plates after the flattened image
+    /// (a Multichannel document as plates alone). On by default; false writes the image only.
+    #[serde(default, rename = "pdfSpotPlates")]
+    pub pdf_spot_plates: Option<bool>,
     /// .pcraft: request the flattened document at its canvas size as `composite/full.png`.
     /// The save may omit it; check the manifest's `full_composite` member. Off by default.
     #[serde(default, rename = "pcraftFullComposite")]
     pub pcraft_full_composite: Option<bool>,
+    /// PSD/PSB: write the real merged image (Photoshop's Maximize Compatibility). false writes
+    /// Photoshop's white placeholder instead: a smaller file and a faster save, but readers that
+    /// show only the merged image see white. Bitmap, Indexed Color and Duotone documents still
+    /// write the real image. Unset: the real image (in bridge mode, the app's
+    /// Preferences › File Handling decides).
+    #[serde(default, rename = "maximizeCompatibility")]
+    pub maximize_compatibility: Option<bool>,
     #[serde(default)]
     pub index: Option<usize>,
 }
@@ -349,7 +372,8 @@ pub struct MenuParams {
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct UiSetParams {
-    /// Fields for the control method `ui.set`: tool, panels, dock, dockTabs, dockWidth, colorPanel
+    /// Fields for the control method `ui.set`: tool, moveShowTransform (bool, the Move tool's
+    /// Show Transform Controls option), panels, dock, dockTabs, dockWidth, colorPanel
     /// ({background: bool} picks which swatch the Color panel edits), maskTarget,
     /// vectorMaskTarget, filterMaskTarget (paint the active smart object's filter mask), selectionMode, zoom, center, rotation (view angle in degrees), fit, theme (pro, proMedium, studio,
     /// studioLight, classic, solarizedDark, adwaita, adwaitaDark, breezeLight, breezeDark, softLight, softDark), brushSection, brushTab,
@@ -368,7 +392,10 @@ pub struct UiSetParams {
     /// combine, subtract, intersect or exclude: how the next Pen path joins the selected shape
     /// layer or path), shapeStroke (an object patching width, align, cap, join, miterLimit,
     /// dashes, dashOffset and opacity; null disables the stroke). Shape stroke fields use
-    /// `shape.edit` names and units; colour comes from `tools.setColors`. camTransformOnDrop (bool,
+    /// `shape.edit` names and units; colour comes from `tools.setColors`. frameShape (rectangle,
+    /// ellipse, triangle, polygon or custom: the Frame tool's shape), frameSides (3..100, the
+    /// polygon's sides), frameTarget (frame, content or both: what the selected frame's handles
+    /// edit). camTransformOnDrop (bool,
     /// the Content-Aware Move tool's Transform On Drop). tileGrid (bool, a developer overlay of the
     /// active layer's storage tiles). layerFilter (an object patching by ("kind", "name", "effect",
     /// "mode", "attribute", "color", "smartObject" or "artboard", which lists the artboards that
@@ -509,8 +536,9 @@ fn png_result(png: &[u8], note: String) -> CallToolResult {
 }
 
 /// Adds the typed byte counts of a memory refusal to an error object: an approval request keeps
-/// its soft limit, hard limit and (when known) capacity; a hard refusal keeps only its required
-/// and hard amounts, because no approval can raise that ceiling.
+/// its soft limit, hard limit and (when known) capacity; a hard refusal keeps its required and
+/// hard amounts, because no approval can raise that ceiling, and adds the free memory when
+/// measured memory set the limit.
 fn attach_memory_error_details(obj: &mut Value, err: &AutomationError) {
     let Some(obj) = obj.as_object_mut() else { return };
     match err {
@@ -526,11 +554,15 @@ fn attach_memory_error_details(obj: &mut Value, err: &AutomationError) {
                 obj.insert("availableRam".into(), json!(avail));
             }
         }
-        AutomationError::Import(photocraft_io::IoError::PsdImportBudget { required, limit })
-        | AutomationError::Engine(photocraft_engine::EngineError::PsdHardBudget { required, limit, .. }) => {
+        AutomationError::Import(photocraft_io::IoError::PsdImportBudget { required, limit, free_memory })
+        | AutomationError::Engine(photocraft_engine::EngineError::PsdHardBudget { required, limit, free_memory, .. }) => {
             obj.insert("required".into(), json!(required));
             obj.insert("hard".into(), json!(limit));
             obj.insert("hardLimit".into(), json!(limit));
+            if let Some(free) = free_memory {
+                obj.insert("available".into(), json!(free));
+                obj.insert("availableRam".into(), json!(free));
+            }
         }
         _ => {}
     }
@@ -591,6 +623,12 @@ impl PhotocraftMcp {
         Ok(Self::with_backend(Backend::Bridge(Arc::new(BridgeClient::new(addr, token)?))))
     }
 
+    /// Serve the desktop app found through its connection file, or headless without consent
+    /// (plain `photocraft-cli mcp`).
+    pub fn live(config: LiveConfig) -> Self {
+        Self::with_backend(Backend::Live(Arc::new(Live::new(config))))
+    }
+
     pub fn with_backend(backend: Backend) -> Self {
         let mut tool_router = Self::tool_router();
         for route in tool_router.map.values_mut() {
@@ -611,10 +649,7 @@ impl PhotocraftMcp {
         &self,
         f: impl FnOnce(&mut Headless) -> Result<T, AutomationError> + Send + 'static,
     ) -> Option<Result<T, AutomationError>> {
-        let Backend::Headless(h) = &*self.backend else {
-            return None;
-        };
-        let h = h.clone();
+        let h = self.headless_session()?;
         Some(
             tokio::task::spawn_blocking(move || {
                 // A panicking command poisons the lock, but edits run on a copy
@@ -629,10 +664,44 @@ impl PhotocraftMcp {
         )
     }
 
-    fn bridge_client(&self) -> Option<&BridgeClient> {
+    /// The headless session tools run on, if this backend (or the live choice) is one.
+    fn headless_session(&self) -> Option<Arc<Mutex<Headless>>> {
         match &*self.backend {
-            Backend::Bridge(b) => Some(b),
+            Backend::Headless(h) => Some(h.clone()),
+            Backend::Live(live) => match live.current()? {
+                Target::Headless(h) => Some(h),
+                Target::Bridge(_) => None,
+            },
+            Backend::Bridge(_) => None,
+        }
+    }
+
+    fn bridge_client(&self) -> Option<Arc<BridgeClient>> {
+        match &*self.backend {
+            Backend::Bridge(b) => Some(b.clone()),
+            Backend::Live(live) => match live.current()? {
+                Target::Bridge(b) => Some(b),
+                Target::Headless(_) => None,
+            },
             Backend::Headless(_) => None,
+        }
+    }
+
+    /// Where calls go now: the backend's session or app, or the live mode's last resolve.
+    fn target(&self) -> Option<Target> {
+        match &*self.backend {
+            Backend::Headless(h) => Some(Target::Headless(h.clone())),
+            Backend::Bridge(b) => Some(Target::Bridge(b.clone())),
+            Backend::Live(live) => live.current(),
+        }
+    }
+
+    /// Live mode: find the app (or apply the closed-app choice) before a call; the error is the
+    /// call's result. Other backends are always ready.
+    async fn ready(&self) -> Result<(), String> {
+        match &*self.backend {
+            Backend::Live(live) => live.resolve().await,
+            Backend::Headless(_) | Backend::Bridge(_) => Ok(()),
         }
     }
 
@@ -788,6 +857,9 @@ impl PhotocraftMcp {
         if let Some(v) = p.quality {
             opts.insert("quality".into(), json!(v));
         }
+        if let Some(v) = p.maximize_compatibility {
+            opts.insert("maximizeCompatibility".into(), json!(v));
+        }
         let opts = Value::Object(opts);
         // Bridge mode runs the app on this machine, which writes its own paths like any command.
         let mut bridge_params = opts.clone();
@@ -870,7 +942,7 @@ impl PhotocraftMcp {
     }
 
     #[tool(description = "Save the document. `.pcraft` is the lossless native format (incremental); other extensions \
-        (psd, png, jpg, tif, webp, exr, …) export. Without `path` only a PSD, PSB or .pcraft document is written back to its own         file. `pcraftFullComposite` requests `composite/full.png`, which may be omitted; check the manifest's `full_composite` member. Returns warnings about anything the format cannot hold.")]
+        (psd, png, jpg, tif, webp, exr, …) export. Without `path` only a PSD, PSB or .pcraft document is written back to its own file. `pcraftFullComposite` requests `composite/full.png`, which may be omitted; check the manifest's `full_composite` member. Returns warnings about anything the format cannot hold.")]
     async fn doc_save(&self, Parameters(p): Parameters<SaveParams>) -> Result<CallToolResult, McpError> {
         self.save_impl(p).await
     }
@@ -929,7 +1001,7 @@ impl PhotocraftMcp {
         if p.index.is_some() {
             return Ok(fail("`index` is only supported in headless mode; bridge previews capture the app window"));
         }
-        self.screenshot(b, Some(max)).await
+        self.screenshot(&b, Some(max)).await
     }
 
     #[tool(description = "Render a bounded flattened PNG preview (bridge mode: app window screenshot).")]
@@ -984,9 +1056,11 @@ impl PhotocraftMcp {
 
     #[tool(description = "Run an engine command by id with JSON params (see command_list). Returns the command's JSON result. \
         Long commands (filters, Content-Aware Fill/Scale, Photomerge, brush import) wait to finish unless `wait` is false: \
-        then they run as a background job and the result is {job: id} (see jobs_list, jobs_cancel).")]
-    async fn command_run(&self, Parameters(p): Parameters<RunParams>) -> Result<CallToolResult, McpError> {
-        self.run_command(p.id, p.params.unwrap_or_else(|| json!({})), p.wait.unwrap_or(true)).await
+        then they run as a background job and the result is {job: id} (see jobs_list, jobs_cancel). A waited long \
+        command reports progress, cancelling the request cancels it, and other calls are served meanwhile.")]
+    async fn command_run(&self, Parameters(p): Parameters<RunParams>, context: RequestContext<RoleServer>) -> Result<CallToolResult, McpError> {
+        let mut waiter = Waiter::new(Some(context));
+        to_result(self.step(p.id, p.params.unwrap_or_else(|| json!({})), p.wait.unwrap_or(true), &mut waiter, (0, 1)).await)
     }
 
     #[tool(description = "List background jobs: running ones with progress (0-1), message and elapsed time, then the last few \
@@ -1004,49 +1078,8 @@ impl PhotocraftMcp {
     #[tool(description = "Run several engine commands in one call, in order (fewer round trips). Returns {completed, failed, \
         results:[{ok, result|error}]}; stops at the first error unless stop_on_error is false. \
         Not an atomic transaction: earlier successful steps stay applied (no rollback).")]
-    async fn command_batch(&self, Parameters(p): Parameters<BatchParams>) -> Result<CallToolResult, McpError> {
-        if p.steps.len() > MAX_BATCH_STEPS {
-            return Ok(fail(format!("batch contains {} steps; maximum is {MAX_BATCH_STEPS}", p.steps.len())));
-        }
-        let stop = p.stop_on_error.unwrap_or(true);
-        let steps: Vec<Value> =
-            p.steps.into_iter().map(|s| json!({"command": s.id, "params": s.params.unwrap_or_else(|| json!({})), "wait": s.wait.unwrap_or(true)})).collect();
-        let args = json!({"steps": steps, "stopOnError": stop});
-        // The reply travels as escaped JSON text, so steps are charged their escaped size.
-        if let Some(r) = self.headless_op(move |h| h.batch_with_budget(&args, BatchReplyBudget::escaped())).await {
-            return to_result(r);
-        }
-        let Some(b) = self.bridge_client() else {
-            return Ok(no_backend());
-        };
-        let mut results = Vec::new();
-        let mut failed = 0;
-        let mut reply_budget = BatchReplyBudget::escaped();
-        for s in &steps {
-            let response = b.call("engine.execute", s.clone()).await;
-            let was_error = response.is_err();
-            let result = match response {
-                Ok(value) => json!({"ok": true, "result": value}),
-                Err(error) => {
-                    let mut obj = json!({"ok": false, "error": error.to_string()});
-                    attach_memory_error_details(&mut obj, &error);
-                    obj
-                }
-            };
-            if let Err(error) = reply_budget.charge(&result) {
-                failed += 1;
-                results.push(json!({"ok": false, "error": format!("batch response budget exceeded; current step may have completed: {error}")}));
-                break;
-            }
-            results.push(result);
-            if was_error {
-                failed += 1;
-                if stop {
-                    break;
-                }
-            }
-        }
-        Ok(ok_json(&json!({"completed": results.len() - failed, "failed": failed, "results": results})))
+    async fn command_batch(&self, Parameters(p): Parameters<BatchParams>, context: RequestContext<RoleServer>) -> Result<CallToolResult, McpError> {
+        self.batch(p, Waiter::new(Some(context))).await
     }
 
     // ----- live-GUI tools (bridge mode) -----
@@ -1064,7 +1097,7 @@ impl PhotocraftMcp {
     #[tool(description = "Bridge mode: screenshot of the live app window as PNG.")]
     async fn ui_screenshot(&self, Parameters(p): Parameters<ScreenshotParams>) -> Result<CallToolResult, McpError> {
         match self.bridge_client() {
-            Some(b) => self.screenshot(b, p.max_side).await,
+            Some(b) => self.screenshot(&b, p.max_side).await,
             None => bridge_only("ui_screenshot"),
         }
     }
@@ -1115,20 +1148,86 @@ impl PhotocraftMcp {
     }
 }
 
+/// Whether two targets are the same session or the same app connection.
+fn same_target(a: Option<&Target>, b: Option<&Target>) -> bool {
+    match (a, b) {
+        (Some(Target::Headless(a)), Some(Target::Headless(b))) => Arc::ptr_eq(a, b),
+        (Some(Target::Bridge(a)), Some(Target::Bridge(b))) => Arc::ptr_eq(a, b),
+        (None, None) => true,
+        _ => false,
+    }
+}
+
 fn bridge_only_headless(name: &str) -> Result<CallToolResult, McpError> {
     Ok(fail(format!("`{name}` is only available in headless mode (in the GUI use the window/tab UI or control_call)")))
 }
 
 impl PhotocraftMcp {
     async fn run_command(&self, id: String, params: Value, wait: bool) -> Result<CallToolResult, McpError> {
-        let (id2, params2) = (id.clone(), params.clone());
-        if let Some(r) = self.headless_op(move |h| h.command_start(&id2, params2, wait)).await {
-            return to_result(r);
+        to_result(self.step(id, params, wait, &mut Waiter::new(None), (0, 1)).await)
+    }
+
+    /// Run one command in either backend; `at` is its place in a batch, for progress.
+    async fn step(&self, id: String, params: Value, wait: bool, waiter: &mut Waiter, at: (usize, usize)) -> Result<Value, AutomationError> {
+        let none = || Err(AutomationError::Other("internal error: no headless session or app bridge".into()));
+        // Live mode goes wherever its last resolve pointed: the app, or a headless session.
+        match (self.headless_session(), self.bridge_client()) {
+            (Some(_), _) if wait => self.headless_wait(id, params, waiter, at).await.unwrap_or_else(none),
+            (Some(_), _) => self.headless_op(move |h| h.command_start(&id, params, false)).await.unwrap_or_else(none),
+            (None, Some(b)) if wait => self.bridge_wait(&b, id, params, waiter, at).await,
+            (None, Some(b)) => b.call("engine.execute", json!({"command": id, "params": params, "wait": false})).await,
+            (None, None) => none(),
         }
-        let Some(b) = self.bridge_client() else {
-            return Ok(no_backend());
-        };
-        to_result(b.call("engine.execute", json!({"command": id, "params": params, "wait": wait})).await)
+    }
+
+    async fn batch(&self, p: BatchParams, mut waiter: Waiter) -> Result<CallToolResult, McpError> {
+        if p.steps.len() > MAX_BATCH_STEPS {
+            return Ok(fail(format!("batch contains {} steps; maximum is {MAX_BATCH_STEPS}", p.steps.len())));
+        }
+        let stop = p.stop_on_error.unwrap_or(true);
+        let total = p.steps.len();
+        let mut results = Vec::new();
+        let mut failed = 0;
+        // The reply travels as escaped JSON text, so steps are charged their escaped size.
+        let mut reply_budget = BatchReplyBudget::escaped();
+        // Live mode may find a restarted app (or go headless) while a batch runs: its steps must
+        // not end up split across two documents in two places.
+        let pinned = self.target();
+        for (i, s) in p.steps.into_iter().enumerate() {
+            // A cancelled request runs no further steps; the client no longer reads the reply.
+            if waiter.is_cancelled() {
+                break;
+            }
+            if !same_target(pinned.as_ref(), self.target().as_ref()) {
+                failed += 1;
+                results.push(json!({"ok": false, "error": "PhotoCraft restarted (or the session changed) during the batch; this step and the ones after it did not run"}));
+                break;
+            }
+            let response = self.step(s.id, s.params.unwrap_or_else(|| json!({})), s.wait.unwrap_or(true), &mut waiter, (i, total)).await;
+            let was_error = response.is_err();
+            let result = match response {
+                Ok(value) => json!({"ok": true, "result": value}),
+                Err(error) => {
+                    let mut obj = json!({"ok": false, "error": error.to_string()});
+                    attach_memory_error_details(&mut obj, &error);
+                    obj
+                }
+            };
+            if let Err(error) = reply_budget.charge(&result) {
+                failed += 1;
+                results.push(json!({"ok": false, "error": format!("batch response budget exceeded; current step may have completed: {error}")}));
+                break;
+            }
+            results.push(result);
+            if was_error {
+                failed += 1;
+                if stop {
+                    break;
+                }
+            }
+            waiter.report((i + 1) as f64, total as f64, "").await;
+        }
+        Ok(ok_json(&json!({"completed": results.len() - failed, "failed": failed, "results": results})))
     }
 
     /// `jobs.list` / `jobs.cancel` in either backend; `read` picks the bridge's retry rule.
@@ -1169,15 +1268,17 @@ impl PhotocraftMcp {
         if let Some(b) = self.bridge_client() {
             // The bridge forwards to the running app's `app.save`, which takes only an optional
             // path (without one it writes back to the document's own layered file, as headless
-            // does), the Targa bits, the DDS options and the TIFF compression, transparency and
-            // pyramid, so the other options are headless-only. Saying so beats saving with
-            // defaults while the caller believes their quality or format was applied.
+            // does), the Targa bits, the DDS options, the TIFF compression, transparency and
+            // pyramid, and Maximize Compatibility, so the other options are headless-only. Saying
+            // so beats saving with defaults while the caller believes their quality or format was
+            // applied.
             let unsupported: Vec<&str> = [
                 p.format.is_some().then_some("format"),
                 p.quality.is_some().then_some("quality"),
                 p.tiff_layers.then_some("tiffLayers"),
                 p.pcraft_full_composite.is_some().then_some("pcraftFullComposite"),
                 dpx_bits.is_some().then_some("dpxBits"),
+                p.pdf_spot_plates.is_some().then_some("pdfSpotPlates"),
                 p.index.is_some().then_some("index"),
             ]
             .into_iter()
@@ -1209,6 +1310,9 @@ impl PhotocraftMcp {
             if p.tiff_pyramid {
                 params["tiffPyramid"] = json!(true);
             }
+            if let Some(maximize) = p.maximize_compatibility {
+                params["maximizeCompatibility"] = json!(maximize);
+            }
             return to_result(b.call("app.save", params).await);
         }
         let Some(r) = self
@@ -1217,6 +1321,7 @@ impl PhotocraftMcp {
                     tiff_layers: p.tiff_layers,
                     tiff_transparency: p.tiff_transparency,
                     tga_bits,
+                    pdf_spot_plates: p.pdf_spot_plates.unwrap_or(true),
                     pcraft_full_composite: p.pcraft_full_composite.unwrap_or(false),
                     ..Default::default()
                 };
@@ -1226,6 +1331,9 @@ impl PhotocraftMcp {
                 }
                 opts.encode.tiff_pyramid = p.tiff_pyramid;
                 opts.encode.dds = photocraft_io::DdsOptions { compression: dds_compression.unwrap_or_default(), mipmaps: p.dds_mipmaps };
+                if let Some(maximize) = p.maximize_compatibility {
+                    opts.psd_maximize_compatibility = maximize;
+                }
                 if let Some(q) = p.quality {
                     opts.encode.jpeg_quality = q;
                     opts.encode.webp_quality = q;
@@ -1250,6 +1358,8 @@ impl PhotocraftMcp {
 mod conventions;
 mod progress;
 mod transport;
+
+use progress::Waiter;
 
 /// Used by the render helper in tests and the CLI.
 pub fn render_document_png(doc: &photocraft_doc::Document, max_side: u32) -> Result<Vec<u8>, AutomationError> {
@@ -1336,10 +1446,7 @@ mod tests {
             [(json!({"radius":"big"}), "radius"), (json!({"radus":3}), "radus"), (json!({"radius":5000}), "radius"), (json!({"radius":-4}), "radius")]
         {
             for wait in [true, false] {
-                let result = mcp
-                    .command_run(Parameters(RunParams { id: "filter.blur.gaussianBlur".into(), params: Some(params.clone()), wait: Some(wait) }))
-                    .await
-                    .unwrap();
+                let result = mcp.run_command("filter.blur.gaussianBlur".into(), params.clone(), wait).await.unwrap();
                 assert_eq!(result.is_error, Some(true));
                 let error = &result.content.first().and_then(|c| c.as_text()).unwrap().text;
                 assert!(error.contains("filter.blur.gaussianBlur") && error.contains(key), "{error}");
@@ -1366,7 +1473,7 @@ mod tests {
         let step = |id: &str, params: Value| RunParams { id: id.into(), params: Some(params), wait: None };
         let mut steps: Vec<RunParams> = (0..MAX_BATCH_STEPS - 1).map(|_| step("command.list", json!({}))).collect();
         steps.push(step("file.new", json!({"width": 8, "height": 8})));
-        let result = mcp.command_batch(Parameters(BatchParams { steps, stop_on_error: Some(false) })).await.unwrap();
+        let result = mcp.batch(BatchParams { steps, stop_on_error: Some(false) }, Waiter::new(None)).await.unwrap();
         assert_ne!(result.is_error, Some(true), "{:?}", result.content.first().and_then(|c| c.as_text()).map(|t| &t.text[..200.min(t.text.len())]));
         let text = &result.content.first().and_then(|c| c.as_text()).unwrap().text;
         let reply: Value = serde_json::from_str(text).unwrap();
@@ -1376,6 +1483,202 @@ mod tests {
         assert_eq!(reply["failed"], 1);
         let docs = mcp.headless_op(|h| Ok(h.session.documents().len())).await.unwrap().unwrap();
         assert_eq!(docs, 0, "the step after the budget ran out did not run");
+    }
+
+    /// rmcp may drop a cancelled request's future without polling it again; its job must still
+    /// stop and leave the document unchanged (#8129).
+    #[tokio::test(flavor = "multi_thread")]
+    async fn dropping_a_waited_command_cancels_its_job() {
+        let mcp = PhotocraftMcp::headless();
+        mcp.headless_op(|h| {
+            h.command_run("file.new", json!({"width": 6000, "height": 6000}))?;
+            h.command_run("filter.noise.addNoise", json!({"amount": 50}))
+        })
+        .await
+        .unwrap()
+        .unwrap();
+        let before = mcp.headless_op(|h| h.inspect(None)).await.unwrap().unwrap();
+        let mut waiter = Waiter::new(None);
+        let waited = mcp.headless_wait("filter.blur.gaussianBlur".into(), json!({"radius": 1000}), &mut waiter, (0, 1));
+        assert!(tokio::time::timeout(std::time::Duration::from_millis(100), waited).await.is_err(), "the blur ended before it was dropped");
+        let t = std::time::Instant::now();
+        loop {
+            let (running, cancelled) =
+                mcp.headless_op(|h| Ok((h.session.has_jobs(), h.session.jobs_with_recent().iter().any(|j| j.state == "cancelled")))).await.unwrap().unwrap();
+            if !running {
+                assert!(cancelled, "the job ended without being cancelled");
+                break;
+            }
+            assert!(t.elapsed().as_secs() < 30, "the dropped job kept running");
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        assert_eq!(mcp.headless_op(|h| h.inspect(None)).await.unwrap().unwrap(), before);
+    }
+
+    /// Dropped while its start still waits for the session lock (held here as a long synchronous
+    /// command would): the job that starts afterwards is cancelled too, not left running.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_wait_dropped_before_its_job_starts_cancels_the_job() {
+        let mcp = PhotocraftMcp::headless();
+        mcp.headless_op(|h| {
+            h.command_run("file.new", json!({"width": 6000, "height": 6000}))?;
+            h.command_run("filter.noise.addNoise", json!({"amount": 50}))
+        })
+        .await
+        .unwrap()
+        .unwrap();
+        let before = mcp.headless_op(|h| h.inspect(None)).await.unwrap().unwrap();
+        let Backend::Headless(session) = &*mcp.backend else { panic!("headless") };
+        let (session, (locked, is_locked)) = (session.clone(), std::sync::mpsc::channel());
+        let holder = std::thread::spawn(move || {
+            let _held = session.lock().unwrap();
+            locked.send(()).unwrap();
+            std::thread::sleep(std::time::Duration::from_millis(300));
+        });
+        is_locked.recv().unwrap();
+        let mut waiter = Waiter::new(None);
+        let waited = mcp.headless_wait("filter.blur.gaussianBlur".into(), json!({"radius": 1000}), &mut waiter, (0, 1));
+        assert!(tokio::time::timeout(std::time::Duration::from_millis(50), waited).await.is_err(), "the start waits for the lock");
+        holder.join().unwrap();
+        let t = std::time::Instant::now();
+        loop {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            let (started, running) = mcp.headless_op(|h| Ok((!h.session.jobs_with_recent().is_empty(), h.session.has_jobs()))).await.unwrap().unwrap();
+            if started && !running {
+                break;
+            }
+            assert!(t.elapsed().as_secs() < 30, "the job kept running");
+        }
+        let cancelled = mcp.headless_op(|h| Ok(h.session.jobs_with_recent().iter().any(|j| j.state == "cancelled"))).await.unwrap().unwrap();
+        assert!(cancelled, "the job ended without being cancelled");
+        assert_eq!(mcp.headless_op(|h| h.inspect(None)).await.unwrap().unwrap(), before);
+    }
+
+    /// Cancellation notifications only cancel the token: the handler remains alive while
+    /// its blocking start waits for the session lock.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn cancelled_queued_commands_never_start() {
+        use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+
+        let mcp = PhotocraftMcp::headless();
+        mcp.headless_op(|h| h.command_run("file.new", json!({"width": 8, "height": 8}))).await.unwrap().unwrap();
+        let before = mcp.headless_op(|h| h.inspect(None)).await.unwrap().unwrap();
+        let Backend::Headless(session) = &*mcp.backend else { panic!("headless") };
+        let session = session.clone();
+        let (locked, acquired) = std::sync::mpsc::channel();
+        let (release, released) = std::sync::mpsc::channel();
+        let holder = std::thread::spawn(move || {
+            let _held = session.lock().unwrap();
+            locked.send(()).unwrap();
+            released.recv().unwrap();
+        });
+        acquired.recv().unwrap();
+
+        let (mut input, server_in) = tokio::io::duplex(65536);
+        let (server_out, output) = tokio::io::duplex(65536);
+        let server = tokio::spawn(mcp.clone().serve_io(server_in, server_out));
+        let mut lines = BufReader::new(output).lines();
+        async fn send(input: &mut tokio::io::DuplexStream, value: Value) {
+            input.write_all(format!("{value}\n").as_bytes()).await.unwrap();
+        }
+        send(&mut input, json!({"jsonrpc":"2.0", "id":1, "method":"initialize", "params":{"protocolVersion":"2025-06-18", "capabilities":{}, "clientInfo":{"name":"test", "version":"1"}}})).await;
+        lines.next_line().await.unwrap().unwrap();
+        send(&mut input, json!({"jsonrpc":"2.0", "method":"notifications/initialized"})).await;
+        for (id, command, params) in [(2, "layer.new.layer", json!({})), (3, "filter.blur.gaussianBlur", json!({"radius": 10}))] {
+            send(
+                &mut input,
+                json!({"jsonrpc":"2.0", "id":id, "method":"tools/call", "params":{"name":"command_run", "arguments":{"id":command, "params":params}}}),
+            )
+            .await;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        for id in [2, 3] {
+            send(&mut input, json!({"jsonrpc":"2.0", "method":"notifications/cancelled", "params":{"requestId":id}})).await;
+        }
+        send(&mut input, json!({"jsonrpc":"2.0", "id":4, "method":"ping"})).await;
+        loop {
+            let reply: Value = serde_json::from_str(&lines.next_line().await.unwrap().unwrap()).unwrap();
+            if reply["id"] == 4 {
+                break;
+            }
+        }
+        release.send(()).unwrap();
+        holder.join().unwrap();
+        // Let both blocked starts acquire the mutex before inspecting their effects.
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        let (after, jobs) = mcp.headless_op(|h| Ok((h.inspect(None)?, h.session.jobs_with_recent()))).await.unwrap().unwrap();
+        assert_eq!(after, before);
+        assert!(jobs.is_empty(), "cancelled queued job started: {jobs:?}");
+        drop(input);
+        server.await.unwrap().unwrap();
+    }
+
+    /// Answer the bridge's challenge authentication on one fake-app connection, frame by frame,
+    /// as the real control servers do. Returns whether the connection authenticated.
+    async fn fake_app_handshake<R, W>(lines: &mut tokio::io::Lines<R>, write: &mut W, token: &str) -> bool
+    where
+        R: tokio::io::AsyncBufRead + Unpin,
+        W: tokio::io::AsyncWrite + Unpin,
+    {
+        use tokio::io::AsyncWriteExt;
+        let mut handshake = crate::security::ServerHandshake::new();
+        while let Ok(Some(line)) = lines.next_line().await {
+            let (reply, step) = handshake.reply(&line, token);
+            write.write_all(format!("{reply}\n").as_bytes()).await.unwrap();
+            if step != crate::security::AuthStep::Challenged {
+                return step == crate::security::AuthStep::Authenticated;
+            }
+        }
+        false
+    }
+
+    /// The same over the bridge (#8130): a dropped wait sends `jobs.cancel` for the app's job.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn dropping_a_bridged_wait_cancels_the_apps_job() {
+        use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
+        const TOKEN: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap().to_string();
+        let (cancels, mut cancelled) = tokio::sync::mpsc::unbounded_channel();
+        let polled = Arc::new(tokio::sync::Notify::new());
+        let polling = polled.clone();
+        // A fake app whose job 3 never ends and whose poll never replies. Dropping the wait
+        // discards that connection, so the cancellation must arrive on a fresh one (#8130).
+        let app = tokio::spawn(async move {
+            loop {
+                let (socket, _) = listener.accept().await.unwrap();
+                let (read, mut write) = socket.into_split();
+                let mut lines = tokio::io::BufReader::new(read).lines();
+                fake_app_handshake(&mut lines, &mut write, TOKEN).await;
+                while let Ok(Some(line)) = lines.next_line().await {
+                    let request: Value = serde_json::from_str(&line).unwrap();
+                    let result = match request["method"].as_str().unwrap() {
+                        "engine.execute" => json!({"job": 3, "pending": true}),
+                        "jobs.list" => {
+                            polling.notify_one();
+                            continue;
+                        }
+                        "jobs.cancel" => json!({"cancelled": 1}),
+                        method => panic!("unexpected method {method}"),
+                    };
+                    write.write_all(format!("{}\n", json!({"id": request["id"], "ok": true, "result": result})).as_bytes()).await.unwrap();
+                    if request["method"] == "jobs.cancel" {
+                        cancels.send(request).unwrap();
+                        return;
+                    }
+                }
+            }
+        });
+        let mcp = PhotocraftMcp::with_backend(Backend::Bridge(Arc::new(BridgeClient::new(addr, TOKEN).unwrap())));
+        let mut waited = Box::pin(mcp.run_command("filter.blur.gaussianBlur".into(), json!({"radius": 4}), true));
+        tokio::select! {
+            result = &mut waited => panic!("the running job answered before its wait was dropped: {result:?}"),
+            ready = tokio::time::timeout(std::time::Duration::from_secs(10), polled.notified()) => ready.expect("the app received the poll"),
+        }
+        drop(waited);
+        let cancel = tokio::time::timeout(std::time::Duration::from_secs(10), cancelled.recv()).await.unwrap().unwrap();
+        assert_eq!((&cancel["method"], &cancel["params"]), (&json!("jobs.cancel"), &json!({"job": 3})));
+        tokio::time::timeout(std::time::Duration::from_secs(10), app).await.unwrap().unwrap();
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -1425,7 +1728,12 @@ mod tests {
             assert!(serde_json::from_value::<PlaceParams>(json!({"path": "file.psd", "approve_high_memory": invalid})).is_err(), "{invalid}");
         }
 
-        let err = AutomationError::Engine(photocraft_engine::EngineError::PsdHardBudget { name: "huge.psd".into(), required: 9_000, limit: 8_000 });
+        let err = AutomationError::Engine(photocraft_engine::EngineError::PsdHardBudget {
+            name: "huge.psd".into(),
+            required: 9_000,
+            limit: 8_000,
+            free_memory: None,
+        });
         let res = to_result(Err(err)).unwrap();
         assert_eq!(res.is_error, Some(true));
         let text = &res.content.first().and_then(|c| c.as_text()).unwrap().text;
@@ -1436,6 +1744,21 @@ mod tests {
         for absent in ["soft", "softLimit", "available", "availableRam"] {
             assert!(v.get(absent).is_none(), "a hard refusal has no {absent}: {v}");
         }
+
+        // With measured free memory behind the limit, the refusal reports it too.
+        let err = AutomationError::Engine(photocraft_engine::EngineError::PsdHardBudget {
+            name: "huge.psd".into(),
+            required: 9_000,
+            limit: 8_000,
+            free_memory: Some(10_000),
+        });
+        let res = to_result(Err(err)).unwrap();
+        let text = &res.content.first().and_then(|c| c.as_text()).unwrap().text;
+        let v: Value = serde_json::from_str(text).unwrap();
+        assert_eq!(v["hardLimit"], 8_000);
+        assert_eq!(v["available"], 10_000);
+        assert_eq!(v["availableRam"], 10_000);
+        assert!(v.get("soft").is_none(), "a hard refusal has no soft limit: {v}");
     }
 
     /// The MCP server applies finished jobs before every tool call too (#503).

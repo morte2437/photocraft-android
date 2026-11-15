@@ -49,6 +49,9 @@ impl MaskKind {
 
 /// `(kind, enabled, linked)` for each of `l`'s masks, in row order.
 pub fn masks(l: &Layer) -> Vec<(MaskKind, bool, bool)> {
+    if l.frame.is_some() {
+        return Vec::new();
+    }
     let mut v = Vec::with_capacity(2);
     if let Some(m) = &l.mask {
         v.push((MaskKind::Pixel, m.enabled, m.linked));
@@ -61,13 +64,13 @@ pub fn masks(l: &Layer) -> Vec<(MaskKind, bool, bool)> {
 
 /// Width `l`'s masks take in a row with `ts`-point thumbnails (chain + thumbnail + gap each).
 pub fn width(l: &Layer, ts: f32) -> f32 {
-    masks(l).len() as f32 * (CHAIN_W + ts + 6.0)
+    if l.frame.is_some() { ts + 6.0 } else { masks(l).len() as f32 * (CHAIN_W + ts + 6.0) }
 }
 
 /// Thumbnail size for `l`'s row: `ts`, shrunk (down to 14 pt) when the layer and mask
 /// thumbnails would leave the name less than its minimum of the `room` they share.
 pub fn thumb_size(l: &Layer, ts: f32, room: f32) -> f32 {
-    let n = masks(l).len() as f32;
+    let n = if l.frame.is_some() { 1.0 } else { masks(l).len() as f32 };
     let need = ts + 6.0 + width(l, ts) + crate::layer_row_ui::MIN_NAME_W;
     let short = need - room;
     if short <= 0.0 { ts } else { (ts - short / (1.0 + n)).clamp(14.0_f32.min(ts), ts) }

@@ -144,6 +144,80 @@ fn print_dry_run_renders_a_pdf_and_reports_the_platform_backend() {
     assert!(s.execute("file.print", json!({"colorHandling": "photocraftManages", "dryRun": true})).is_err(), "needs a printer profile");
 }
 
+/// The Japanese papers are in the table at their metric sizes, their customary names resolve (case,
+/// spaces and punctuation ignored), and the sizes that were there before are unchanged.
+#[test]
+fn japanese_paper_sizes_and_aliases() {
+    // mm -> pt, within 0.1 pt.
+    for (name, w_mm, h_mm) in [
+        ("postcard", 100.0, 148.0),
+        ("double-postcard", 148.0, 200.0),
+        ("b5", 182.0, 257.0),
+        ("b4", 257.0, 364.0),
+        ("a6", 105.0, 148.0),
+        ("l", 89.0, 127.0),
+        ("2l", 127.0, 178.0),
+        ("kg", 102.0, 152.0),
+        ("6cut", 203.0, 254.0),
+        ("4cut", 254.0, 305.0),
+    ] {
+        let (w, h) = paper_size(name).unwrap_or_else(|| panic!("{name}"));
+        let want = (w_mm * 72.0 / 25.4, h_mm * 72.0 / 25.4);
+        assert!((w - want.0).abs() < 0.1 && (h - want.1).abs() < 0.1, "{name}: {w} x {h}, wanted {want:?}");
+    }
+    // The customary and English names resolve to the same paper.
+    for (a, b) in [
+        ("はがき", "postcard"),
+        ("ハガキ", "postcard"),
+        ("葉書", "postcard"),
+        ("往復はがき", "double-postcard"),
+        ("JIS B5", "b5"),
+        ("B5 (JIS)", "b5"),
+        ("JIS B4", "b4"),
+        ("L判", "l"),
+        ("Lサイズ", "l"),
+        ("l-size", "l"),
+        ("2L判", "2l"),
+        ("KG判", "kg"),
+        ("六切", "6cut"),
+        ("6切", "6cut"),
+        ("四切", "4cut"),
+        ("4切", "4cut"),
+        ("A4", "a 4"),
+        ("4 × 6", "4x6"),
+        ("B5（JIS）", "b5"),
+        ("JIS B5.", "b5"),
+        ("JIS B5。", "b5"),
+    ] {
+        assert_eq!(paper_size(a), paper_size(b), "{a} vs {b}");
+    }
+    assert!(paper_size("napkin").is_none());
+    // The papers that were already there keep their sizes.
+    assert_eq!(paper_size("letter"), Some((612.0, 792.0)));
+    assert_eq!(paper_size("a4"), Some((595.28, 841.89)));
+    assert_eq!(paper_size("4x6"), Some((288.0, 432.0)));
+    assert_eq!(paper_size("5x7"), Some((360.0, 504.0)));
+}
+
+/// A print on はがき or L判 writes a PDF page of that paper's size: 100 × 148 mm is
+/// 283.46 × 419.53 pt and 89 × 127 mm is 252.28 × 360.00 pt. The customary names and the JIS
+/// spelling work too, and an unknown paper is still refused.
+#[test]
+fn japanese_paper_sizes_reach_the_pdf_page() {
+    let dir = tmp("jp-paper");
+    for (paper, w, h) in [("postcard", 283.46, 419.53), ("l", 252.28, 360.00), ("はがき", 283.46, 419.53), ("JIS B5", 515.91, 728.50)] {
+        let mut s = session("rgb", 8);
+        let out = format!("{dir}/{}.pdf", paper.replace(' ', "_"));
+        let r = s.execute("file.print", json!({"output": out, "paper": paper, "scaleToFit": true})).unwrap();
+        assert_eq!(r["pdf"], out);
+        let pdf = std::fs::read(&out).unwrap();
+        let text = String::from_utf8_lossy(&pdf);
+        let want = format!("/MediaBox [0 0 {w:.2} {h:.2}]");
+        assert!(text.contains(&want), "{paper}: wanted {want}");
+    }
+    assert!(session("rgb", 8).execute("file.print", json!({"paper": "napkin", "dryRun": true})).is_err());
+}
+
 #[test]
 fn photocraft_manages_colors_converts_to_the_printer_profile() {
     let mut s = session("rgb", 8);
@@ -380,7 +454,7 @@ fn printer_profile_can_be_an_installed_icc_file() {
     let dir = tmp("icc");
     let icc = format!("{dir}/My Paper.icc");
     let output = format!("{dir}/managed.pdf");
-    std::fs::write(&icc, photocraft_cms::Builtin::CoatedCmyk.profile().to_bytes().as_slice()).unwrap();
+    std::fs::write(&icc, craft_cms::Builtin::CoatedCmyk.profile().to_bytes().as_slice()).unwrap();
     let mut s = session("rgb", 16);
     let r = s
         .execute("file.print", json!({"output": output, "dryRun": true, "colorHandling": "photocraftManages", "printerProfile": icc, "emulsionDown": true}))
@@ -565,7 +639,8 @@ fn package_lists_a_missing_link_once() {
 #[test]
 fn paths_export_as_illustrator_postscript() {
     let mut s = session("rgb", 8);
-    assert!(!s.is_enabled("file.export.pathsToIllustrator"));
+    // Enabled without paths too: Document Bounds needs none (#13771).
+    assert!(s.is_enabled("file.export.pathsToIllustrator"));
     s.edit("paths", |d, _| {
         let tri = Subpath::polygon(&[(10.0, 10.0), (100.0, 10.0), (50.0, 90.0)]);
         let mut curve = Subpath::polyline(&[(0.0, 0.0), (300.0, 150.0)]);
@@ -578,8 +653,8 @@ fn paths_export_as_illustrator_postscript() {
     let ai = r["ai"].as_str().unwrap();
     assert!(ai.starts_with("%!PS-Adobe-2.0 EPSF-1.2"));
     assert!(ai.contains("%%BoundingBox: 0 0 300 150"));
-    assert!(ai.contains("*u\n10.0000 140.0000 m\n100.0000 140.0000 L\n"), "{ai}");
-    assert!(ai.contains("\nn\n") && ai.contains("\nN\n*U\n"));
+    assert!(ai.contains("1 XR\n10.0000 140.0000 m\n100.0000 140.0000 L\n"), "{ai}");
+    assert!(ai.contains("\nn\n*U\n") && ai.contains("\nN\n*U\n"));
     assert!(ai.contains(" C\n"), "curve segment");
     let dir = tmp("ai");
     let r = s.execute("file.export.pathsToIllustrator", json!({"path": format!("{dir}/p.ai"), "paths": "Shapes"})).unwrap();
@@ -1486,4 +1561,9 @@ fn printed_pdf_uses_winansi_for_labels_and_descriptions() {
     assert!(content.contains(r"(Caf\351 \226 r\351sum\351.psd) Tj"), "{content}");
     assert!(content.contains(r"(Price: \20020 \(proof\)) Tj"), "{content}");
     assert!(content.is_ascii(), "encoded bytes are escaped, never UTF-8 text operands");
+}
+
+#[test]
+fn postscript_comment_text_cannot_end_its_line() {
+    assert_eq!(ps_comment_text("a\nshowpage\r%x"), "a showpage %x");
 }

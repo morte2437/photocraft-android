@@ -188,6 +188,8 @@ fn object_selection_keeps_the_mode_from_the_mouse_press() {
                 let sel = app.session.active().unwrap().doc.selection.as_ref().expect("the old selection survives outside the object");
                 assert!(sel.sample_channel(20, 20, 0) > 0.99, "the gesture must preserve selection outside the object");
                 assert_eq!(sel.sample_channel(220, 150, 0) > 0.5, !at_press.alt, "the disc follows the requested mode");
+                // From no selection: a New-mode click inside the selection deselects (#12853).
+                h.state_mut().run("select.deselect", json!({})).unwrap();
                 mods(&mut h, Modifiers::NONE);
                 move_to(&mut h, 220.0, 150.0);
                 let next = screen(&h, 220.0, 150.0);
@@ -454,6 +456,115 @@ fn the_live_outline_matches_the_committed_selection_in_a_rotated_view() {
     }
 }
 
+/// The closed outlines the last frame drew as a solid white line under black dashes: the Type
+/// tools' drag box (four corners, the first repeated).
+fn white_box_outlines(h: &Harness<'static, PhotocraftApp>) -> Vec<Vec<Pos2>> {
+    h.output()
+        .shapes
+        .iter()
+        .filter_map(|c| match &c.shape {
+            egui::Shape::Path(p)
+                if matches!(p.stroke.color, egui::epaint::ColorMode::Solid(col) if col == egui::Color32::WHITE)
+                    && p.points.len() == 5
+                    && p.points.first() == p.points.last() =>
+            {
+                Some(p.points.clone())
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+/// The slanted edges the last frame drew as marching ants (#7530): each is a white base segment
+/// under black dashes (`ants::shapes`); upright edges go into a pixel mesh instead. The Move tool's
+/// layer marquee in a rotated view.
+fn white_ant_edges(h: &Harness<'static, PhotocraftApp>) -> Vec<[Pos2; 2]> {
+    h.output()
+        .shapes
+        .iter()
+        .filter_map(|c| match &c.shape {
+            egui::Shape::LineSegment { points, stroke } if stroke.color == egui::Color32::WHITE => Some(*points),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Every drawn corner of `outline` maps back, through the view, to the document corner of `want`
+/// ([x0, y0, x1, y1]) with the same index, clockwise from the top-left.
+fn assert_doc_box(xf: &ViewXform, outline: &[Pos2], want: [f64; 4], what: &str) {
+    let corners = [[want[0], want[1]], [want[2], want[1]], [want[2], want[3]], [want[0], want[3]]];
+    for (i, (p, w)) in outline.iter().zip(corners).enumerate() {
+        let [x, y] = xf.to_doc(*p);
+        assert!(
+            (x - w[0]).abs() <= 1.0 && (y - w[1]).abs() <= 1.0,
+            "{what}: corner {i} drawn at {p:?} is document ({x:.1}, {y:.1}), the box's corner is {w:?}"
+        );
+    }
+}
+
+/// #7063: in a rotated view the Type tools' drag box previews the document-axis text box the
+/// release creates. An upright screen box through two of its corners is another shape (at 45° a
+/// dragged square previews as a sliver).
+#[test]
+fn the_type_drag_box_matches_the_committed_text_box_in_a_rotated_view() {
+    for rotation in [30.0, 45.0] {
+        let mut h = harness(Tool::Type);
+        h.state_mut().ui.extras.snap = false;
+        h.state_mut().ui.views[0].rotation = rotation;
+        h.run_steps(2);
+        press_at(&mut h, 50.0, 50.0, Modifiers::NONE);
+        move_to(&mut h, 150.0, 90.0);
+        let xf = view_xform(&h);
+        let drawn = white_box_outlines(&h);
+        assert_eq!(drawn.len(), 1, "{rotation}°: one text box is previewed: {drawn:?}");
+        release_at(&mut h, 150.0, 90.0, Modifiers::NONE);
+        // The text box the release created, in document pixels.
+        let committed = {
+            let st = h.state().session.active().unwrap();
+            let layer = st.doc.layer(st.active_layer.unwrap()).unwrap();
+            let photocraft_doc::LayerContent::Text(t) = &layer.content else { panic!("{rotation}°: a type layer") };
+            let photocraft_doc::text::TextShape::Box { x, y, width, height } = t.shape else { panic!("{rotation}°: paragraph text") };
+            let (tx, ty) = (t.transform.m[4], t.transform.m[5]);
+            [tx + f64::from(x), ty + f64::from(y), tx + f64::from(x + width), ty + f64::from(y + height)]
+        };
+        assert!((committed[0] - 50.0).abs() <= 1.0 && (committed[3] - 90.0).abs() <= 1.0, "{rotation}°: the drag made {committed:?}");
+        assert_doc_box(&xf, &drawn[0], committed, &format!("{rotation}°: the Type preview"));
+    }
+}
+
+/// #7063: in a rotated view the Move tool's layer marquee (#2844) previews the document-axis box
+/// `layer.selectInRect` gets on the release, not an upright screen box through two of its corners.
+#[test]
+fn the_move_layer_marquee_follows_the_document_axes_in_a_rotated_view() {
+    for rotation in [30.0, 45.0] {
+        let mut h = harness(Tool::Move);
+        let app = h.state_mut();
+        app.ui.extras.snap = false;
+        app.ui.tool_options.move_auto_select = true;
+        app.ui.views[0].rotation = rotation;
+        h.run_steps(2);
+        // On the locked Background, so the drag draws the marquee (#4058).
+        press_at(&mut h, 50.0, 50.0, Modifiers::NONE);
+        move_to(&mut h, 150.0, 90.0);
+        assert!(h.state().layer_box.is_some(), "{rotation}°: the drag draws the layer marquee");
+        let xf = view_xform(&h);
+        // Four slanted ant edges, each from one corner of the document box to the next. An upright
+        // screen box would have none (its edges go into the ants' pixel mesh).
+        let edges = white_ant_edges(&h);
+        assert_eq!(edges.len(), 4, "{rotation}°: the marquee's four edges are drawn slanted: {edges:?}");
+        let ends: Vec<Pos2> = edges.iter().map(|e| e[0]).collect();
+        assert_doc_box(&xf, &ends, [50.0, 50.0, 150.0, 90.0], &format!("{rotation}°: the layer marquee (edge starts)"));
+        let ends: Vec<Pos2> = edges.iter().map(|e| e[1]).collect();
+        assert_doc_box(
+            &xf,
+            &ends[3..].iter().chain(&ends[..3]).copied().collect::<Vec<_>>(),
+            [50.0, 50.0, 150.0, 90.0],
+            &format!("{rotation}°: the layer marquee (edge ends)"),
+        );
+        release_at(&mut h, 150.0, 90.0, Modifiers::NONE);
+    }
+}
+
 /// 800 %, snapping off, the view centred on (30, 30): the pointer lands between pixel edges.
 fn zoomed(tool: Tool) -> Harness<'static, PhotocraftApp> {
     let mut h = harness(tool);
@@ -694,7 +805,7 @@ fn shift_constrains_a_floating_selection_drag() {
 }
 
 /// ⌘-drag cuts the selected pixels into a floating piece (`select.float`): shown at the pointer
-/// while dragging, moved again by plain drags, put back by Undo, dropped by Deselect.
+/// while dragging, moved again by ⌘-drags, put back by Undo, dropped by Deselect.
 #[test]
 fn cmd_drag_floats_the_selected_pixels() {
     use crate::canvas::{ToolEvent, tool_event};
@@ -710,8 +821,8 @@ fn cmd_drag_floats_the_selected_pixels() {
     tool_event(&mut app, ToolEvent::Up { x: 35.0, y: 20.0 }, Modifiers::COMMAND);
     assert_eq!(offset(&app), Some((15, 0)));
     assert_eq!(alpha(&doc(&app), 12, 20), 1.0, "the document waits for the drop");
-    // A plain drag on the piece moves it again.
-    drag(&mut app, [30.0, 20.0], [30.0, 30.0], Modifiers::NONE);
+    // A ⌘-drag on the piece moves it again.
+    drag(&mut app, [30.0, 20.0], [30.0, 30.0], Modifiers::COMMAND);
     assert_eq!(offset(&app), Some((15, 10)));
     assert_eq!(app.session.active().unwrap().history.past_len(), steps);
     // Undo puts it back.
@@ -725,6 +836,29 @@ fn cmd_drag_floats_the_selected_pixels() {
     assert!(alpha(&d, 12, 12) == 0.0 && alpha(&d, 26, 21) == 1.0 && alpha(&d, 44, 39) == 1.0);
     let labels: Vec<String> = app.session.active().unwrap().history.entries().into_iter().skip(steps + 1).map(|e| e.to_string()).collect();
     assert_eq!(labels.first().map(String::as_str), Some("Move"), "{labels:?}");
+}
+
+/// #11368: after the Move tool moves the selected pixels, a plain marquee drag inside the
+/// selection moves only the outline, as in Photoshop: the pixels are dropped where they are (one
+/// Move step), then the outline moves on its own (one Move Selection step).
+#[test]
+fn a_marquee_drag_after_moving_pixels_moves_only_the_outline() {
+    let (mut app, layer) = painted();
+    let alpha = |app: &PhotocraftApp, x, y| app.session.active().unwrap().doc.layer(layer).unwrap().surface().unwrap().rgba(x, y)[3];
+    let sel = |app: &PhotocraftApp| app.session.active().unwrap().doc.selection.as_ref().map(|s| s.content_bounds());
+    let floating = |app: &PhotocraftApp| photocraft_engine::float_cmds::floating(app.session.active().unwrap()).is_some();
+    let steps = app.session.active().unwrap().history.past_len();
+    app.ui.tool = Tool::Move;
+    drag(&mut app, [20.0, 20.0], [35.0, 20.0], Modifiers::NONE);
+    assert!(floating(&app), "the Move tool leaves the moved pixels floating");
+    app.ui.tool = Tool::RectMarquee;
+    drag(&mut app, [30.0, 20.0], [30.0, 30.0], Modifiers::NONE);
+    assert!(!floating(&app), "the press dropped the piece");
+    assert_eq!(sel(&app), Some(Rect::new(25, 20, 45, 40)), "the outline moved down");
+    assert!(alpha(&app, 40, 15) == 1.0 && alpha(&app, 40, 35) == 0.0, "the pixels stay where the Move tool left them");
+    assert_eq!(alpha(&app, 12, 20), 0.0, "the cut stays cut");
+    let labels: Vec<String> = app.session.active().unwrap().history.entries().into_iter().skip(steps + 1).map(|e| e.to_string()).collect();
+    assert_eq!(labels, ["Move", "Move Selection"]);
 }
 
 /// Through the real canvas (mouse events): a drag inside the ants moves the selection.
@@ -961,7 +1095,8 @@ fn selected_pixels_move_off_the_background_but_not_off_a_fully_locked_layer() {
 
 /// Photoshop's cursor over a selection: the move cursor where a marquee press moves the outline,
 /// scissors where ⌘ (or the Move tool) cuts the selected pixels, a double arrow where ⌥ copies
-/// them, a hollow arrowhead while they are dragged, and a plain arrow over the floating piece.
+/// them, a hollow arrowhead while they are dragged, and a plain arrow over the floating piece where
+/// a press would drag it (the Move tool, ⌘).
 #[test]
 fn selection_cursor_follows_the_modifiers_and_the_floating_piece() {
     use crate::canvas::{SelCursor, selection_cursor};
@@ -985,7 +1120,8 @@ fn selection_cursor_follows_the_modifiers_and_the_floating_piece() {
     tool_event(&mut app, ToolEvent::Move { x: 35.0, y: 20.0, pressure: 1.0 }, Modifiers::COMMAND);
     assert_eq!(selection_cursor(&app, Tool::RectMarquee, [35.0, 20.0], Modifiers::COMMAND), Some(SelCursor::Dragging));
     tool_event(&mut app, ToolEvent::Up { x: 35.0, y: 20.0 }, Modifiers::COMMAND);
-    assert_eq!(selection_cursor(&app, Tool::RectMarquee, [35.0, 20.0], none), Some(SelCursor::Piece));
+    assert_eq!(selection_cursor(&app, Tool::RectMarquee, [35.0, 20.0], none), Some(SelCursor::Outline), "a plain drag moves the outline (#11368)");
+    assert_eq!(selection_cursor(&app, Tool::RectMarquee, [35.0, 20.0], Modifiers::COMMAND), Some(SelCursor::Piece));
     assert_eq!(selection_cursor(&app, Tool::Move, [35.0, 20.0], none), Some(SelCursor::Piece));
     assert_eq!(selection_cursor(&app, Tool::RectMarquee, [35.0, 20.0], cmd_alt), Some(SelCursor::Copy), "a copy of the piece");
     assert_eq!(selection_cursor(&app, Tool::RectMarquee, inside, none), None, "where it was cut from");

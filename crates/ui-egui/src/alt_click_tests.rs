@@ -208,6 +208,34 @@ fn alt_click_sets_the_clone_source_and_a_drag_paints_it() {
     assert!(px[1] > 0.9 && px[0] < 0.1, "green cloned over red: {px:?}");
 }
 
+/// ⌥-click in one open document, then paint in another: the stroke clones from the first, as in
+/// Photoshop, rather than from the same point of the document being painted.
+#[test]
+fn alt_click_in_one_document_clones_into_another() {
+    let mut app = two_colours();
+    app.run("file.new", json!({"width": 200, "height": 100, "background": "white"})).unwrap();
+    app.run("document.activate", json!({"document": 0})).unwrap();
+    app.sync_views();
+    let mut h = harness(app);
+    h.state_mut().ui.tool = Tool::CloneStamp;
+    h.state_mut().run("tools.setBrush", json!({"brush": {"size": 10, "hardness": 1.0}})).unwrap();
+    let rev = h.state().session.active().unwrap().revision;
+    click(&mut h, 150.0, 50.0, Modifiers::ALT);
+    assert_eq!(h.state().session.active().unwrap().revision, rev, "⌥-click only sets the source");
+    h.state_mut().run("document.activate", json!({"document": 1})).unwrap();
+    h.state_mut().sync_views();
+    let view = h.state().ui.views[0].clone();
+    h.state_mut().ui.views[1] = view;
+    h.run_steps(2);
+    let source = h.state().session.documents()[0].doc.clone();
+    drag(&mut h, [30.0, 50.0], [70.0, 50.0], Modifiers::NONE);
+    let app = h.state();
+    assert_eq!(app.session.active_index(), Some(1));
+    let px = app.session.active().unwrap().doc.layers[0].surface().unwrap().rgba(50, 50);
+    assert!(px[1] > 0.9 && px[0] < 0.1 && px[2] < 0.1, "green cloned from the other document over white: {px:?}");
+    assert_eq!(*app.session.documents()[0].doc, *source, "the source document is only read");
+}
+
 #[test]
 fn clone_stamp_paints_an_empty_layer_from_the_layers_below() {
     // The reported setup: a new empty layer on top, Sample: All Layers (or Current & Below).

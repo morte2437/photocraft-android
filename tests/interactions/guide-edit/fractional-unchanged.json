@@ -1,0 +1,57 @@
+{
+  "schema": 1,
+  "name": "fractional-unchanged",
+  "steps": [
+    {
+      "event": {
+        "op": "command",
+        "id": "view.moveGuide",
+        "params": {
+          "orientation": "vertical",
+          "index": 0,
+          "position": 10.123456789
+        }
+      },
+      "expect": {
+        "vertical": [
+          10.123456789,
+          20
+        ]
+      }
+    },
+    {
+      "event": {
+        "op": "command",
+        "id": "prefs.set",
+        "params": {
+          "path": "unitsAndRulers.rulers",
+          "value": "cm"
+        }
+      },
+      "expect": {
+        "rejected": false
+      }
+    },
+    {
+      "event": {
+        "op": "begin"
+      },
+      "expect": {
+        "editing": true
+      }
+    },
+    {
+      "event": {
+        "op": "confirm"
+      },
+      "expect": {
+        "vertical": [
+          10.123456789,
+          20
+        ],
+        "history": 3,
+        "editCommands": 0
+      }
+    }
+  ]
+}

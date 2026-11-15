@@ -49,6 +49,8 @@ fn setup() -> Option<Harness> {
         let app = h.state_mut();
         app.run("file.new", json!({"width": 200, "height": 100, "background": "white"})).expect("new");
         app.sync_views();
+        // The options bar's Ratio dropdown: the contextual task bar shows the same one (#10890).
+        app.ui.panels.context_task_bar = false;
     }
     control(&mut h, "ui.set", json!({"tool": "crop", "zoom": 1.0, "center": [100, 50]}));
     h.get_by_value("Ratio").click();

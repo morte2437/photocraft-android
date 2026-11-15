@@ -30,14 +30,14 @@ pub(crate) struct PatchPreview {
 }
 
 /// The offset of the current Patch drag, if one is dragging the patch (not drawing a lasso).
-fn drag_offset(app: &mut PhotocraftApp) -> Option<[i32; 2]> {
+pub(crate) fn drag_offset(app: &mut PhotocraftApp) -> Option<[i32; 2]> {
     // Content-Aware patches are background jobs: the canvas shows the result when it is done.
     if app.ui.tool_options.patch_content_aware {
         return None;
     }
     let d = app.drag.as_ref().filter(|d| d.tool == Tool::Patch)?;
     let (start, mods) = (d.start, d.modifiers);
-    let end = d.points.last().map_or(start, |p| [p[0], p[1]]);
+    let end = crate::retouch_ui::patch_end(d, d.points.last().map_or(start, |p| [p[0], p[1]]));
     if !crate::retouch_ui::patch_drags_selection(app, start, mods) {
         return None;
     }

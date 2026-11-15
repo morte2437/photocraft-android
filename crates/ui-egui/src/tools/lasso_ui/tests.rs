@@ -170,6 +170,38 @@ fn mouse(h: &mut egui_kittest::Harness<'static, PhotocraftApp>, kind: &str, x: f
     h.run_steps(2);
 }
 
+#[test]
+fn pasteboard_click_deselects_only_in_new_mode_and_is_undoable() {
+    for mods in [Modifiers::NONE, Modifiers::SHIFT, Modifiers::ALT, Modifiers::SHIFT | Modifiers::ALT] {
+        let mut h = harness();
+        h.state_mut().run("select.rect", json!({"x": 20, "y": 20, "width": 80, "height": 80})).unwrap();
+        let history = h.state().session.active().unwrap().history.past_len();
+        mouse(&mut h, "down", -20.0, 100.0, mods);
+        mouse(&mut h, "up", -20.0, 100.0, mods);
+        let state = h.state().session.active().unwrap();
+        if mods == Modifiers::NONE {
+            assert!(state.doc.selection.is_none(), "New-mode click deselects");
+            assert_eq!(state.history.past_len(), history + 1);
+            h.state_mut().run("edit.undo", json!({})).unwrap();
+            assert!(h.state().session.active().unwrap().doc.selection.is_some(), "undo restores the selection");
+        } else {
+            assert!(state.doc.selection.is_some(), "modified selection mode keeps the selection");
+            assert_eq!(state.history.past_len(), history);
+        }
+    }
+}
+
+#[test]
+fn lasso_drag_from_pasteboard_still_creates_a_selection() {
+    let mut h = harness();
+    mouse(&mut h, "down", -20.0, 80.0, Modifiers::NONE);
+    mouse(&mut h, "move", 100.0, 80.0, Modifiers::NONE);
+    mouse(&mut h, "move", 100.0, 160.0, Modifiers::NONE);
+    mouse(&mut h, "up", -20.0, 160.0, Modifiers::NONE);
+    let selection = h.state().session.active().unwrap().doc.selection.as_ref().expect("a drag still selects");
+    assert!(selection.sample_channel(50, 120, 0) > 0.5);
+}
+
 fn freeform_harness() -> egui_kittest::Harness<'static, PhotocraftApp> {
     let mut h = harness();
     let app = h.state_mut();
@@ -442,6 +474,28 @@ fn clicking_the_last_point_again_closes_the_outline() {
     assert!(app.session.active().unwrap().doc.selection.as_ref().unwrap().sample_channel(150, 100, 0) > 0.9);
 }
 
+/// #6578: Alt-clicking the four corners of a small square leaves the outline open (the last corner
+/// lands within 8 points of the first, but is a new vertex); a click on the first point closes it.
+#[test]
+fn alt_clicking_the_last_corner_of_a_small_shape_does_not_close_it() {
+    let mut app = app();
+    app.ui.views[0].zoom = 1.0;
+    app.ui.views[0].fit_pending = false;
+    assert_eq!(app.point_zoom(), 1.0);
+    for [x, y] in [[100.0, 100.0], [106.0, 100.0], [106.0, 106.0], [100.0, 106.0]] {
+        event(&mut app, "down", x, y, Modifiers::ALT);
+        event(&mut app, "up", x, y, Modifiers::ALT);
+        assert!(active(&app), "corner ({x}, {y}): the outline stays open");
+    }
+    assert_eq!(app.drag.as_ref().unwrap().points.len(), 4, "four corners");
+    assert!(app.session.active().unwrap().doc.selection.is_none());
+    event(&mut app, "down", 100.0, 100.0, Modifiers::ALT);
+    assert!(!active(&app), "a click on the first point closes");
+    let b = app.session.active().unwrap().doc.selection.as_ref().unwrap().content_bounds();
+    let close_to = |v: i32, want: i32| v.abs_diff(want) <= 1;
+    assert!(close_to(b.x0, 100) && close_to(b.y0, 100) && close_to(b.x1, 106) && close_to(b.y1, 106), "a square, not a triangle: {b:?}");
+}
+
 #[test]
 fn shift_drag_constrains_freeform_pen_to_a_straight_line() {
     let mut app = app();
@@ -482,4 +536,59 @@ fn real_canvas_cmd_drag_outside_the_selection_moves_the_layer() {
     assert!(app.drag.is_none() && !active(app), "no outline in progress");
     assert!(app.session.active().unwrap().doc.selection.is_none(), "no selection was made");
     assert_eq!((alpha(105, 120), alpha(165, 120)), (0.0, 1.0), "the layer moved 30 px to the right");
+}
+
+#[test]
+fn alt_clicking_narrow_and_rotated_polygons_keeps_the_fourth_corner() {
+    for corners in [[[100.0, 100.0], [200.0, 100.0], [200.0, 106.0], [100.0, 106.0]], [[100.0, 100.0], [160.0, 180.0], [155.2, 183.6], [95.2, 103.6]]] {
+        let mut app = app();
+        app.ui.views[0].zoom = 1.0;
+        app.ui.views[0].fit_pending = false;
+        for [x, y] in corners {
+            event(&mut app, "down", x, y, Modifiers::ALT);
+            event(&mut app, "up", x, y, Modifiers::ALT);
+            assert!(active(&app), "{corners:?}");
+        }
+        assert_eq!(app.drag.as_ref().unwrap().points.len(), 4);
+        assert!(app.session.active().unwrap().doc.selection.is_none());
+        event(&mut app, "down", 100.0, 100.0, Modifiers::ALT);
+        assert!(!active(&app));
+        assert!(app.session.active().unwrap().doc.selection.is_some());
+    }
+}
+
+/// #9841: the Lasso reads its own raw pointer events (`lasso_ui::canvas_input`), so the
+/// `Buttons` starvation the other tools get does not reach it. A press that dismisses the
+/// canvas tool menu must not draw a Lasso selection, and the next ordinary drag must work.
+#[test]
+fn a_menu_dismissal_press_never_draws_a_lasso_selection() {
+    let mut h = harness();
+    // Right-click on the canvas: the selection menu opens.
+    let menu_at = crate::canvas::ViewXform::active(h.state()).unwrap().to_screen(300.0, 100.0);
+    h.event(Event::PointerMoved(menu_at));
+    h.run_steps(1);
+    h.event(Event::PointerButton { pos: menu_at, button: PointerButton::Secondary, pressed: true, modifiers: Modifiers::NONE });
+    h.run_steps(1);
+    h.event(Event::PointerButton { pos: menu_at, button: PointerButton::Secondary, pressed: false, modifiers: Modifiers::NONE });
+    h.run_steps(2);
+    assert!(h.state().ui.canvas_tool_menu.is_some(), "right-click opens the selection menu");
+    let revision = h.state().session.active().unwrap().revision;
+    // The dismissal press and drag, well clear of the menu.
+    mouse(&mut h, "down", 50.0, 250.0, Modifiers::NONE);
+    assert!(h.state().ui.canvas_tool_menu.is_none(), "the outside press dismisses the menu");
+    mouse(&mut h, "move", 50.0, 200.0, Modifiers::NONE);
+    mouse(&mut h, "move", 150.0, 200.0, Modifiers::NONE);
+    mouse(&mut h, "move", 150.0, 250.0, Modifiers::NONE);
+    mouse(&mut h, "up", 150.0, 250.0, Modifiers::NONE);
+    h.run_steps(2);
+    assert!(h.state().drag.is_none(), "the consumed gesture must not leave a Lasso drag behind");
+    assert!(h.state().session.active().unwrap().doc.selection.is_none(), "the consumed gesture must draw no selection");
+    assert_eq!(h.state().session.active().unwrap().revision, revision, "and no history step");
+    // The next ordinary drag draws one, so the guard did not stick.
+    mouse(&mut h, "down", 50.0, 50.0, Modifiers::NONE);
+    mouse(&mut h, "move", 90.0, 40.0, Modifiers::NONE);
+    mouse(&mut h, "move", 150.0, 60.0, Modifiers::NONE);
+    mouse(&mut h, "up", 150.0, 60.0, Modifiers::NONE);
+    h.run_steps(2);
+    assert!(h.state().session.active().unwrap().doc.selection.is_some(), "an ordinary Lasso drag draws again");
 }

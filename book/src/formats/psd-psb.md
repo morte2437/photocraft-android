@@ -1,6 +1,6 @@
 # PSD and PSB
 
-`photocraft-psd` is a standalone clean-room reader and writer based on Adobe's public PSD specification. It supports PSD version 1 and PSB version 2, preserves unknown blocks for round-trip fidelity, and decodes channel data lazily.
+`craft-psd` is a standalone clean-room reader and writer based on Adobe's public PSD specification. It supports PSD version 1 and PSB version 2, preserves unknown blocks for round-trip fidelity, and decodes channel data lazily.
 
 The parser accepts all four PSD compression methods handled by the crate and represents format-level structures before `photocraft-io` maps them to `photocraft-doc`. The current public API and fidelity behavior are documented in [`crates/psd/README.md`](https://github.com/storytold/photocraft/blob/main/crates/psd/README.md).
 

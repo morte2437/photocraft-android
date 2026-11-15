@@ -96,3 +96,113 @@ fn selection_mixing_without_alpha_keeps_every_channel_independent() {
         assert_eq!(data, vec![0.375; ch]);
     }
 }
+
+#[test]
+/// Exercise shared selection mixing with extreme finite HDR through five independently checked native filter entry
+/// points.
+fn selected_finite_hdr_is_safe_through_all_five_checked_native_apis() {
+    let ctl = photocraft_raster::Interrupt::NONE;
+    let b = Rect::new(0, 0, 1, 1);
+    let mut source = Surface::new(PixelFormat::RGBA32F);
+    source.write_pixel(0, 0, &[f32::MAX, 0., 0., 1.]);
+    let mut kernel = vec![0.; 25];
+    kernel[12] = -1.;
+    let p = convolution::Params {
+        kernel,
+        scale: 1.,
+        offset: 0.,
+        channels: vec![true, false, false, false],
+        alpha_weighted: false,
+        edge: convolution::Edge::Repeat,
+    };
+    let output = convolution::apply_with(&source, &p, b, b, Some(&selection(0.5)), &ctl).unwrap();
+    assert_eq!(output.pixel(0, 0), vec![0., 0., 0., 1.]);
+    let p = channel_noise::Params { amounts: vec![400., 0., 0., 0.], distribution: Distribution::Uniform, monochromatic: false, relative: true, seed: 0 };
+    let baseline = channel_noise::apply_with(&source, &p, b, b, None, &ctl).unwrap().pixel(0, 0)[0];
+    assert!(baseline < 0.);
+    let output = channel_noise::apply_with(&source, &p, b, b, Some(&selection(0.5)), &ctl).unwrap();
+    assert_eq!(output.pixel(0, 0)[0], (f64::from(f32::MAX) + (f64::from(baseline) - f64::from(f32::MAX)) * 0.5) as f32);
+    let b = Rect::new(0, 0, 3, 3);
+    source.fill_rect(b, &[-f32::MAX, 0., 0., 1.]);
+    source.write_pixel(1, 1, &[f32::MAX, 0., 0., 1.]);
+    let p = rank::Params { radius: 1, color_percentile: 50., alpha_percentile: 50., shape: rank::Neighborhood::Square, channels: None };
+    let output = rank::apply_with(&source, &p, b, b, Some(&selection(0.5)), &ctl).unwrap();
+    assert_eq!(output.pixel(1, 1), vec![0., 0., 0., 1.]);
+    source.fill_rect(b, &[f32::MAX, 0., 0., 1.]);
+    source.write_pixel(1, 1, &[-f32::MAX, 0., 0., 1.]);
+    let output =
+        coverage::apply_with(&source, coverage::Operation::FillHoles { connectivity: 4, alpha_only: false }, b, b, Some(&selection(0.5)), &ctl).unwrap();
+    assert_eq!(output.pixel(1, 1), vec![0., 0., 0., 1.]);
+    let b = Rect::new(0, 0, 2, 1);
+    source.write_pixel(0, 0, &[f32::MAX, 0., 0., 1.]);
+    source.write_pixel(1, 0, &[-f32::MAX, 0., 0., 1.]);
+    let mut mask = selection(1.);
+    mask.write_pixel(1, 0, &[0.5]);
+    let output = average::apply_with(&source, b, b, Some(&mask), &ctl).unwrap();
+    assert!((f64::from(output.pixel(1, 0)[0]) / f64::from(f32::MAX) + 1. / 3.).abs() < 1e-6);
+}
+
+#[test]
+/// Verify changed-alpha mixing handles finite HDR roundoff and rejects unrepresentable results without source
+/// mutation.
+fn changed_alpha_hdr_roundoff_and_unrepresentable_mix_do_not_corrupt_source() {
+    let b = Rect::new(0, 0, 1, 1);
+    let mut source = Surface::new(PixelFormat::RGBA32F);
+    source.write_pixel(0, 0, &[f32::MAX, 0., 0., 0.001]);
+    let original = source.clone();
+    let out = coverage::apply_with(&source, coverage::Operation::SetAlpha(1.), b, b, Some(&selection(0.003)), &photocraft_raster::Interrupt::NONE).unwrap();
+    assert_eq!(out.pixel(0, 0)[0], f32::MAX);
+    assert_eq!(source, original);
+    assert_eq!(out.pixel(0, 0)[3], 0.001 + (1. - 0.001) * 0.003);
+    let b = Rect::new(0, 0, 3, 3);
+    source.fill_rect(b, &[f32::MAX, 0., 0., 1.]);
+    source.write_pixel(1, 1, &[-f32::MAX, 0., 0., -0.5]);
+    let original = source.clone();
+    assert_eq!(
+        coverage::apply_with(
+            &source,
+            coverage::Operation::FillHoles { connectivity: 4, alpha_only: false },
+            b,
+            b,
+            Some(&selection(0.5)),
+            &photocraft_raster::Interrupt::NONE
+        )
+        .unwrap_err(),
+        coverage::Error::NonFiniteSample
+    );
+    assert_eq!(source, original);
+}
+
+#[test]
+/// Pin ordinary finite selection arithmetic bit-for-bit so overflow safeguards do not alter established native
+/// output.
+fn finite_ordinary_selection_results_keep_legacy_float_bits() {
+    let b = Rect::new(0, 0, 1, 1);
+    for a in [0., 0.25, 0.75, 1.] {
+        for f in [0., 0.25, 0.75, 1.] {
+            for k in [0., 0.1, 0.5, 0.9, 1.] {
+                let before = vec![-2., 0.25, 4., a];
+                let filtered = vec![4., 0.75, -2., f];
+                let mut expected = filtered.clone();
+                if k == 0. {
+                    expected = before.clone();
+                } else if k < 1. {
+                    if a != f {
+                        let ma = a + (f - a) * k;
+                        for c in 0..3 {
+                            expected[c] = if ma > 0. { (before[c] * (a * (1. - k)) + filtered[c] * (f * k)) / ma } else { 0. };
+                        }
+                        expected[3] = ma;
+                    } else {
+                        for c in 0..4 {
+                            expected[c] = before[c] + (filtered[c] - before[c]) * k;
+                        }
+                    }
+                }
+                let mut actual = filtered;
+                mix_selection(&mut actual, b, &selection(k), &Image { rect: b, ch: 4, data: before }, true);
+                assert_eq!(actual.iter().map(|v| v.to_bits()).collect::<Vec<_>>(), expected.iter().map(|v| v.to_bits()).collect::<Vec<_>>());
+            }
+        }
+    }
+}

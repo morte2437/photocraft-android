@@ -21,9 +21,9 @@
 //! every ink's Lab equivalent in image resource 1066 (Alternate Duotone Colors): version 1, a
 //! count, then one 10-byte colour per ink in the same order.
 
+use craft_psd::aco::AcoColor;
 use photocraft_doc::adjust::CurvePoint;
 use photocraft_doc::{Duotone, DuotoneInk};
-use photocraft_psd::aco::AcoColor;
 
 /// Length of the block Photoshop writes.
 pub(crate) const BLOCK_LEN: usize = 524;

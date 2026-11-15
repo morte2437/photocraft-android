@@ -238,6 +238,72 @@ fn droplet_folder_follows_the_document_or_uses_a_safe_fallback() {
     assert_eq!(droplet_default_dir(&app), "/tmp/photocraft");
 }
 
+/// Two actions of one name in sets A and B: Create Droplet starts on the selected action's set
+/// and saves that set's steps, not the first action of the name.
+#[test]
+fn create_droplet_saves_the_selected_sets_action_among_same_named_ones() {
+    let (mut app, ctx) = app();
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("b.pcdroplet").to_string_lossy().into_owned();
+    app.run("file.new", json!({"width": 2, "height": 1})).unwrap();
+    let mut list = Vec::new();
+    for (set, step) in [("A", "image.adjustments.invert"), ("B", "image.imageRotation.90cw")] {
+        let mut action = photocraft_engine::actions_cmds::Action::new("Retouch", vec![(step.into(), json!({}))]);
+        action.set = Some(set.into());
+        list.push(action);
+    }
+    app.session.actions.list = list;
+    app.ui.actions.selected = Some(1);
+    let id = crate::menus::invoke(&mut app, &ctx, "file.automate.createDroplet", json!({})).unwrap()["dialog"].as_u64().unwrap();
+    let fields = &mut app.ui.dialog_mut(id).unwrap().fields;
+    assert_eq!(fields["__choices"]["set"], json!(["A", "B"]));
+    assert_eq!(fields["set"], "B");
+    fields.insert("path".into(), json!(path));
+    fields.insert("output".into(), json!(dir.path().join("out").to_string_lossy()));
+    fields.insert("shim".into(), json!(false));
+    crate::dialogs::confirm(&mut app, id).unwrap();
+    let saved: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    assert_eq!(saved["action"]["steps"], json!([["image.imageRotation.90cw", {}]]));
+}
+
+/// The droplet contains the form's chosen action; cancelling writes nothing.
+#[test]
+fn create_droplet_uses_the_action_selected_in_the_form() {
+    let (mut app, ctx) = app();
+    let dir = tempfile::tempdir().unwrap();
+    let input = dir.path().join("source.png").to_string_lossy().into_owned();
+    let output = dir.path().join("out").to_string_lossy().into_owned();
+    let path = dir.path().join("chosen.pcdroplet").to_string_lossy().into_owned();
+    app.run("file.new", json!({"width": 2, "height": 1})).unwrap();
+    app.run("file.saveACopy", json!({"path": input})).unwrap();
+    app.session.actions.list = vec![
+        photocraft_engine::actions_cmds::Action::new("Invert", vec![("image.adjustments.invert".into(), json!({}))]),
+        photocraft_engine::actions_cmds::Action::new("Rotate", vec![("image.imageRotation.90cw".into(), json!({}))]),
+    ];
+    app.ui.actions.selected = Some(0);
+    let id = crate::menus::invoke(&mut app, &ctx, "file.automate.createDroplet", json!({})).unwrap()["dialog"].as_u64().unwrap();
+    let fields = &mut app.ui.dialog_mut(id).unwrap().fields;
+    assert_eq!(fields["__choices"]["action"], json!(["Invert", "Rotate"]));
+    assert!(!fields.contains_key("steps"));
+    fields.insert("action".into(), json!("Rotate"));
+    fields.insert("path".into(), json!(path));
+    fields.insert("output".into(), json!(output));
+    fields.insert("shim".into(), json!(false));
+    crate::dialogs::confirm(&mut app, id).unwrap();
+    let saved: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    assert_eq!(saved["action"]["steps"], json!([["image.imageRotation.90cw", {}]]));
+    let result = photocraft_engine::Session::new().execute("file.automate.runDroplet", json!({"droplet": path, "input": [input]})).unwrap();
+    assert_eq!(result["errors"], json!([]));
+    let image = photocraft_io::import("source.png", &std::fs::read(result["files"][0].as_str().unwrap()).unwrap()).unwrap().document;
+    assert_eq!((image.size.width, image.size.height), (1, 2));
+
+    let cancelled = dir.path().join("cancelled.pcdroplet");
+    let id = crate::menus::invoke(&mut app, &ctx, "file.automate.createDroplet", json!({})).unwrap()["dialog"].as_u64().unwrap();
+    app.ui.dialog_mut(id).unwrap().fields.insert("path".into(), json!(cancelled.to_string_lossy()));
+    crate::dialogs::cancel(&mut app, id).unwrap();
+    assert!(!cancelled.exists());
+}
+
 #[test]
 fn save_for_web_dialog_runs_the_command() {
     let (mut app, ctx) = app();
@@ -864,6 +930,67 @@ fn web_preview_keeps_its_size_and_zoom_while_the_pointer_moves() {
     assert!(drifted.is_empty(), "the dialog or its zoom changed while the pointer moved: {drifted:#?}");
 }
 
+/// Wide settings values stay readable and do not widen the dialog during real control interaction.
+#[test]
+fn web_settings_keep_dialog_width_stable_with_large_ui_font() {
+    use egui_kittest::kittest::Queryable;
+
+    let mut h = egui_kittest::Harness::builder().with_size(egui::vec2(2560.0, 1380.0)).with_pixels_per_point(1.0).with_max_steps(64).build_eframe(|cc| {
+        PhotocraftApp::setup_context(&cc.egui_ctx, Default::default());
+        let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
+        app.session.edit_prefs(|prefs| prefs.interface.ui_font_size = photocraft_engine::prefs::UiFontSize::Large);
+        app.run("file.new", json!({"width": 1080, "height": 1349, "name": "Screenshot_20260928_133405_Facebook.jpg"})).unwrap();
+        let id = open_web(&mut app);
+        let d = app.ui.dialog_mut(id).unwrap();
+        d.fields.insert("format".into(), json!("png24"));
+        d.fields.insert("resample".into(), json!("bicubic"));
+        app
+    });
+    h.run_steps(4);
+    let dialog = |h: &egui_kittest::Harness<'_, PhotocraftApp>| {
+        let rects: Vec<egui::Rect> = h.ctx.data(|m| m.get_temp(egui::Id::unique("pc-dialog-rects"))).unwrap();
+        rects[0]
+    };
+    let before = dialog(&h).width();
+    assert!(before < 2500.0, "dialog filled the window before the input baseline");
+    let check_width = |h: &egui_kittest::Harness<'_, PhotocraftApp>| {
+        let now = dialog(h).width();
+        assert!((now - before).abs() < 0.5, "input repaints widened Save for Web: {before} -> {now}");
+    };
+    let combo = h.get_by_role_and_label(egui::accesskit::Role::ComboBox, "Resample");
+    assert_eq!(combo.value().as_deref(), Some("Bicubic (smooth gradients)"));
+    let r = combo.rect();
+    assert!((r.width() - 170.0).abs() < 0.5, "the selected value stays inside its assigned width: {r:?}");
+    assert!(r.height() > 28.0, "the full selected value wraps instead of truncating: {r:?}");
+    assert!(dialog(&h).contains_rect(r), "the wrapped dropdown and its arrow remain inside the dialog");
+
+    for i in 0..8 {
+        h.event(egui::Event::PointerMoved(r.center() + egui::vec2(i as f32, 0.0)));
+        h.step();
+        check_width(&h);
+    }
+    h.get_by_role_and_label(egui::accesskit::Role::ComboBox, "Resample").click();
+    h.run_steps(2);
+    check_width(&h);
+    let option = h.get_by_label("Bicubic Smoother (enlargement)");
+    assert!(option.rect().width() > r.width(), "popup options remain fully readable instead of inheriting the button width");
+    h.key_press(egui::Key::ArrowDown);
+    h.step();
+    check_width(&h);
+    assert_eq!(h.state().ui.dialogs[0].fields["resample"], "bicubicSmoother");
+    h.key_press(egui::Key::Enter);
+    h.run_steps(2);
+    check_width(&h);
+
+    let pane = h.state().ui.dialogs[0].fields["__previewRects"][0].clone();
+    let at = egui::pos2(pane[0].as_f64().unwrap() as f32 + 20.0, pane[1].as_f64().unwrap() as f32 + 20.0);
+    for i in 0..30 {
+        h.event(egui::Event::PointerMoved(at + egui::vec2(i as f32 * 3.0, i as f32)));
+        h.step();
+        check_width(&h);
+    }
+}
+
 #[test]
 fn palette_draft_survives_navigation_and_resets_when_colors_change() {
     let (app, _) = app();
@@ -1090,4 +1217,76 @@ fn a_turn_takes_the_printable_area_with_the_paper() {
         take_turned_page(&mut f, &json!({"printerSettings": "newer", "paper": [842.29, 1191.14], "printable": area}));
         assert!(f.get("printable").is_none(), "{area}");
     }
+}
+
+#[test]
+fn the_web_preview_selects_slices_and_saves_only_the_selected_ones() {
+    // A 120 × 80 document with a user slice on its left half; the right half is auto slice 02.
+    let (mut app, _) = app();
+    app.run("slice.new", json!({"rect": [0, 0, 60, 80], "name": "left"})).unwrap();
+    let id = open_web(&mut app);
+    let fields = &mut app.ui.dialog_mut(id).unwrap().fields;
+    fields.insert("__view".into(), json!("optimized"));
+    fields.insert("format".into(), json!("png24"));
+    let mut h = egui_kittest::Harness::builder().with_size(egui::vec2(1600.0, 1100.0)).build_ui_state(
+        |ui, app| {
+            crate::color_picker_ui::widget_tick(app, ui.ctx());
+            if ui.ctx().fonts(|f| f.families().contains(&egui::FontFamily::Name("semibold".into()))) {
+                crate::dialogs::show(app, ui.ctx());
+            }
+        },
+        app,
+    );
+    PhotocraftApp::setup_context(&h.ctx, Default::default());
+    h.run_steps(5);
+    let r = &h.state().ui.dialogs[0].fields["__previewRects"][0];
+    let pane = egui::Rect::from_min_max(
+        egui::pos2(r[0].as_f64().unwrap() as f32, r[1].as_f64().unwrap() as f32),
+        egui::pos2(r[2].as_f64().unwrap() as f32, r[3].as_f64().unwrap() as f32),
+    );
+    // The preview fits the document in the pane, centred.
+    let scale = (pane.width() / 120.0).min(pane.height() / 80.0);
+    let at = |x: f32, y: f32| pane.center() + egui::vec2(x - 60.0, y - 40.0) * scale;
+    let click = |h: &mut egui_kittest::Harness<'_, PhotocraftApp>, pos: egui::Pos2, modifiers: egui::Modifiers| {
+        // The window reports held modifiers as their own event as well as on the button events.
+        h.event(egui::Event::ModifiersChanged(modifiers));
+        h.event(egui::Event::PointerMoved(pos));
+        h.step();
+        h.event(egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed: true, modifiers });
+        h.step();
+        h.event(egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed: false, modifiers });
+        h.run_steps(2);
+    };
+    let selected = |h: &egui_kittest::Harness<'_, PhotocraftApp>| h.state().ui.dialogs[0].fields.get("__selectedSlices").cloned();
+    click(&mut h, at(30.0, 40.0), egui::Modifiers::NONE);
+    assert_eq!(selected(&h), Some(json!([1])), "a click selects the slice under the pointer");
+    click(&mut h, at(90.0, 40.0), egui::Modifiers::SHIFT);
+    assert_eq!(selected(&h), Some(json!([1, 2])), "Shift-click adds a slice");
+    click(&mut h, at(30.0, 40.0), egui::Modifiers::SHIFT);
+    assert_eq!(selected(&h), Some(json!([2])), "Shift-click on a selected slice removes it");
+    // The view's own drag still pans rather than selecting.
+    assert_eq!(h.state().ui.dialogs[0].fields["__zoom"], json!(null));
+
+    let mut fields = h.state().ui.dialogs[0].fields.clone();
+    fields.insert("slices".into(), json!("selected"));
+    let p = web_params(&fields, true).unwrap();
+    assert_eq!(p["numbers"], json!([2]));
+    fields.insert("__selectedSlices".into(), json!([]));
+    assert!(web_params(&fields, true).is_err(), "Selected Slices with nothing selected is an error, not every slice");
+    assert!(web_params(&fields, false).unwrap().get("numbers").is_none(), "a document without slices ignores the choice");
+
+    let mut app = h.into_state();
+    let downloads = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+    let captured = downloads.clone();
+    app.services.write = Some(Box::new(move |path, _| {
+        captured.borrow_mut().push(path.to_string());
+        Ok(())
+    }));
+    let mut p = p;
+    p["dir"] = json!(".");
+    p["html"] = json!(false);
+    download_for_web(&mut app, p).unwrap();
+    let files = downloads.borrow();
+    assert_eq!(files.len(), 1, "only the selected slice is saved: {files:?}");
+    assert!(!files[0].contains("left"), "{files:?}");
 }

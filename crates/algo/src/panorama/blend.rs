@@ -555,7 +555,8 @@ pub fn try_multiband_batched(
     max_band_budget: Option<usize>,
 ) -> Result<(Vec<f32>, Vec<f32>), AllocationError> {
     let ch = imgs.first().map_or(1, |i| i.ch);
-    let levels = levels.max(1);
+    // Levels past 1x1 add nothing; 16 (real use is at most 7) keeps the shifts below in range.
+    let levels = levels.clamp(1, 16);
     let cost = |im: &RoiImage| band_cost(im, w, h, ch, levels);
     if let Some(limit) = max_band_budget {
         for im in imgs {

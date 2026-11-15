@@ -1,11 +1,10 @@
-//! Photoshop's Distort filter steps (#10605): Pinch, Polar Coordinates, Shear, Spherize, Twirl, Wave and
-//! ZigZag, each key in recorded order with the limits and defaults Photoshop measures.
+//! Photoshop's Distort filter steps, with keys in recorded order and measured limits and defaults.
 
-use super::descriptors::{desc, enm, num, trimmed};
+use super::descriptors::{code, desc, enm, jstr, num, path_text, path_value, trimmed};
 use super::events::pixel_target;
 use super::fields::{Mapped, step};
 use super::tables::{lookup, lookup_back};
-use super::{D, Descriptor, Map, Value, json};
+use super::{D, Descriptor, Id, Map, Value, json};
 
 /// Whether every key of `d` is one of `keys` (codes compare without their space padding).
 fn only_keys(d: &Descriptor, keys: &[&str]) -> bool {
@@ -37,6 +36,73 @@ fn enum_of(ty: &str) -> impl Fn(&D) -> Option<String> + '_ {
         D::Enumerated { type_id, value } if trimmed(type_id) == ty.trim_end() => Some(trimmed(value)),
         _ => None,
     }
+}
+
+/// Only the measured Windows Displace descriptor has a verified map path and settings.
+pub(super) fn displace_from(d: &Descriptor) -> Mapped {
+    displace_params(d).map_or(Mapped::Unsupported { harmless: false }, |params| step("filter.distort.displace", params))
+}
+
+/// Decode only the measured, byte-preserving Windows descriptor.
+fn displace_params(d: &Descriptor) -> Option<Value> {
+    if d.class_id != code("null")
+        || d.items.len() != 5
+        || d.items.iter().any(|(key, _)| !matches!(key, Id::Code(_)))
+        || d.get("DspM") != Some(&enm("DspM", "StrF"))
+        || d.get("UndA") != Some(&enm("UndA", "RptE"))
+    {
+        return None;
+    }
+    let scale = |key| match d.get(key) {
+        Some(D::Integer(value)) if (-999..=999).contains(value) => Some(*value),
+        _ => None,
+    };
+    let horizontal = scale("HrzS")?;
+    let vertical = scale("VrtS")?;
+    let wire = d.get("DspF")?;
+    let path = path_text(wire)?;
+    // The shared decoder tolerates malformed lengths and UTF-16 for legacy callers. The
+    // measured form must reproduce every byte, and an embedded NUL is never a file name.
+    if path.contains('\0') || &path_value(&path) != wire {
+        return None;
+    }
+    // An action file is shared like a document, and playback reads this path. Map only a path a
+    // document may name: a local absolute file. Others stay kept steps, so playing a downloaded
+    // set never opens a network share (which sends the user's credentials) or a device.
+    crate::doc_path::resolve_in(&path, None).ok()?;
+    Some(json!({"horizontal":horizontal,"vertical":vertical,"fit":"stretch","undefinedAreas":"repeat","mapPath":path}))
+}
+
+/// Write the measured form with native defaults for omitted settings, without dropping
+/// settings the descriptor cannot represent.
+pub(super) fn displace_to(_: &str, p: &Value) -> Option<Descriptor> {
+    if !pixel_target(p) || !sets_only(p, &["horizontal", "vertical", "fit", "undefinedAreas", "mapPath", "target"]) {
+        return None;
+    }
+    if p.get("fit").is_some_and(|v| v.as_str() != Some("stretch")) || p.get("undefinedAreas").is_some_and(|v| v.as_str() != Some("repeat")) {
+        return None;
+    }
+    let scale = |key| {
+        let number = match p.get(key) {
+            None => 10.0,
+            Some(value) => value.as_f64()?,
+        };
+        let value = number as i32;
+        ((-999..=999).contains(&value) && f64::from(value) == number).then_some(D::Integer(value))
+    };
+    let path = jstr(p, "mapPath")?;
+    // The header carries a u32 byte length, including its 12 bytes and the UTF-16 terminator.
+    if path.is_empty() || path.contains('\0') || path.len() > ((u32::MAX - 14) / 2) as usize {
+        return None;
+    }
+    Some(
+        desc("null")
+            .with("HrzS", scale("horizontal")?)
+            .with("VrtS", scale("vertical")?)
+            .with("DspM", enm("DspM", "StrF"))
+            .with("UndA", enm("UndA", "RptE"))
+            .with("DspF", path_value(path)),
+    )
 }
 
 /// One key of a Distort filter's step, in recorded order.

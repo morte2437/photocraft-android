@@ -122,15 +122,28 @@ fn layer_controls(app: &mut PhotocraftApp, ui: &mut egui::Ui, layer: &Layer) {
         });
         ui.add_space(6.0);
     }
-    let mut o = layer.opacity * 100.0;
-    let r = widgets::slider_row(ui, tl!("Opacity"), &mut o, 0.0..=100.0, "%", None);
-    if r.drag_stopped() || (r.changed() && !r.dragged()) {
-        let _ = app.run("layer.setProps", json!({"layer": layer.id.0, "opacity": o / 100.0}));
+    pct_slider(app, ui, layer, "opacity", tl!("Opacity"), layer.opacity);
+    pct_slider(app, ui, layer, "fill", crate::i18n::tr_ctx(crate::i18n::current(), "layers", "Fill"), layer.fill_opacity);
+}
+
+/// An Opacity or Fill (`key`) slider, applied as it moves: a drag is one history step, as with the
+/// Layers panel's sliders. Applying only when the drag stopped wrote back the old value, since the
+/// slider takes the pointer only while it is dragged or clicked, not on the release (#9683, #7601).
+fn pct_slider(app: &mut PhotocraftApp, ui: &mut egui::Ui, layer: &Layer, key: &str, label: &str, current: f32) {
+    let mut v = current * 100.0;
+    let r = widgets::slider_row(ui, label, &mut v, 0.0..=100.0, "%", None);
+    let stamp = r.id.with("drag-stamp");
+    if r.drag_started() {
+        let n = ui.ctx().cumulative_pass_nr();
+        ui.data_mut(|d| d.insert_temp(stamp, n));
     }
-    let mut f = layer.fill_opacity * 100.0;
-    let r = widgets::slider_row(ui, crate::i18n::tr_ctx(crate::i18n::current(), "layers", "Fill"), &mut f, 0.0..=100.0, "%", None);
-    if r.drag_stopped() || (r.changed() && !r.dragged()) {
-        let _ = app.run("layer.setProps", json!({"layer": layer.id.0, "fill": f / 100.0}));
+    if r.changed() {
+        let drag = if r.dragged() { ui.data(|d| d.get_temp::<u64>(stamp)) } else { None };
+        let (id, p) = super::options_bar::pct_action(&json!({"layer": layer.id.0}), key, v, drag);
+        if let Err(e) = app.run(&id, p) {
+            app.ui.status = e;
+            app.ui.status_error = true;
+        }
     }
 }
 
@@ -151,6 +164,10 @@ fn properties_body_inner(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
         && crate::mask_props_ui::targeted(app, layer)
     {
         crate::props_layout::header(ui, layer);
+        if layer.frame.is_some() {
+            crate::frame_tool::properties(app, ui, layer);
+            return;
+        }
         crate::mask_props_ui::properties(app, ui, layer);
         return;
     }
@@ -186,6 +203,8 @@ fn properties_body_inner(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
         adjustment_controls(app, ui, id, adj);
     } else if layer.artboard().is_some() {
         crate::artboard_ui::properties(app, ui, layer);
+    } else if layer.frame.is_some() {
+        crate::frame_tool::properties(app, ui, layer);
     } else if t.pro {
         // Transform, Align, the kind's sections and Quick Actions.
         crate::layer_props_ui::properties(app, ui, layer);
@@ -253,8 +272,9 @@ pub(super) fn select_and_mask_button(app: &mut PhotocraftApp, ui: &mut egui::Ui)
     }
 }
 
-/// New / add / subtract / intersect selection buttons (shared by selection tools).
-pub(super) fn selection_mode_buttons(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
+/// New / add / subtract / intersect selection buttons (shared by selection tools, and the Patch
+/// and Content-Aware Move tools, which lasso their area).
+pub(crate) fn selection_mode_buttons(mode: &mut u8, ui: &mut egui::Ui) {
     ui.spacing_mut().item_spacing.x = 2.0;
     for (i, (icon, tip)) in [
         ("square", tl!("New selection").to_string()),
@@ -265,9 +285,79 @@ pub(super) fn selection_mode_buttons(app: &mut PhotocraftApp, ui: &mut egui::Ui)
     .iter()
     .enumerate()
     {
-        if icons::button(ui, icon, 24.0, app.ui.selection_mode == i as u8, tip).clicked() {
-            app.ui.selection_mode = i as u8;
+        if icons::button(ui, icon, 24.0, *mode == i as u8, tip).clicked() {
+            *mode = i as u8;
         }
     }
     ui.spacing_mut().item_spacing.x = 8.0;
+}
+
+#[cfg(test)]
+mod tests {
+    use egui::accesskit::Role;
+    use egui_kittest::kittest::{NodeT, Queryable};
+
+    use super::*;
+
+    /// #9683, #7601: dragging the Studio Properties panel's Opacity or Fill slider bounced back to
+    /// the old value on release. A drag keeps where it was let go, as one history step.
+    #[test]
+    fn opacity_and_fill_sliders_keep_a_drag() {
+        for key in ["Opacity", "Fill"] {
+            let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
+            app.run("file.new", json!({"width": 200, "height": 120})).unwrap();
+            app.run("layer.new.layer", json!({})).unwrap();
+            let mut h = egui_kittest::Harness::builder().with_size(vec2(320.0, 400.0)).build_ui_state(
+                |ui, app: &mut PhotocraftApp| {
+                    if ui.ctx().cumulative_pass_nr() == 0 {
+                        PhotocraftApp::setup_context(ui.ctx(), crate::theme::ThemeKind::ALL[0]);
+                        return;
+                    }
+                    let st = app.session.active().unwrap();
+                    let layer = st.doc.layer(st.active_layer.unwrap()).unwrap().clone();
+                    layer_controls(app, ui, &layer);
+                },
+                app,
+            );
+            h.run_steps(3);
+            let value = |h: &egui_kittest::Harness<'_, PhotocraftApp>| {
+                let st = h.state().session.active().unwrap();
+                let l = st.doc.layer(st.active_layer.unwrap()).unwrap();
+                if key == "Opacity" { l.opacity } else { l.fill_opacity }
+            };
+            let steps = |h: &egui_kittest::Harness<'_, PhotocraftApp>| h.state().session.active().unwrap().history.entries().len();
+            let before = steps(&h);
+            assert!((value(&h) - 1.0).abs() < 1e-6);
+            let r = h
+                .query_all_by_role(Role::Slider)
+                .find(|n| n.accesskit_node().label().as_deref() == Some(key))
+                .map(|n| n.rect())
+                .unwrap_or_else(|| panic!("no {key} slider"));
+            // The press lands away from the current value and the release moves on again, so the
+            // press and release frames change the value as well as the drag.
+            let (from, to) = (egui::pos2(r.left() + r.width() * 0.8, r.center().y), egui::pos2(r.left() + r.width() * 0.35, r.center().y));
+            h.hover_at(from);
+            h.run_steps(1);
+            h.drag_at(from);
+            h.run_steps(1);
+            let mut last = value(&h);
+            for i in 1..=6 {
+                h.hover_at(from + (to - from) * (i as f32 / 6.0));
+                h.run_steps(1);
+                let v = value(&h);
+                assert!(v < last, "{key}: the value follows the drag, not only the release ({last} to {v})");
+                last = v;
+            }
+            // The pointer moves on and releases in one frame, as a quick flick does.
+            let release = to - egui::vec2(r.width() * 0.05, 0.0);
+            h.hover_at(release);
+            h.drop_at(release);
+            h.run_steps(3);
+            let v = value(&h);
+            assert!(v > 0.15 && v < last, "{key}: the release position wasn't applied ({last} to {v})");
+            assert_eq!(steps(&h), before + 1, "{key}: one history step for the drag");
+            h.state_mut().run("edit.undo", json!({})).unwrap();
+            assert!((value(&h) - 1.0).abs() < 1e-6, "{key}: one undo reverts the whole drag");
+        }
+    }
 }

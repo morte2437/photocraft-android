@@ -1,7 +1,8 @@
 use super::defaults::{apply, formatting_params, open_color_picker, shown_scale, target, target_doc, type_unit};
 use super::editing::{cancel, commit_with};
-use super::fonts::{font_picker, fonts_ready, selected_style, style_label, styles};
+use super::fonts::{font_picker, font_picker_tip, fonts_ready, selected_style, style_label, styles};
 use super::keys::is_vertical;
+use super::panel::{MetricChoice, SIZE_PRESETS, preset_items};
 use super::{Color32, LayerId, PhotocraftApp, Stroke, byte_of, insertion_style, json, selected_styles, text_layer};
 
 /// Photoshop's Type options bar.
@@ -43,6 +44,7 @@ pub fn options_bar(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
                 None => apply(app, ui.ctx(), json!({"font": fam})),
             }
         }
+        font_picker_tip(ui, tl!("Search and select fonts"));
         let style_family = if fam.is_empty() { styles_at(app).map(|(c, _)| c.font_family).unwrap_or_default() } else { fam.clone() };
         let opts: Vec<(String, String)> = styles(&style_family).into_iter().map(|s| (s.clone(), style_label(&s))).collect();
         let opts_ref: Vec<(String, &str)> = opts.iter().map(|(a, b)| (a.clone(), b.as_str())).collect();
@@ -50,16 +52,25 @@ pub fn options_bar(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
             app.ui.tool_options.type_style = style.clone();
             apply(app, ui.ctx(), json!({"fontStyle": style}));
         }
+        // The menu's button, by the id its combo box takes from "type-style"; "Style" stays its name.
+        if let Some(menu) = ui.ctx().read_response(ui.make_persistent_id(egui::IdSalt::new("type-style"))) {
+            menu.on_hover_text(tl!("Set font style"));
+        }
     }
     let (r, icon) = ui.allocate_exact_size(egui::vec2(18.0, 22.0), egui::Sense::hover());
     crate::icons::paint(ui, r, "type", 13.0, t.icon);
     icon.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Label, true, tl!("Font size")));
     // Photoshop's "T" scrubs the size field beside it, like the Character panel's icons (#6437).
-    crate::widgets::scrub_option_icon(ui, &icon, tl!("Font size"));
+    crate::widgets::scrub_option_icon(ui, &icon, tl!("Set font size"));
     let (unit, label) = type_unit(app);
     let mut display = size * unit;
-    if crate::widgets::value_field(ui, &mut display, unit..=1296.0 * unit, label, 66.0).changed() {
-        let size = display / unit;
+    let edited = size_field(ui, &mut display, unit, label);
+    // A preset is already in points: converting it through the display unit would not round-trip.
+    if let Some(size) = match edited {
+        Some(MetricChoice::Typed(v)) => Some(v / unit),
+        Some(MetricChoice::Preset(pt)) => Some(pt),
+        _ => None,
+    } {
         app.ui.tool_options.type_size = size;
         apply(app, ui.ctx(), json!({"size": size, "metricsAsShown": true}));
     }
@@ -95,9 +106,24 @@ pub fn options_bar(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
         },
         None => o.type_align.as_str(),
     };
-    for (align, icon, tip) in
+    // Vertical text shows Top / Center / Bottom for the same left / center / right values, after the
+    // targeted layer's orientation, or with no text targeted the vertical tools' (#12059, #12088).
+    // The Horizontal Type Mask tool keeps the horizontal buttons (not measured).
+    let vertical = app.ui.tool != crate::state::Tool::HorizontalTypeMask
+        && match super::defaults::target_text(app) {
+            Some(t) => t.orientation == photocraft_doc::text::Orientation::Vertical,
+            None => app.ui.tool.is_vertical_type(),
+        };
+    let buttons = if vertical {
+        [
+            ("left", "vertical-align-top", tl!("Top align text")),
+            ("center", "vertical-align-middle", tl!("Center text")),
+            ("right", "vertical-align-bottom", tl!("Bottom align text")),
+        ]
+    } else {
         [("left", "align-left", tl!("Left align text")), ("center", "align-center", tl!("Center text")), ("right", "align-right", tl!("Right align text"))]
-    {
+    };
+    for (align, icon, tip) in buttons {
         if crate::icons::button(ui, icon, 24.0, shown_align == align, tip).clicked() {
             app.ui.tool_options.type_align = align.into();
             apply(app, ui.ctx(), json!({"align": align}));
@@ -128,7 +154,7 @@ pub fn options_bar(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
     let q = |v: f32| (v.clamp(0.0, 1.0) * 255.0).round() as u8;
     ui.painter().rect_filled(rect, 2.0, Color32::from_rgb(q(c[0]), q(c[1]), q(c[2])));
     ui.painter().rect_stroke(rect, 2.0, Stroke::new(1.0, t.field_border), egui::StrokeKind::Outside);
-    let resp = resp.on_hover_text(tl!("Set the text color"));
+    let resp = resp.on_hover_text(tl!("Set text color"));
     resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, tl!("Set the text color")));
     if resp.clicked() {
         open_color_picker(app, [c[0], c[1], c[2]]);
@@ -137,6 +163,14 @@ pub fn options_bar(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
     let can_warp = crate::menus::is_enabled(app, "type.warpText");
     if ui.add_enabled_ui(can_warp, |ui| crate::icons::button(ui, "text-warp", 24.0, false, tl!("Create warped text"))).inner.clicked()
         && let Err(e) = crate::menus::invoke(app, &ui.ctx().clone(), "type.warpText", json!({}))
+    {
+        app.ui.status = e;
+        app.ui.status_error = true;
+    }
+    // The bar's last button, as in Photoshop (#12054): Window › Character, which shows the
+    // Character | Paragraph group with Character in front, and hides it when clicked again.
+    if crate::icons::button(ui, "panels-top-left", 24.0, false, tl!("Toggle Character and Paragraph panels")).clicked()
+        && let Err(e) = crate::menus::invoke(app, &ui.ctx().clone(), "window.panel.character", json!({}))
     {
         app.ui.status = e;
         app.ui.status_error = true;
@@ -264,20 +298,14 @@ pub(super) fn kerning_field(ui: &mut egui::Ui, shown: &str, width: f32) -> Optio
         }
         let presets = ["Metrics", "Optical", "0", "-100", "-75", "-50", "-25", "-10", "-5", "5", "10", "25", "50", "75", "100", "200"];
         let (press, close) = crate::press_menu::PressCombo::before(ui, "props-kern-presets");
-        let combo = craft_ui::ComboBox::from_id_salt("props-kern-presets")
-            .selected_text("")
-            .width(16.0)
-            .height(420.0)
-            .icon(crate::widgets::chevron_icon)
-            .close_behavior(close)
-            .show_ui(ui, |ui| {
-                for p in presets {
-                    let item = ui.selectable_label(p == shown, p);
-                    if press.chosen(ui, &item) {
-                        out = parse_kerning(p);
-                    }
+        let combo = crate::widgets::combo_list(ui, "props-kern-presets", "", 16.0, close, |ui| {
+            for p in presets {
+                let item = ui.selectable_label(p == shown, p);
+                if press.chosen(ui, &item) {
+                    out = parse_kerning(p);
                 }
-            });
+            }
+        });
         press.after(&combo.response);
         let _ = combo.response.accessible_name(tl!("Kerning"));
     });
@@ -423,3 +451,59 @@ pub(super) fn toggle_cell(ui: &mut egui::Ui, w: f32, on: bool, tip: &str, paint:
     resp.widget_info(|| egui::WidgetInfo::selected(egui::Role::Button, enabled, on, &tip));
     resp.on_hover_text(tl!(&tip)).clicked()
 }
+
+/// The font size field, with the ▾ of its preset list inside the field's right edge, as the font
+/// menu and the Layers panel's Opacity have theirs. Its list is anchored to the whole field.
+fn size_field(ui: &mut egui::Ui, display: &mut f32, unit: f32, label: &str) -> Option<MetricChoice> {
+    use crate::widgets::POPUP_ARROW_W;
+    let t = crate::theme::Tokens::get(ui.ctx());
+    let (field, rect) = crate::widgets::value_field_with_trailing(ui, display, unit..=1296.0 * unit, label, 66.0 + POPUP_ARROW_W, POPUP_ARROW_W);
+    // A fixed id, not the field's: the field's follows the controls before it, which change when
+    // the fonts finish loading (`fonts_ready`), and a new id would close an open list.
+    let id = ui.make_persistent_id("type-size-presets");
+    let typed = field.on_hover_text(tl!("Set font size")).changed();
+    let arrow_rect = egui::Rect::from_min_max(egui::pos2(rect.right() - POPUP_ARROW_W - 2.0, rect.top() + 2.0), rect.max - egui::vec2(2.0, 2.0));
+    let arrow = ui.interact(arrow_rect, id, egui::Sense::click());
+    // The Character panel's translated name for the same list.
+    arrow.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, ui.is_enabled(), tl!("Font size presets")));
+    let mut anchor = arrow.clone();
+    anchor.rect = rect;
+    anchor.interact_rect = rect;
+    let popup = egui::Popup::default_response_id(&anchor);
+    // A click without a pointer (assistive technology): the press menu below only sees presses.
+    if arrow.clicked() && !ui.input(|i| i.pointer.any_click()) {
+        egui::Popup::toggle_id(ui.ctx(), popup);
+    }
+    let open = egui::Popup::is_id_open(ui.ctx(), popup);
+    if arrow.hovered() || open {
+        ui.painter().rect_filled(arrow_rect, t.radius_sm, t.field_border.gamma_multiply(0.6));
+    }
+    crate::widgets::chevron_icon(ui, arrow_rect, ui.style().interact(&arrow), open);
+    arrow.on_hover_text(tl!("Set font size"));
+    let (shown, width) = (*display, rect.width());
+    let preset = crate::press_menu::show_with_close_behavior(&anchor, egui::PopupCloseBehavior::CloseOnClickOutside, |ui, press| {
+        ui.set_min_width(width);
+        egui::ScrollArea::vertical()
+            .max_height(420.0)
+            .show(ui, |ui| {
+                preset_items(ui, shown, (unit, label), &[&SIZE_PRESETS], None, true, |ui, item| {
+                    let hit = press.chosen(ui, item);
+                    if hit {
+                        ui.close();
+                    }
+                    hit
+                })
+            })
+            .inner
+    })
+    .flatten();
+    preset.or(typed.then_some(MetricChoice::Typed(*display)))
+}
+
+#[cfg(test)]
+#[path = "size_presets_tests.rs"]
+mod size_presets_tests;
+
+#[cfg(test)]
+#[path = "vertical_mask_align_buttons_tests.rs"]
+mod vertical_mask_align_buttons_tests;

@@ -50,7 +50,7 @@ pub fn options(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
     let t = Tokens::get(ui.ctx());
     ui.label(
         egui::RichText::new(crate::i18n::fmt(
-            tl!("Click to sample the foreground colour  ·  {key}-click for background"),
+            tl!("Click to sample the foreground color  ·  {key}-click for background"),
             &[("key", &crate::shortcuts::pretty("Alt"))],
         ))
         .color(t.text_faint),
@@ -120,9 +120,26 @@ mod tests {
         }
     }
 
+    /// View the document at 200 %, where an N by N Average is the centred N × N square (#11751:
+    /// at 100 % and below it covers (N+1) × (N+1) screen pixels).
+    fn zoomed_in(app: &mut PhotocraftApp) {
+        app.sync_views();
+        for v in &mut app.ui.views {
+            v.zoom = 2.0;
+        }
+    }
+
     #[test]
     fn a_click_samples_the_average_of_the_sample_size() {
         let mut app = app();
+        // At 100 % a 3 by 3 Average is the 4 × 4 box from (2, 2): one black pixel of sixteen (#11751).
+        app.sync_views();
+        app.ui.tool_options.eyedropper_size = 3;
+        click(&mut app, 3.5, 3.5, egui::Modifiers::NONE);
+        let want = (255.0f32 * 15.0 / 16.0).round() / 255.0;
+        assert_eq!(fg(&app), [want, want, want, 1.0], "3 by 3 at 100 %");
+        app.ui.tool_options.eyedropper_size = 1;
+        zoomed_in(&mut app);
         // Point Sample at (3, 3): white.
         click(&mut app, 3.5, 3.5, egui::Modifiers::NONE);
         assert_eq!(fg(&app), [1.0; 4]);
@@ -200,7 +217,11 @@ mod tests {
                 }
                 crate::panels::options_bar(app, ui);
             },
-            app(),
+            {
+                let mut a = app();
+                zoomed_in(&mut a);
+                a
+            },
         );
         PhotocraftApp::setup_context(&h.ctx, crate::theme::ThemeKind::Studio);
         h.run_steps(4);

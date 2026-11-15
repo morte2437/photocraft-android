@@ -1,0 +1,67 @@
+{
+  "schema": 1,
+  "name": "unchanged-preserves-redo",
+  "steps": [
+    {
+      "event": {
+        "op": "command",
+        "id": "view.moveGuide",
+        "params": {
+          "orientation": "vertical",
+          "index": 0,
+          "position": 15
+        }
+      },
+      "expect": {
+        "vertical": [
+          15,
+          20
+        ]
+      }
+    },
+    {
+      "event": {
+        "op": "undo"
+      },
+      "expect": {
+        "redo": true,
+        "history": 2
+      }
+    },
+    {
+      "event": {
+        "op": "begin"
+      },
+      "expect": {
+        "editing": true,
+        "vertical": [
+          10,
+          20
+        ],
+        "history": 2,
+        "editCommands": 0,
+        "preview": {
+          "vertical": [
+            10,
+            20
+          ]
+        }
+      }
+    },
+    {
+      "event": {
+        "op": "confirm"
+      },
+      "expect": {
+        "vertical": [
+          10,
+          20
+        ],
+        "history": 2,
+        "redo": true,
+        "editCommands": 0,
+        "editing": false
+      }
+    }
+  ]
+}

@@ -1,6 +1,8 @@
+use photocraft_doc::BlendMode;
+
 use super::enabled::{check_all_unlocked, is_mask_target, paint_surface};
 use super::layer_params::{layer_param, mask_new_layer};
-use super::{Adjustment, ColorMode, EngineError, Layer, LayerContent, Map, Result, Session, Value, json, pixels};
+use super::{Adjustment, ColorMode, EngineError, Layer, LayerContent, Result, Session, Value, json, pixels};
 
 /// Add an adjustment layer above the active one; it takes the mask `mask_new_layer` builds from `p` (a path, the selection, or the default white mask).
 /// Optional opacity is a 0..1 fraction, validated before the creation edit.
@@ -12,13 +14,32 @@ pub(super) fn new_adjustment(s: &mut Session, adj: Adjustment, p: &Value, cmd: &
             .filter(|o| o.is_finite() && (0.0..=1.0).contains(o))
             .ok_or_else(|| EngineError::BadParams { cmd: cmd.into(), msg: "opacity must be a number in 0..1".into() })? as f32,
     };
+    let bad = |msg: String| EngineError::BadParams { cmd: cmd.into(), msg };
+    // Name, blend mode and clipping read like New Layer's (#8384).
+    let name = match p.get("name") {
+        None | Some(Value::Null) => None,
+        Some(v) => Some(v.as_str().ok_or_else(|| bad("`name` must be a string".into()))?.to_string()),
+    };
+    let mode = match p.get("mode") {
+        None | Some(Value::Null) => BlendMode::Normal,
+        Some(v) => {
+            let m = v.as_str().ok_or_else(|| bad("`mode` must be a blend mode name".into()))?;
+            crate::commands::blend_from_str(m).filter(|b| *b != BlendMode::PassThrough).ok_or_else(|| bad(format!("unknown layer blend mode `{m}`")))?
+        }
+    };
+    let clip = match p.get("clipToPrevious") {
+        None | Some(Value::Null) => false,
+        Some(v) => v.as_bool().ok_or_else(|| bad("`clipToPrevious` must be true or false".into()))?,
+    };
     let label = format!("New {} Layer", adj.label());
-    let name = adj.label().to_string();
+    let default_name = adj.label().to_string();
     let id = s.edit(&label, |doc, active| {
-        let mut l = Layer::new(doc.next_layer_name(&name), LayerContent::Adjustment(adj));
+        let mut l = Layer::new(name.clone().unwrap_or_else(|| doc.next_layer_name(&default_name)), LayerContent::Adjustment(adj));
         l.opacity = opacity;
+        l.blend = mode;
         mask_new_layer(doc, &mut l, p, cmd, true)?;
         let id = crate::layer_place::insert_new(doc, *active, l, crate::layer_place::Place::Auto);
+        crate::clip_group::settle(doc, &[id], &Default::default(), clip);
         *active = Some(id);
         Ok(id)
     })?;
@@ -88,24 +109,7 @@ pub(super) fn doc_mode(s: &Session) -> ColorMode {
 /// Levels stay in the neutral space instead of Lab (where the composite is ignored) or CMYK
 /// (where the curve runs on the inks) (#5335).
 pub(super) fn adjust_mode(s: &Session, p: &Value) -> ColorMode {
-    if is_mask_target(p) || crate::channel_cmds::is_channel_target(p) { ColorMode::Grayscale } else { doc_mode(s) }
-}
-
-/// Tone params for a gray plane target: the document-space channel records are dropped, because
-/// those keys select the Lab or CMYK tone space and a plane only holds levels (#5335).
-pub(super) fn gray_tone_params(p: &Value) -> Value {
-    match p {
-        Value::Object(m) => {
-            let mut o = Map::new();
-            for (k, v) in m {
-                if !matches!(k.as_str(), "cyan" | "magenta" | "yellow" | "black" | "lightness" | "a" | "b") {
-                    o.insert(k.clone(), v.clone());
-                }
-            }
-            Value::Object(o)
-        }
-        other => other.clone(),
-    }
+    if crate::channel_cmds::gray_target(p).is_some() { ColorMode::Grayscale } else { doc_mode(s) }
 }
 
 /// Commands generated from a table share one `run` fn; the kind is recovered from the id.

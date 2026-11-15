@@ -3,12 +3,12 @@
 //! files themselves are never committed: each test rebuilds the relevant
 //! structure from our own documents.
 
+use craft_psd::layer::CHANNEL_REAL_USER_MASK;
+use craft_psd::{ChannelData, Compression, MaskData, PsdFile, RealMask, Version};
 use photocraft_color::{Color, ColorMode, SampleType};
 use photocraft_doc::{Document, Fill, Layer, LayerContent, LayerMask, Path, ShapeLayer, Size, Subpath, VectorMask};
 use photocraft_geom::Rect;
 use photocraft_io::*;
-use photocraft_psd::layer::CHANNEL_REAL_USER_MASK;
-use photocraft_psd::{ChannelData, Compression, MaskData, PsdFile, RealMask, Version};
 
 fn doc(depth: SampleType) -> Document {
     Document::with_background("t", Size::new(32, 32), ColorMode::Rgb, depth, Color::WHITE)
@@ -100,7 +100,7 @@ fn real_user_mask_with_parameters_is_decoded() {
     let rec = file.layers_mut().last_mut().unwrap();
     let MaskData::Mask(pm) = &mut rec.mask else { panic!("mask record") };
     assert!(pm.parameters.is_some());
-    let real_rect = photocraft_psd::Rect { top: 0, left: 0, bottom: 32, right: 16 };
+    let real_rect = craft_psd::Rect { top: 0, left: 0, bottom: 32, right: 16 };
     pm.real = Some(RealMask { flags: 0, background: 255, rect: real_rect });
     pm.trailing.clear();
     rec.channels.push(ChannelData::encode(CHANNEL_REAL_USER_MASK, Compression::Rle, &[0u8; 16 * 32], 16, 32, 8, Version::Psd).unwrap());
@@ -130,7 +130,7 @@ fn shape_with_vector_mask_density_imports_as_soft_shape() {
     // Photoshop stores the shape alone: replace the record's pixels with the path's coverage.
     let rec = file.layers_mut().last_mut().unwrap();
     assert!(rec.block(b"SoCo").is_some() && rec.block(b"vmsk").is_some());
-    rec.rect = photocraft_psd::Rect { top: 8, left: 8, bottom: 24, right: 24 };
+    rec.rect = craft_psd::Rect { top: 8, left: 8, bottom: 24, right: 24 };
     for ch in &mut rec.channels {
         if ch.id >= -1 {
             let v = if ch.id == -1 { 255 } else { 0 };

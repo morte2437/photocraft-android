@@ -10,9 +10,9 @@
 //! that cannot be read (noise gradients, profile lookups, CMYK channel mixers, unknown versions)
 //! stay [`Adjustment::Unsupported`] and are written back verbatim.
 
+use craft_psd::descriptor::{Descriptor, Value, VersionedDescriptor};
 use photocraft_doc::Adjustment;
 use photocraft_doc::adjust::{CURVE_MAP_LEN, CurvePoint, HueRange, LevelsChannel, LutFormat, LutSource, ToneSpace, curve_map};
-use photocraft_psd::descriptor::{Descriptor, Value, VersionedDescriptor};
 
 mod encode;
 
@@ -324,10 +324,21 @@ fn parse_gradient_map(d: &[u8]) -> Option<Adjustment> {
     let mut order: Vec<usize> = (0..stops.len()).collect();
     order.sort_by(|a, b| stops[*a].0.total_cmp(&stops[*b].0));
     let mids: Vec<f32> = order.iter().skip(1).map(|i| mids[*i]).collect();
-    let baked = crate::gradient_bake::bake(stops, &mids, smooth, crate::gradient_bake::Method::from_code(method));
+    let method = crate::gradient_bake::Method::from_code(method);
+    // Kept as Photoshop's editor holds it, so the editor shows these stops (#8351).
+    let source = photocraft_doc::adjust::GradientSource {
+        stops: order.iter().filter_map(|i| stops.get(*i)).map(|(t, c)| (*t, c.to_rgb())).collect(),
+        midpoints: mids.clone(),
+        smoothness: smooth.clamp(0.0, 1.0),
+        method: method.name().to_string(),
+    };
+    let baked = crate::gradient_bake::bake(stops, &mids, smooth, method);
     let mut stops: Vec<(f32, [f32; 3])> = baked.iter().map(|(t, c)| (*t, c.to_rgb())).collect();
     stops.sort_by(|a, b| a.0.total_cmp(&b.0));
-    Some(Adjustment::GradientMap { stops, reverse, dither })
+    // A plain gradient (Classic, no Smoothness, midpoints halfway) bakes to its own stops: only
+    // one that baking changed needs its source kept.
+    let source = (stops != source.stops).then_some(source);
+    Some(Adjustment::GradientMap { stops, reverse, dither, source })
 }
 
 /// Points an imported `grdm` block at `target` when only Reverse and/or Dither differ (the
@@ -335,7 +346,7 @@ fn parse_gradient_map(d: &[u8]) -> Option<Adjustment> {
 /// (in whatever colour space it stored them), smoothness and method survive the save. `false`
 /// leaves `data` untouched.
 pub(crate) fn retarget_gradient_map(data: &mut [u8], target: &Adjustment, channels: Channels) -> bool {
-    let Adjustment::GradientMap { stops, reverse, dither } = target else { return false };
+    let Adjustment::GradientMap { stops, reverse, dither, .. } = target else { return false };
     let same_stops = matches!(parse(b"grdm", data, None, channels), Adjustment::GradientMap { stops: s, .. } if s == *stops);
     match (same_stops, data.get_mut(2..4)) {
         (true, Some(flags)) => {
@@ -355,7 +366,7 @@ pub(crate) fn is_unpadded_photocraft_gradient_map(data: &[u8]) -> bool {
         return false;
     }
     match parse_gradient_map(data) {
-        Some(Adjustment::GradientMap { stops, reverse, dither }) => {
+        Some(Adjustment::GradientMap { stops, reverse, dither, .. }) => {
             let padded = write_gradient_map(&stops, reverse, dither);
             padded.len() == data.len() + 2 && padded.starts_with(data)
         }
@@ -366,19 +377,31 @@ pub(crate) fn is_unpadded_photocraft_gradient_map(data: &[u8]) -> bool {
 /// `grdm` version 1 for [`Adjustment::GradientMap`] (Classic interpolation, Smoothness 0, so
 /// the stops are reproduced exactly).
 fn write_gradient_map(stops: &[(f32, [f32; 3])], reverse: bool, dither: bool) -> Vec<u8> {
+    write_grdm(stops, &[], 0.0, crate::gradient_bake::Method::Classic, reverse, dither)
+}
+
+/// `grdm` with Photoshop's gradient settings: the midpoint of segment k (after stop k, in
+/// location order, `0..1`) is stored on stop k + 1, Smoothness in 4096ths, and a method other
+/// than Classic in a version 3 block (#8351).
+fn write_grdm(stops: &[(f32, [f32; 3])], mids: &[f32], smooth: f32, method: crate::gradient_bake::Method, reverse: bool, dither: bool) -> Vec<u8> {
     let mut v = Vec::new();
-    put16(&mut v, 1);
+    let code = method.code();
+    put16(&mut v, if code.is_some() { 3 } else { 1 });
     v.push(u8::from(reverse));
     v.push(u8::from(dither));
+    if let Some(code) = code {
+        v.extend_from_slice(code);
+    }
     let name: Vec<u16> = "Custom".encode_utf16().chain(std::iter::once(0)).collect();
     v.extend_from_slice(&(name.len() as u32).to_be_bytes());
     for u in name {
         put16(&mut v, u);
     }
     put16(&mut v, stops.len().min(usize::from(u16::MAX)) as u16);
-    for (t, c) in stops.iter().take(usize::from(u16::MAX)) {
+    for (k, (t, c)) in stops.iter().take(usize::from(u16::MAX)).enumerate() {
+        let mid = k.checked_sub(1).and_then(|s| mids.get(s)).copied().filter(|m| m.is_finite()).map_or(50, |m| (m.clamp(0.05, 0.95) * 100.0).round() as u32);
         v.extend_from_slice(&((t.clamp(0.0, 1.0) * 4096.0).round() as u32).to_be_bytes());
-        v.extend_from_slice(&50u32.to_be_bytes());
+        v.extend_from_slice(&mid.to_be_bytes());
         put16(&mut v, 0);
         for x in c {
             put16(&mut v, (x.clamp(0.0, 1.0) * 65535.0).round() as u16);
@@ -393,7 +416,7 @@ fn write_gradient_map(stops: &[(f32, [f32; 3])], reverse: bool, dither: bool) ->
         put16(&mut v, 255);
     }
     put16(&mut v, 2); // expansion count
-    put16(&mut v, 0); // smoothness
+    put16(&mut v, (if smooth.is_finite() { smooth.clamp(0.0, 1.0) } else { 0.0 } * 4096.0).round() as u16); // smoothness
     put16(&mut v, 32); // length
     put16(&mut v, 0); // mode
     v.extend_from_slice(&0u32.to_be_bytes()); // random seed
@@ -486,13 +509,13 @@ fn read_lookup(d: &[u8]) -> Result<Adjustment, String> {
 }
 
 /// A LUT file's table, read the way a PSD read does (an XML file tagged `.cube` is sniffed as `.look`).
-fn parse_lut_source(format: LutFormat, bytes: &[u8]) -> Result<photocraft_cms::lutfile::LutFile, photocraft_cms::lutfile::LutError> {
+fn parse_lut_source(format: LutFormat, bytes: &[u8]) -> Result<craft_cms::lutfile::LutFile, craft_cms::lutfile::LutError> {
     let format = match format {
-        LutFormat::Cube => photocraft_cms::lutfile::Format::Cube,
-        LutFormat::ThreeDl => photocraft_cms::lutfile::Format::ThreeDl,
-        LutFormat::Look => photocraft_cms::lutfile::Format::Look,
+        LutFormat::Cube => craft_cms::lutfile::Format::Cube,
+        LutFormat::ThreeDl => craft_cms::lutfile::Format::ThreeDl,
+        LutFormat::Look => craft_cms::lutfile::Format::Look,
     };
-    photocraft_cms::lutfile::parse(&format!("x.{}", format.extension()), bytes)
+    craft_cms::lutfile::parse(&format!("x.{}", format.extension()), bytes)
 }
 
 /// Photoshop's `LUTFormatType` value for a format.
@@ -688,7 +711,14 @@ pub fn write(adj: &Adjustment) -> Vec<([u8; 4], Vec<u8>)> {
         Adjustment::ColorLookup { name, lut, size, dither, source, .. } => {
             return block(b"clrL", encode::color_lookup(name, lut.as_deref().map(Vec::as_slice), *size, *dither, source.as_ref()));
         }
-        Adjustment::GradientMap { stops, reverse, dither } => {
+        Adjustment::GradientMap { source: Some(src), reverse, dither, .. } if src.stops.len() >= 2 => {
+            // Photoshop's own gradient, as its editor holds it, rather than the dense baked stops (#8351).
+            let mut stops = src.stops.clone();
+            stops.sort_by(|a, b| a.0.total_cmp(&b.0));
+            let method = crate::gradient_bake::Method::from_name(&src.method).unwrap_or(crate::gradient_bake::Method::Classic);
+            return block(b"grdm", write_grdm(&stops, &src.midpoints, src.smoothness, method, *reverse, *dither));
+        }
+        Adjustment::GradientMap { stops, reverse, dither, .. } => {
             return block(b"grdm", write_gradient_map(&encode::gradient_stops(stops), *reverse, *dither));
         }
         Adjustment::Vibrance { vibrance, saturation } => return block(b"vibA", encode::vibrance(*vibrance, *saturation)),

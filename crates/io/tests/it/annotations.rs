@@ -4,12 +4,12 @@
 #[cfg(feature = "corpus")]
 use std::path::PathBuf;
 
+use craft_psd::PsdFile;
 use photocraft_color::{ColorMode, SampleType};
 use photocraft_doc::{Document, MeasurementScale, Note};
 use photocraft_geom::Size;
 use photocraft_io::annotations_map::MEASUREMENT_SCALE;
 use photocraft_io::{ExportOptions, export, import};
-use photocraft_psd::PsdFile;
 
 #[cfg(feature = "corpus")]
 fn corpus(rel: &str) -> Vec<u8> {
@@ -103,7 +103,7 @@ fn psd_with_anno(anno: Vec<u8>) -> Vec<u8> {
     let mut doc = Document::new("notes", Size::new(16, 16), ColorMode::Rgb, SampleType::U8);
     doc.layers.push(photocraft_doc::Layer::raster("Background", doc.pixel_format()));
     let mut file = PsdFile::from_bytes(&to_psd(&doc)).unwrap();
-    let mut tb = photocraft_psd::TaggedBlock::new(*b"Anno", anno.clone());
+    let mut tb = craft_psd::TaggedBlock::new(*b"Anno", anno.clone());
     tb.padding = Some(vec![0; (4 - anno.len() % 4) % 4]);
     file.global_blocks.push(tb);
     file.to_bytes().unwrap()

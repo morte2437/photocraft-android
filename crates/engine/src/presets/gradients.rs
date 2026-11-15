@@ -401,19 +401,28 @@ pub const STOP: &str = "gradient.presets.stop";
 /// own. `None` when the caller gave `colors` (the legacy evenly spaced form `paint.gradient`
 /// handles itself).
 pub fn tool_stops(s: &Session, p: &Value) -> Result<Option<Stops>> {
+    Ok(tool_preset(s, p)?.map(|g| g.resolve(s.tools.foreground, s.tools.background)))
+}
+
+/// The same gradient as [`tool_stops`] with its colour and opacity stops kept apart, for the
+/// interpolation `method`, which treats the two differently.
+pub fn tool_fill_stops(s: &Session, p: &Value) -> Result<Option<FillStops>> {
+    Ok(tool_preset(s, p)?.map(|g| g.fill_stops(s.tools.foreground, s.tools.background)))
+}
+
+fn tool_preset(s: &Session, p: &Value) -> Result<Option<GradientPreset>> {
     const CMD: &str = "paint.gradient";
     if p.get("colors").and_then(Value::as_array).is_some_and(|a| !a.is_empty()) {
         return Ok(None);
     }
-    let g = if let Some(name) = str_param(p, "gradient") {
+    Ok(Some(if let Some(name) = str_param(p, "gradient") {
         let (gi, ii) = find(&s.presets.gradients, name, None).ok_or_else(|| bad(CMD, format!("no gradient preset \"{name}\"")))?;
         s.presets.gradients[gi].items[ii].clone().with_transparency(p, CMD)?
     } else if p.get("stops").is_some() {
         GradientPreset::from_params("Custom", p, CMD)?
     } else {
         s.presets.gradient.clone().with_transparency(p, CMD)?
-    };
-    Ok(Some(g.resolve(s.tools.foreground, s.tools.background)))
+    }))
 }
 
 /// The preset named by `"preset"` (else the current gradient), or explicit `"stops"`.

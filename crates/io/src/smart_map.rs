@@ -24,14 +24,14 @@
 //! Warp (`perspective_warp_map.rs`), whose quads become the planes of its command. Hue/Saturation
 //! (`HStr`) maps to its adjustment command in `hue_sat_filter_map.rs`.
 
+use craft_psd::Compression;
+use craft_psd::Rect as PsdRect;
+use craft_psd::descriptor::{Class, Descriptor, Id, ObjectArray, ReferenceItem, UnicodeString, Value, VersionedDescriptor};
+use craft_psd::filter_effects::{EffectsPlane, FilterEffectsItem};
 use photocraft_color::{BlendMode, ColorMode, PixelFormat, SampleType};
-use photocraft_doc::{LayerMask, SmartFilter};
+use photocraft_doc::{LayerMask, SmartFilter, SmartObject};
 use photocraft_geom::warp::{BezierMesh, Warp, WarpStyle};
 use photocraft_geom::{Affine, Rect as GeomRect};
-use photocraft_psd::Compression;
-use photocraft_psd::Rect as PsdRect;
-use photocraft_psd::descriptor::{Class, Descriptor, Id, ObjectArray, ReferenceItem, UnicodeString, Value, VersionedDescriptor};
-use photocraft_psd::filter_effects::{EffectsPlane, FilterEffectsItem};
 use photocraft_raster::Surface;
 use serde_json::{Map, Value as J, json};
 
@@ -49,8 +49,13 @@ mod displace;
 mod hue_sat;
 #[path = "perspective_warp_map.rs"]
 mod perspective_warp;
+#[path = "puppet_map.rs"]
+mod puppet;
 
 pub use displace::{embed_map as displace_embed_map, embedded_map as displace_embedded_map, without_map as displace_without_map};
+pub use perspective_warp::{
+    MAX_QUADS as MAX_PERSPECTIVE_WARP_PLANES, geometry as perspective_warp_geometry, indexed_geometry as perspective_warp_indexed_geometry,
+};
 
 mod export;
 mod import;
@@ -130,8 +135,42 @@ pub fn parse_sold(data: &[u8]) -> Option<Placed> {
     let d = sold_descriptor(data)?;
     let (idnt, transform) = crate::blocks::parse_smart(b"SoLd", data);
     let placed = text_of(&d, "placed").unwrap_or_default();
-    let stack = get_desc(&d, "filterFX").map(filter_stack);
+    let mut stack = get_desc(&d, "filterFX").map(filter_stack);
+    if let Some(stack) = &mut stack {
+        drop_moved_puppet_meshes(stack, &d);
+    }
     Some(Placed { descriptor: d, idnt, placed, transform, stack })
+}
+
+/// A Puppet Warp's stored mesh sits where the layer was when it was built (document pixels); one
+/// built on other corners than the layer's own doesn't fit it, so its pins are solved instead.
+fn drop_moved_puppet_meshes(stack: &mut FilterStack, d: &Descriptor) {
+    let corners = |k: &str| match d.get(k) {
+        Some(Value::List(v)) if v.len() == 8 => v.iter().map(|x| num(Some(x))).collect::<Option<Vec<f64>>>(),
+        _ => None,
+    };
+    let quad = corners("nonAffineTransform").or_else(|| corners("Trnf"));
+    for f in stack.filters.iter_mut().filter(|f| f.command == puppet::COMMAND) {
+        let fits = match (&quad, puppet::built_on(&f.params)) {
+            (Some(q), Some(b)) => q.iter().zip(b).all(|(a, b)| (a - b).abs() < 0.01),
+            _ => false,
+        };
+        if !fits && let Some(p) = f.params.as_object_mut() {
+            p.remove("mesh");
+        }
+    }
+}
+
+/// Records on each imported Puppet Warp mesh the placement it was solved for (`mesh.placement`,
+/// [`SmartObject::placement_json`]): once the smart object is moved, transformed or warped, the
+/// mesh no longer fits it and the pins are solved instead.
+pub(crate) fn pin_puppet_meshes(sm: &mut SmartObject) {
+    let placement = sm.placement_json();
+    for f in sm.smart_filters.iter_mut().filter(|f| f.command == puppet::COMMAND) {
+        if let Some(m) = f.params.get_mut("mesh").and_then(J::as_object_mut) {
+            m.insert("placement".into(), placement.clone());
+        }
+    }
 }
 
 /// Reads a `filterFX` object.

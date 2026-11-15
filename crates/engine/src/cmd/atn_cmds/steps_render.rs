@@ -55,14 +55,19 @@ fn new_seed() -> i32 {
     std::collections::hash_map::RandomState::new().hash_one(0u8) as i32
 }
 
-/// Fibers keeps raw variance/strength until their dialog limits are measured.
+/// Apply the measured Fibers limits from #10620 while retaining main's one-time missing seed.
 pub(super) fn fibers_from(d: &Descriptor) -> Mapped {
     let mapped = || {
         if !keys(d, &["Vrnc", "Strg", "RndS"]) {
             return None;
         }
         let seed = if d.get("RndS").is_none() { new_seed() } else { integer(d, "RndS", 0)? };
-        Some(json!({"variance": integer(d, "Vrnc", 16)?, "strength": integer(d, "Strg", 4)?, "seed": seed}))
+        let p = json!({"variance": integer(d, "Vrnc", 16)?, "strength": integer(d, "Strg", 4)?, "seed": seed});
+        let mut represented = fibers_to("filter.render.fibers", &p)?;
+        // Missing fields legitimately acquire defaults (and one stable seed). Present
+        // fields and outer metadata must still have an exact native representation.
+        represented.items.retain(|(key, _)| d.items.iter().any(|(recorded, _)| recorded == key));
+        (represented == *d).then_some(p)
     };
     mapped().map_or(Mapped::Unsupported { harmless: false }, |p| step("filter.render.fibers", p))
 }
@@ -76,12 +81,12 @@ pub(super) fn fibers_to(_: &str, p: &Value) -> Option<Descriptor> {
         Some(n) => u32::try_from(n).ok()? as i32,
         None => param_integer(p, "seed", 0)?,
     };
-    Some(
-        desc("null")
-            .with("Vrnc", D::Integer(param_integer(p, "variance", 16)?))
-            .with("Strg", D::Integer(param_integer(p, "strength", 4)?))
-            .with("RndS", D::Integer(seed)),
-    )
+    let variance = param_integer(p, "variance", 16)?;
+    let strength = param_integer(p, "strength", 4)?;
+    if !(1..=64).contains(&variance) || !(1..=64).contains(&strength) {
+        return None;
+    }
+    Some(desc("null").with("Vrnc", D::Integer(variance)).with("Strg", D::Integer(strength)).with("RndS", D::Integer(seed)))
 }
 
 /// Read the point's doubles without changing the recorded descriptor precision.

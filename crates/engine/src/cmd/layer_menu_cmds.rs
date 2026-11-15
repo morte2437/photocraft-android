@@ -131,6 +131,17 @@ fn apply_mask(s: &mut Session, p: &Value) -> Result<Value> {
         // displays. LayerMask::values_into accounts for density but not feather (#3044).
         let feathered = {
             let layer = doc.layer(id).ok_or(EngineError::NoLayer(id))?;
+            // The pixels are read over their content bounds (distant tiles span the gaps between
+            // them) as native samples, straight RGBA, the mask's coverage and the re-encoded
+            // output; a feathered mask is also rendered over the canvas and those bounds.
+            if let Some(surf) = layer.surface() {
+                let r = surf.content_bounds();
+                let n = surf.channels() as u64;
+                crate::allocation::check_dense(r, n.saturating_mul(8).saturating_add(20), "applying the layer mask")?;
+                if layer.mask.as_ref().is_some_and(|m| m.enabled && photocraft_compose::masks::feather_sigma(m.feather) > 0.0) {
+                    crate::allocation::check_dense(doc.bounds().union(&r), 8, "applying the feathered layer mask")?;
+                }
+            }
             if layer.mask.as_ref().is_some_and(|m| m.enabled && photocraft_compose::masks::feather_sigma(m.feather) > 0.0) {
                 // Do not bake an independent vector mask that remains attached after Apply.
                 let mut mask_only = layer.clone();
@@ -316,6 +327,49 @@ fn remove_matte(s: &mut Session, white: bool) -> Result<Value> {
     })
 }
 
+/// Extracts the alpha channel of `surf` within bounds `r` into a GRAY8 surface,
+/// preserving default alpha for unallocated tiles intersecting `r`.
+fn decontamination_alpha(surf: &Surface, r: Rect) -> Surface {
+    let mut alpha = Surface::new(photocraft_color::PixelFormat::GRAY8);
+    let default_alpha = to_rgba(&surf.format(), &surf.default_pixel())[3].clamp(0.0, 1.0);
+    if default_alpha > 0.0 {
+        let shared = alpha.solid_tile(&[default_alpha]);
+        for tc in r.tiles() {
+            if surf.tile(tc).is_some() {
+                continue;
+            }
+            let area = tc.rect().intersect(&r);
+            if area == tc.rect() {
+                alpha.put_tiles([(tc, shared.clone())]);
+            } else {
+                alpha.fill_rect(area, &[default_alpha]);
+            }
+        }
+    }
+    let mut converted = std::collections::HashMap::new();
+    for (tc, tile) in surf.tiles() {
+        let area = tc.rect().intersect(&r);
+        if area.is_empty() {
+            continue;
+        }
+        let key = std::sync::Arc::as_ptr(tile) as usize;
+        if area == tc.rect()
+            && let Some(shared) = converted.get(&key)
+        {
+            alpha.put_tiles([(*tc, std::sync::Arc::clone(shared))]);
+            continue;
+        }
+        let values: Vec<u8> = read_rgba(surf, area).iter().map(|q| (q[3].clamp(0.0, 1.0) * 255.0).round() as u8).collect();
+        alpha.write_interleaved(area, &values);
+        if area == tc.rect()
+            && let Some(shared) = alpha.tile(*tc)
+        {
+            converted.insert(key, shared.clone());
+        }
+    }
+    alpha
+}
+
 /// Layer › Matting › Color Decontaminate: fringe colours move toward nearby opaque colours
 /// (the Select and Mask decontamination, driven by the layer's own alpha).
 fn color_decontaminate(s: &mut Session, p: &Value) -> Result<Value> {
@@ -328,9 +382,8 @@ fn color_decontaminate(s: &mut Session, p: &Value) -> Result<Value> {
         if r.is_empty() || !surf.format().alpha {
             return Ok(());
         }
-        let alpha: Vec<u8> = read_rgba(surf, r).iter().map(|q| (q[3].clamp(0.0, 1.0) * 255.0).round() as u8).collect();
-        let region = Region { bbox: r, mask: alpha };
-        *surf = photocraft_algo::matting::decontaminate(surf, &region, radius, amount);
+        let alpha = decontamination_alpha(surf, r);
+        *surf = photocraft_algo::matting::decontaminate_surface(surf, &alpha, radius, amount);
         Ok(())
     })?;
     Ok(Value::Null)
@@ -392,8 +445,8 @@ pub(crate) fn reveal(path: &str, dry_run: bool) -> Result<Value> {
     if dry_run {
         return Ok(json!({"program": program, "args": args}));
     }
-    ensure_folder(program, &args)?;
-    spawn(program, &args)?;
+    ensure_folder(&program, &args)?;
+    spawn(&program, &args)?;
     Ok(json!({"path": path}))
 }
 
@@ -411,8 +464,28 @@ fn ensure_folder(program: &str, args: &[String]) -> Result<()> {
 }
 
 /// The file-manager invocation that selects `path` on this platform.
-pub fn reveal_command(path: &str) -> Result<(&'static str, Vec<String>)> {
-    reveal_command_on(std::env::consts::OS, path)
+pub fn reveal_command(path: &str) -> Result<(String, Vec<String>)> {
+    let (program, args) = reveal_command_on(std::env::consts::OS, path)?;
+    Ok((system_program(program), args))
+}
+
+/// Windows tools run by full path: by bare name, Windows first looks in the app's own folder, so
+/// an `explorer.exe` lying next to a portable PhotoCraft would start instead (#9666).
+#[cfg(windows)]
+fn system_program(program: &str) -> String {
+    windows_root(std::env::var_os("SystemRoot")).join(format!("{program}.exe")).to_string_lossy().into_owned()
+}
+
+/// The Windows folder for the `SystemRoot` value `system_root`: `C:\Windows` when it is unset or
+/// not an absolute path (a relative one would resolve against the working directory).
+#[cfg(windows)]
+pub(crate) fn windows_root(system_root: Option<std::ffi::OsString>) -> std::path::PathBuf {
+    system_root.map(std::path::PathBuf::from).filter(|p| p.is_absolute()).unwrap_or_else(|| std::path::PathBuf::from(r"C:\Windows"))
+}
+
+#[cfg(not(windows))]
+fn system_program(program: &str) -> String {
+    program.to_string()
 }
 
 /// [`reveal_command`] on the platform `os` (a `std::env::consts::OS` value).

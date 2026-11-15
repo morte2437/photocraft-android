@@ -21,7 +21,7 @@ use crate::{EngineError, Result, Session};
 mod replace_color_range;
 
 /// Built-in Color Lookup looks `(id, label)`.
-pub use photocraft_cms::lutfile::BUILTIN as LOOKS;
+pub use craft_cms::lutfile::BUILTIN as LOOKS;
 
 /// Selective Color range keys in storage order.
 pub const RANGES: [&str; 9] = ["reds", "yellows", "greens", "cyans", "blues", "magentas", "whites", "neutrals", "blacks"];
@@ -101,7 +101,8 @@ pub fn selective_from_params(p: &Value, base: Option<&Adjustment>) -> Result<Adj
 }
 
 /// Color Lookup from params: `"lut"` (a built-in look id or `"none"`), `"file"` (a .cube / .3dl /
-/// .look path, native only) or `"data"` (the file's text, with `"fileName"` naming its format),
+/// .look path, native only) or `"data"` (file text, or base64 with `"dataEncoding":"base64"`).
+/// `"lutFormat":"cube|3dl|look"` (`"auto"`: detect) can supply the format when the file name doesn't identify it.
 /// `"interpolation":"trilinear|tetrahedral"`, `"dither":bool`. The table is embedded in the
 /// layer, as Photoshop does. Unspecified fields keep `base`'s values; a key of the wrong type is an
 /// error.
@@ -113,8 +114,19 @@ pub fn lookup_from_params(p: &Value, base: Option<&Adjustment>) -> Result<Adjust
         }
         _ => (String::new(), None, 0, false, false, None),
     };
+    let encoding = opt_str(CMD, p, "dataEncoding")?.unwrap_or("text");
+    if !matches!(encoding, "text" | "base64") {
+        return Err(bad(CMD, "`dataEncoding` must be \"text\" or \"base64\""));
+    }
+    let format = match opt_str(CMD, p, "lutFormat")? {
+        None | Some("auto") => None,
+        Some("cube") => Some(craft_cms::lutfile::Format::Cube),
+        Some("3dl") => Some(craft_cms::lutfile::Format::ThreeDl),
+        Some("look") => Some(craft_cms::lutfile::Format::Look),
+        Some(_) => return Err(bad(CMD, "`lutFormat` must be \"auto\", \"cube\", \"3dl\" or \"look\"")),
+    };
     // The parsed table, its label and (for a file) the file as loaded, which a PSD save embeds.
-    let mut loaded: Option<(photocraft_cms::lutfile::LutFile, String, Option<LutSource>)> = None;
+    let mut loaded: Option<(craft_cms::lutfile::LutFile, String, Option<LutSource>)> = None;
     if let Some(id) = opt_str(CMD, p, "lut")? {
         if id == "none" || id.is_empty() {
             name.clear();
@@ -122,21 +134,28 @@ pub fn lookup_from_params(p: &Value, base: Option<&Adjustment>) -> Result<Adjust
             size = 0;
             source = None;
         } else {
-            let f = photocraft_cms::lutfile::builtin(id).ok_or_else(|| bad(CMD, format!("unknown look `{id}` (built-ins: {})", builtin_ids())))?;
+            let f = craft_cms::lutfile::builtin(id).ok_or_else(|| bad(CMD, format!("unknown look `{id}` (built-ins: {})", builtin_ids())))?;
             let label = f.title.clone();
             loaded = Some((f, label, None));
         }
     }
-    let file_name = opt_str(CMD, p, "fileName")?;
-    if let Some(text) = opt_str(CMD, p, "data")? {
+    let file_name = opt_str(CMD, p, "fileName")?.filter(|s| !s.is_empty());
+    if let Some(text) = opt_str(CMD, p, "data")?.filter(|s| !s.is_empty()) {
         let file_name = file_name.unwrap_or("lut.cube");
-        let f = photocraft_cms::lutfile::parse(file_name, text.as_bytes()).map_err(|e| bad(CMD, e.0))?;
-        loaded = Some((f, base_name(file_name), Some(lut_source(file_name, text.as_bytes().to_vec()))));
+        let bytes = if encoding == "base64" {
+            photocraft_paint::tile::b64_decode(text).ok_or_else(|| bad(CMD, "`data` is not valid base64"))?
+        } else {
+            text.as_bytes().to_vec()
+        };
+        let format = format.unwrap_or_else(|| craft_cms::lutfile::Format::detect(file_name, &bytes));
+        let f = craft_cms::lutfile::parse_as(format, &bytes).map_err(|e| bad(CMD, e.0))?;
+        loaded = Some((f, base_name(file_name), Some(lut_source(format, bytes))));
     }
     if let Some(path) = opt_str(CMD, p, "file")?.filter(|s| !s.is_empty()) {
         let bytes = read_file(path).ok_or_else(|| bad(CMD, format!("can't read {path}")))?;
-        let f = photocraft_cms::lutfile::parse(path, &bytes).map_err(|e| bad(CMD, format!("{path}: {}", e.0)))?;
-        loaded = Some((f, base_name(path), Some(lut_source(path, bytes))));
+        let format = format.unwrap_or_else(|| craft_cms::lutfile::Format::detect(path, &bytes));
+        let f = craft_cms::lutfile::parse_as(format, &bytes).map_err(|e| bad(CMD, format!("{path}: {}", e.0)))?;
+        loaded = Some((f, base_name(path), Some(lut_source(format, bytes))));
     }
     if let Some((f, label, src)) = loaded {
         if !f.domain_is_default() {
@@ -168,18 +187,18 @@ pub fn lookup_from_params(p: &Value, base: Option<&Adjustment>) -> Result<Adjust
     Ok(Adjustment::ColorLookup { name, lut, size, tetrahedral, dither, source })
 }
 
-/// A loaded LUT file, tagged with the format [`photocraft_cms::lutfile::parse`] read it as.
-fn lut_source(file_name: &str, bytes: Vec<u8>) -> LutSource {
-    let format = match photocraft_cms::lutfile::Format::detect(file_name, &bytes) {
-        photocraft_cms::lutfile::Format::Cube => LutFormat::Cube,
-        photocraft_cms::lutfile::Format::ThreeDl => LutFormat::ThreeDl,
-        photocraft_cms::lutfile::Format::Look => LutFormat::Look,
+/// A loaded LUT file, tagged with the format [`craft_cms::lutfile::parse`] read it as.
+fn lut_source(format: craft_cms::lutfile::Format, bytes: Vec<u8>) -> LutSource {
+    let format = match format {
+        craft_cms::lutfile::Format::Cube => LutFormat::Cube,
+        craft_cms::lutfile::Format::ThreeDl => LutFormat::ThreeDl,
+        craft_cms::lutfile::Format::Look => LutFormat::Look,
     };
     LutSource { format, bytes: std::sync::Arc::new(bytes) }
 }
 
 fn builtin_ids() -> String {
-    photocraft_cms::lutfile::BUILTIN.iter().map(|b| b.0).collect::<Vec<_>>().join(", ")
+    craft_cms::lutfile::BUILTIN.iter().map(|b| b.0).collect::<Vec<_>>().join(", ")
 }
 
 fn base_name(path: &str) -> String {
@@ -226,7 +245,7 @@ pub fn folder_luts(_: &str) -> Vec<(String, String)> {
 
 #[cfg(not(target_arch = "wasm32"))]
 fn read_file(path: &str) -> Option<Vec<u8>> {
-    std::fs::read(path).ok()
+    crate::allocation::read_file_within(path, MAX_FOLDER_LUT_BYTES).ok()
 }
 #[cfg(target_arch = "wasm32")]
 fn read_file(_: &str) -> Option<Vec<u8>> {
@@ -247,19 +266,23 @@ pub fn update_adjustment(existing: &Adjustment, p: &Value) -> Option<Result<Adju
 // ---------- destructive helpers ----------
 
 /// Runs `f` on the target surface's content as straight RGBA (`w × h` = content bounds), blending
-/// the result through the selection.
-fn process_surface(surf: &mut Surface, selection: Option<&Surface>, f: &mut dyn FnMut(&mut Vec<[f32; 4]>, Rect)) {
+/// the result through the selection. Refused before reading when the dense buffers over the
+/// content bounds (which span the gaps between distant tiles) would pass the working budget.
+fn process_surface(surf: &mut Surface, selection: Option<&Surface>, f: &mut dyn FnMut(&mut Vec<[f32; 4]>, Rect)) -> Result<()> {
     let r = surf.content_bounds();
     if r.is_empty() {
-        return;
+        return Ok(());
     }
     let fmt = surf.format();
     let n = fmt.channels();
+    // The native read and the blended output (`n` f32 each), and the edited and original RGBA.
+    crate::allocation::check_dense(r, (n as u64).saturating_mul(8).saturating_add(32), "this adjustment")?;
     let raw = surf.read_region(r);
     let mut px: Vec<[f32; 4]> = raw.chunks_exact(n).map(|q| to_rgba(&fmt, q)).collect();
     let orig = px.clone();
     f(&mut px, r);
     surf.write_region(r, &crate::pixels::mix_through_selection(&fmt, r, &orig, &px, selection));
+    Ok(())
 }
 
 /// One history step running `f` on the active pixel layer (or targeted channel or layer mask).
@@ -269,7 +292,7 @@ fn rgba_edit(s: &mut Session, label: &str, p: &Value, mut f: impl FnMut(&mut Vec
         return s.edit(label, |doc, _| {
             let sel = doc.selection.clone();
             if let Some(surf) = crate::channel_cmds::channel_surface_for_filter(doc, id, p)? {
-                process_surface(surf, sel.as_ref(), &mut f);
+                process_surface(surf, sel.as_ref(), &mut f)?;
                 surf.prune();
             }
             Ok(Value::Null)
@@ -279,7 +302,7 @@ fn rgba_edit(s: &mut Session, label: &str, p: &Value, mut f: impl FnMut(&mut Vec
     s.edit(label, |doc, _| {
         let sel = doc.selection.clone();
         let surf = crate::commands::paint_surface(doc, id, &Value::Null)?;
-        process_surface(surf, sel.as_ref(), &mut f);
+        process_surface(surf, sel.as_ref(), &mut f)?;
         Ok(Value::Null)
     })
 }
@@ -312,20 +335,25 @@ pub(crate) fn has_adjustable(s: &Session) -> std::result::Result<(), String> {
     }
 }
 
+/// The smart object an adjustment's pixels would go to: the layer the params resolve to (the
+/// active one by default), when the command edits its pixels and that layer is a smart object.
+/// `None` for a mask or channel target, or a layer that is not a smart object.
+pub(crate) fn smart_pixel_target(s: &Session, p: &Value) -> Result<Option<photocraft_doc::LayerId>> {
+    if crate::commands::is_mask_target(p) || crate::channel_cmds::is_channel_target(p) || crate::color_channels::target(s, p)?.is_some() {
+        return Ok(None);
+    }
+    let Ok(id) = crate::commands::layer_param(s, p) else { return Ok(None) };
+    let smart = s.active().is_some_and(|d| matches!(d.doc.layer(id).map(|l| &l.content), Some(LayerContent::Smart(_))));
+    Ok(smart.then_some(id))
+}
+
 /// Image › Adjustments on a smart object record `image.adjustments.<kind>` as a smart filter
 /// (Photoshop): the adjustment re-runs from the source whenever the object re-renders, through
 /// [`adjust_as_filter`]. `Ok(true)` when it was recorded (one history step, the selection becomes
 /// the filter mask); `Ok(false)` when the command should edit pixels instead (a mask or channel
 /// target, or the active layer is not a smart object).
 pub(crate) fn adjust_as_smart_filter(s: &mut Session, kind: &str, label: &str, p: &Value) -> Result<bool> {
-    if crate::commands::is_mask_target(p) || crate::channel_cmds::is_channel_target(p) || crate::color_channels::target(s, p)?.is_some() {
-        return Ok(false);
-    }
-    let Ok(id) = crate::commands::layer_param(s, p) else { return Ok(false) };
-    let smart = s.active().is_some_and(|d| matches!(d.doc.layer(id).map(|l| &l.content), Some(LayerContent::Smart(_))));
-    if !smart {
-        return Ok(false);
-    }
+    let Some(id) = smart_pixel_target(s, p)? else { return Ok(false) };
     // A pixel or full lock refuses the smart filter, as for `filter.*` on a smart object.
     crate::commands::check_pixels_unlocked(&s.active().ok_or(EngineError::NoDocument)?.doc, id)?;
     // The recorded params are the command's own, minus the engine's private `__kind` key.
@@ -353,30 +381,50 @@ fn has_doc(s: &Session) -> std::result::Result<(), String> {
 
 /// Image › Adjustments run as a smart filter (`image.adjustments.<kind>` recorded on a smart
 /// object): the adjustment applied to a copy of `surf`. `None` for kinds or params it can't run.
-pub(crate) fn adjust_as_filter(kind: &str, p: &Value, surf: &Surface) -> Option<Surface> {
+pub(crate) fn adjust_as_filter(kind: &str, p: &Value, surf: &Surface, histogram_mask: Option<&photocraft_doc::LayerMask>) -> Result<Option<Surface>> {
     // A Color Lookup filter re-reads its LUT `file`, a path stored in the document: followed only
     // as `doc_path` allows, else the filter can't run (like a missing file).
     let resolved;
     let p = match p.get("file").and_then(Value::as_str).filter(|f| kind == "colorLookup" && !f.is_empty()) {
         Some(file) => {
             let mut q = p.clone();
-            q["file"] = json!(crate::doc_path::resolve(file).ok()?.to_str()?);
+            let Some(path) = crate::doc_path::resolve(file).ok().and_then(|p| p.to_str().map(str::to_owned)) else { return Ok(None) };
+            q["file"] = json!(path);
             resolved = q;
             &resolved
         }
         None => p,
     };
     let mut out = surf.clone();
-    if kind == "shadowsHighlights" {
+    if kind == "replaceColor" {
+        let Ok((c, fuzz, h, sat, l)) = replace_color_params("image.adjustments.replaceColor", p, [0.0, 0.0, 0.0, 1.0]) else { return Ok(None) };
+        process_surface(&mut out, None, &mut |px, _| {
+            tone::replace_color(px, [c[0], c[1], c[2]], fuzz, h, sat, l);
+        })?;
+    } else if kind == "desaturate" {
+        let mode = surf.format().mode;
+        if crate::pixels::adjust_surface(&mut out, &crate::commands::desaturate_adjustment(), None, mode).is_err() {
+            return Ok(None);
+        }
+    } else if kind == "equalize" {
+        process_surface(&mut out, None, &mut |px, area| {
+            let width = area.width() as usize;
+            let cover =
+                (0..px.len()).map(|i| histogram_mask.map_or(1.0, |m| m.value(area.x0 + (i % width) as i32, area.y0 + (i / width) as i32))).collect::<Vec<_>>();
+            crate::extra_cmds::equalize_pixels(px, &cover);
+        })?;
+    } else if kind == "shadowsHighlights" {
         let sh = shadows_highlights_params(p);
-        process_surface(&mut out, None, &mut |px, r| tone::shadows_highlights(px, r.width() as usize, r.height() as usize, &sh));
+        process_surface(&mut out, None, &mut |px, r| tone::shadows_highlights(px, r.width() as usize, r.height() as usize, &sh))?;
     } else {
         let mode = surf.format().mode;
-        let adj = crate::adjust_params::from_params(kind, p, None, mode).ok()?;
-        crate::pixels::adjust_surface(&mut out, &adj, None, mode).ok()?;
+        let Ok(adj) = crate::adjust_params::from_params(kind, p, None, mode) else { return Ok(None) };
+        if crate::pixels::adjust_surface(&mut out, &adj, None, mode).is_err() {
+            return Ok(None);
+        }
     }
     out.prune();
-    Some(out)
+    Ok(Some(out))
 }
 
 fn shadows_highlights(s: &mut Session, p: &Value) -> Result<Value> {
@@ -403,18 +451,86 @@ fn shadows_highlights_params(p: &Value) -> ShadowsHighlights {
     }
 }
 
-/// Recorded Lab bounds use native profile matching; ordinary RGB samples keep their existing path.
+fn replace_color_params(cmd: &str, p: &Value, default_color: [f32; 4]) -> Result<([f32; 4], f32, f32, f32, f32)> {
+    match given(p, "color") {
+        None => {}
+        Some(Value::String(s)) if crate::commands::parse_hex(s).is_some() => {}
+        Some(Value::Array(a)) if (3..=4).contains(&a.len()) && a.iter().all(Value::is_number) => {}
+        Some(_) => return Err(bad(cmd, "`color` must be a hex colour or an array of 3 or 4 finite numbers")),
+    }
+    let c = crate::commands::color_param(cmd, p, "color", default_color)?;
+    let fuzz = num(p, "fuzziness", 40.0).clamp(0.0, 200.0);
+    let (h, sat, l) = (num(p, "hue", 0.0).clamp(-180.0, 180.0), num(p, "saturation", 0.0).clamp(-100.0, 100.0), num(p, "lightness", 0.0).clamp(-100.0, 100.0));
+    Ok((c, fuzz, h, sat, l))
+}
+
 fn replace_color(s: &mut Session, p: &Value) -> Result<Value> {
+    const CMD: &str = "image.adjustments.replaceColor";
+    let localized_requested = p.get("localized").and_then(Value::as_bool).unwrap_or(false);
+    // Only the smart object's own pixels are restricted: a mask, alpha channel or Quick Mask over
+    // it edits as for any layer.
+    let on_smart = smart_pixel_target(s, p)?.is_some();
+    // Recorded Lab bounds use native profile matching and edit pixels in place; ordinary RGB
+    // samples keep their existing path. A smart object has no pixels to edit that way.
+    if on_smart && (p.get("labMinimum").is_some() || p.get("labMaximum").is_some()) {
+        return Err(bad(CMD, "Lab bounds require a pixel layer, not a smart object"));
+    }
     if let Some(result) = replace_color_range::apply(s, p)? {
         return Ok(result);
     }
-    const CMD: &str = "image.adjustments.replaceColor";
-    let c = crate::commands::color_param(CMD, p, "color", s.tools.foreground)?;
-    let fuzz = num(p, "fuzziness", 40.0).clamp(0.0, 200.0);
-    let (h, sat, l) = (num(p, "hue", 0.0).clamp(-180.0, 180.0), num(p, "saturation", 0.0).clamp(-100.0, 100.0), num(p, "lightness", 0.0).clamp(-100.0, 100.0));
+    if localized_requested && on_smart {
+        return Err(bad(CMD, "Localized Color Clusters are not available as a smart filter yet"));
+    }
+    // Several samples (Add/Subtract from Sample) edit pixels through Color Range's matcher; the
+    // smart filter replays one colour only, so recording it would silently drop the extra samples.
+    if on_smart {
+        let multi = p.get("points").and_then(Value::as_array).is_some_and(|a| a.len() > 1);
+        let subtracted = p.get("subtractPoints").and_then(Value::as_array).is_some_and(|a| !a.is_empty());
+        if multi || subtracted {
+            return Err(bad(CMD, "Add/Subtract from Sample are not available as a smart filter yet"));
+        }
+    }
+    let (c, fuzz, h, sat, l) = replace_color_params(CMD, p, s.tools.foreground)?;
+    if !localized_requested {
+        // Resolve and validate before recording, including the null foreground fallback.
+        let mut q = Value::Object(p.as_object().cloned().unwrap_or_default());
+        if let Value::Object(m) = &mut q {
+            m.insert("color".into(), json!(c));
+        }
+        if adjust_as_smart_filter(s, "replaceColor", "Replace Color", &q)? {
+            return Ok(Value::Null);
+        }
+    }
     // Localized Color Clusters, as in Select › Color Range: the colour only matches within Range
     // (a percentage of the canvas's longer side) of where it was picked.
     let points = sample_points(p).map_err(|m| bad(CMD, m))?;
+    // Several samples (Add to Sample / Subtract from Sample, #6280): the colours match as
+    // Select › Color Range's do for the same clicks, through its own matcher.
+    // A malformed `subtractPoints` is refused here, as malformed `points` are, rather than read as
+    // no subtraction by the single-colour path.
+    let subtracted = match p.get("subtractPoints") {
+        None => false,
+        Some(v) => !v.as_array().ok_or_else(|| bad(CMD, "`subtractPoints` must be [[x, y], …]"))?.is_empty(),
+    };
+    if subtracted || points.len() > 1 {
+        let mut q = json!({"points": p.get("points").cloned().unwrap_or(Value::Array(Vec::new())), "fuzziness": fuzz});
+        // With no Add samples, the subtraction starts from the dialog's From colour, not the
+        // foreground; with them, the samples alone span the range, as in Color Range.
+        // Forwarded as resolved (a `null` or missing colour is the foreground), as RGB 0..1.
+        if points.is_empty() {
+            q["color"] = json!([c[0], c[1], c[2]]);
+        }
+        for key in ["subtractPoints", "order", "localized", "range"] {
+            if let Some(v) = p.get(key) {
+                q[key] = v.clone();
+            }
+        }
+        let samples = crate::selection_cmds::ColorRangeSamples::new(s, &q).map_err(|e| bad(CMD, e.to_string()))?;
+        return rgba_edit(s, "Replace Color", p, |px, r| {
+            let mask = samples.coverage(px, r.width() as usize, 1.0, [r.x0 as f32, r.y0 as f32]);
+            tone::replace_color_masked(px, &mask, h, sat, l);
+        });
+    }
     let localized = if p.get("localized").and_then(Value::as_bool).unwrap_or(false) {
         if points.is_empty() {
             return Err(bad(CMD, "localized clusters need eyedropper `points` (where the colour was picked)"));
@@ -545,7 +661,7 @@ fn hdr_toning(s: &mut Session, p: &Value) -> Result<Value> {
 
 /// The Color Lookup built-ins (id, label) for UIs and agents.
 fn list_looks(_: &mut Session, _: &Value) -> Result<Value> {
-    Ok(json!(photocraft_cms::lutfile::BUILTIN.iter().map(|(id, label)| json!({"id": id, "label": label})).collect::<Vec<_>>()))
+    Ok(json!(craft_cms::lutfile::BUILTIN.iter().map(|(id, label)| json!({"id": id, "label": label})).collect::<Vec<_>>()))
 }
 
 macro_rules! spec {
@@ -568,8 +684,8 @@ pub fn specs() -> Vec<CommandSpec> {
             "image.adjustments.replaceColor",
             "Replace Color…",
             ["Image", "Adjustments"],
-            r##"{"localized":bool=false,"color":color,"fuzziness":0..200=40,"range":0..100=100,"hue":-180..180=0,"saturation":-100..100=0,"lightness":-100..100=0,"points":[[x,y],…]?,"labMinimum":[L,a,b]?,"labMaximum":[L,a,b]?} (Lab bounds: a finite ordered D50 box, mutually exclusive with color/points/localized/range; composite pixel-layer target only. Otherwise color defaults to the foreground; localized points use range % of the longer side.)"##,
-            has_pixels,
+            r##"{"localized":bool=false,"color":color,"fuzziness":0..200=40,"range":0..100=100,"hue":-180..180=0,"saturation":-100..100=0,"lightness":-100..100=0,"points":[[x,y],…]?,"subtractPoints":[[x,y],…]?,"order":["+"|"-",…]?,"labMinimum":[L,a,b]?,"labMaximum":[L,a,b]?} (Lab bounds: a finite ordered D50 box, mutually exclusive with color/points/subtractPoints/order/localized/range; composite pixel-layer target only. Otherwise color ("#rrggbb") defaults to the foreground; localized points use range % of the longer side; several "points" (Add to Sample) or any "subtractPoints" (Subtract from Sample) match as select.colorRange does for the same samples, "order" the click order.)"##,
+            has_adjustable,
             replace_color
         ),
         spec!(
@@ -589,6 +705,16 @@ pub fn specs() -> Vec<CommandSpec> {
             hdr_toning
         ),
         CommandSpec {
+            id: "image.adjustments.blackWhite.auto",
+            label: "Black & White Auto",
+            menu: &[],
+            shortcut: None,
+            params: r##"{"layer":id?,"filter":index?} → {"reds","yellows","greens","cyans","blues","magentas"} (%: the Auto mix for the image a Black & White adjustment layer sees, a smart object's pixels below its smart filter `filter`, or a pixel layer's own pixels; nothing changes)"##,
+            enabled: has_doc,
+            run: black_white_auto,
+            journal: false,
+        },
+        CommandSpec {
             id: "image.adjustments.colorLookup.list",
             label: "List Color Lookup Looks",
             menu: &[],
@@ -599,6 +725,130 @@ pub fn specs() -> Vec<CommandSpec> {
             journal: false,
         },
     ]
+}
+
+/// At most this many pixels are sampled for [`auto_black_white`].
+const AUTO_BW_SAMPLES: usize = 1 << 16;
+/// Grey levels [`auto_black_white`] tells apart.
+const AUTO_BW_BINS: usize = 32;
+
+/// Black & White's Auto (#9269): the colour weights (%, in [`crate::adjust_params::HUE_RANGES`]
+/// order) that spread the image's greys over the most grey levels. PhotoCraft's own search, not
+/// Photoshop's: from the default mix, each weight in turn steps through 0..=150 % to the value
+/// that most raises the entropy of the greys' histogram ([`AUTO_BW_BINS`] levels), less a pull
+/// back towards the default, until a pass changes nothing. So colours the default mix turns into
+/// the same grey are told apart, with the mildest change that does it; colours the image lacks
+/// keep their default weight.
+pub fn auto_black_white(px: &[[f32; 3]]) -> [f32; 6] {
+    let defaults = crate::adjust_params::BW_DEFAULTS;
+    let score = |w: &[f32; 6]| -> f32 {
+        if px.is_empty() {
+            return 0.0;
+        }
+        let mut bins = [0u32; AUTO_BW_BINS];
+        for c in px {
+            let g = photocraft_compose::adjust::black_white_gray(*c, w).clamp(0.0, 1.0);
+            if let Some(b) = bins.get_mut(((g * AUTO_BW_BINS as f32) as usize).min(AUTO_BW_BINS - 1)) {
+                *b += 1;
+            }
+        }
+        let n = px.len() as f32;
+        let entropy: f32 = bins.iter().filter(|&&k| k > 0).map(|&k| k as f32 / n).map(|q| -q * q.log2()).sum();
+        let pull: f32 = w.iter().zip(defaults).map(|(v, d)| (v - d).abs()).sum::<f32>() / 100.0;
+        entropy - 0.05 * pull
+    };
+    let mut w = defaults;
+    let mut best = score(&w);
+    for _ in 0..4 {
+        let mut changed = false;
+        for k in 0..6 {
+            for step in 0..=15 {
+                let mut t = w;
+                t[k] = step as f32 * 10.0;
+                let s = score(&t);
+                if s > best + 1e-6 {
+                    (best, w, changed) = (s, t, true);
+                }
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+    w
+}
+
+/// At most [`AUTO_BW_SAMPLES`] of the pixels with alpha: one from each run of `stride` of them, at
+/// a position that varies from run to run (Fibonacci hashing of the run's index), so a pattern
+/// whose period divides `stride` (alternating columns on an even-width canvas) isn't only ever
+/// sampled in one phase.
+fn auto_bw_sample(rgba: &[[f32; 4]]) -> Vec<[f32; 3]> {
+    let covered = || rgba.iter().filter(|c| c[3] > 0.0);
+    let stride = covered().count().div_ceil(AUTO_BW_SAMPLES).max(1);
+    let pick = |run: usize| ((run as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15) >> 32) as usize % stride;
+    covered().enumerate().filter(|(i, _)| i % stride == pick(i / stride)).map(|(_, c)| [c[0], c[1], c[2]]).collect()
+}
+
+/// Hides `id` and everything composited above it. Returns whether `id` is in `layers`.
+fn hide_from(layers: &mut [Layer], id: photocraft_doc::LayerId) -> bool {
+    let mut found = false;
+    for l in layers.iter_mut() {
+        if found || l.id == id {
+            found = true;
+            l.visible = false;
+        } else if l.children_mut().is_some_and(|c| hide_from(c, id)) {
+            found = true;
+        }
+    }
+    found
+}
+
+/// `image.adjustments.blackWhite.auto`: [`auto_black_white`] for `layer` (default the active one):
+/// the composite of what lies below a Black & White adjustment layer (what it adjusts), a smart
+/// object's pixels below smart filter `filter` (what that filter edits), or a pixel layer's own
+/// pixels (what Image › Adjustments › Black & White changes). As in the reference application,
+/// the whole canvas counts: a selection, the adjustment's mask and its clip base don't narrow it.
+fn black_white_auto(s: &mut Session, p: &Value) -> Result<Value> {
+    let cmd = "image.adjustments.blackWhite.auto";
+    let st = s.active().ok_or(EngineError::NoDocument)?;
+    let id = match p.get("layer") {
+        None | Some(Value::Null) => st.active_layer.ok_or_else(|| EngineError::Other("no active layer".into()))?,
+        Some(v) => photocraft_doc::LayerId(v.as_u64().ok_or_else(|| bad(cmd, "`layer` must be a layer id"))?),
+    };
+    let filter = match p.get("filter") {
+        None | Some(Value::Null) => None,
+        Some(v) => Some(v.as_u64().and_then(|i| usize::try_from(i).ok()).ok_or_else(|| bad(cmd, "`filter` must be a smart filter index"))?),
+    };
+    let layer = st.doc.layer(id).ok_or(EngineError::NoLayer(id))?;
+    let area = st.doc.bounds();
+    // Rendering or reading a canvas past the render limit gives nothing to sample: say so rather
+    // than answer with the default mix.
+    if u64::from(area.width()) * u64::from(area.height()) > photocraft_compose::MAX_RENDER_PIXELS {
+        return Err(bad(cmd, "the canvas is too large to analyse"));
+    }
+    let read = |surf: &Surface| -> Vec<[f32; 4]> {
+        let fmt = surf.format();
+        surf.read_region(area).chunks_exact(fmt.channels()).map(|c| to_rgba(&fmt, c)).collect()
+    };
+    let rgba: Vec<[f32; 4]> = match (&layer.content, filter) {
+        (LayerContent::Smart(sm), Some(i)) => {
+            if i >= sm.smart_filters.len() {
+                return Err(bad(cmd, format!("layer \"{}\" has no smart filter {i}", layer.name)));
+            }
+            let below = crate::smart_cmds::render_below_filter(&st.doc, sm, i)?
+                .ok_or_else(|| EngineError::Other("the smart object's contents are unavailable".into()))?;
+            read(&below)
+        }
+        (_, Some(_)) => return Err(bad(cmd, "`filter` needs a smart object layer")),
+        (LayerContent::Adjustment(_), None) => {
+            let mut below = (*st.doc).clone();
+            hide_from(&mut below.layers, id);
+            photocraft_compose::render(&below, area).into_px()
+        }
+        (_, None) => read(layer.surface().ok_or_else(|| EngineError::Other(format!("layer \"{}\" has no pixels", layer.name)))?),
+    };
+    let w = auto_black_white(&auto_bw_sample(&rgba));
+    Ok(Value::Object(crate::adjust_params::HUE_RANGES.iter().zip(w).map(|(k, v)| ((*k).to_string(), json!(v))).collect()))
 }
 
 #[cfg(test)]

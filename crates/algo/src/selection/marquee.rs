@@ -30,13 +30,21 @@ fn decode8(b: u8) -> f32 {
 }
 
 /// An ellipse inscribed in a rectangle, tested in `f32` exactly as the Elliptical Marquee
-/// always has (so its anti-aliased edge keeps the same bytes).
+/// always has (so its hard edge keeps the same bytes).
 struct Ellipse {
     cx: f32,
     cy: f32,
     rx: f32,
     ry: f32,
+    /// At most 3 px across: the anti-aliased edge keeps its 4×4 sub-samples (#11391 measured
+    /// only larger ellipses).
+    small: bool,
+    /// `1 / rx`, `1 / ry`, `1 / rx²` and `1 / ry²` for [`Ellipse::ramp`].
+    inv: [f64; 4],
 }
+
+/// The widest an ellipse is across and still [`Ellipse::small`].
+const SMALL: u32 = 3;
 
 impl Ellipse {
     fn new(r: Rect) -> Self {
@@ -45,7 +53,31 @@ impl Ellipse {
             cy: (i64::from(r.y0) + i64::from(r.y1)) as f32 / 2.0,
             rx: r.width() as f32 / 2.0,
             ry: r.height() as f32 / 2.0,
+            small: r.width().min(r.height()) <= SMALL,
+            inv: {
+                let (rx, ry) = (f64::from(r.width()) / 2.0, f64::from(r.height()) / 2.0);
+                [1.0 / rx, 1.0 / ry, 1.0 / (rx * rx), 1.0 / (ry * ry)]
+            },
         }
+    }
+
+    /// The anti-aliased edge's coverage of pixel `(x, y)`, as Photoshop draws it (#11391): with
+    /// `F` the normalised radius at the pixel's centre, `(F - 1) / (|∂F/∂x| + |∂F/∂y|)` is the
+    /// centre's distance to the edge measured in the pixel's own width across the edge, and the
+    /// coverage ramps linearly over that width. An axis-aligned edge gets the pixel's exact
+    /// area; a 45° edge ramps over √2 px. 1 exactly at and around the centre.
+    #[inline]
+    fn ramp(&self, x: i32, y: i32) -> f64 {
+        let [irx, iry, irx2, iry2] = self.inv;
+        let (dx, dy) = (f64::from(x) + 0.5 - f64::from(self.cx), f64::from(y) + 0.5 - f64::from(self.cy));
+        let (u, v) = (dx * irx, dy * iry);
+        let f = (u * u + v * v).sqrt();
+        // `f · (|∂F/∂x| + |∂F/∂y|)`; 0 only at the centre itself.
+        let across = dx.abs() * irx2 + dy.abs() * iry2;
+        if across <= 0.0 {
+            return 1.0;
+        }
+        (0.5 - (f - 1.0) * f / across).clamp(0.0, 1.0)
     }
 
     #[inline]
@@ -54,31 +86,47 @@ impl Ellipse {
         dx * dx + dy * dy <= 1.0
     }
 
-    /// Whether every point of pixel `(x, y)` that the coverage samples is inside: its four
-    /// corners (anti-aliased) or its centre. Along a row the pixels where this holds form one
-    /// run: each test is monotonic in the distance from the centre (IEEE rounding is monotonic).
+    /// Whether pixel `(x, y)` is fully selected: its centre is inside (hard edge), its four
+    /// corners are (a small anti-aliased ellipse), or its [`Ellipse::ramp`] is 1. Along a row
+    /// the pixels where this holds form one run: each test grows with the distance from the
+    /// centre; [`row_span`] checks both ends of the run.
     #[inline]
     fn full(&self, x: i32, y: i32, aa: bool) -> bool {
         let (fx, fy) = (x as f32, y as f32);
         if !aa {
             return self.inside(fx + 0.5, fy + 0.5);
         }
-        self.inside(fx, fy) && self.inside(fx + 1.0, fy) && self.inside(fx, fy + 1.0) && self.inside(fx + 1.0, fy + 1.0)
+        if self.small {
+            return self.inside(fx, fy) && self.inside(fx + 1.0, fy) && self.inside(fx, fy + 1.0) && self.inside(fx + 1.0, fy + 1.0);
+        }
+        self.ramp(x, y) >= 1.0
     }
 
-    /// Coverage of pixel `(x, y)` in sixteenths: 16 when [`Ellipse::full`], else (anti-aliased)
-    /// the number of its 4×4 sub-samples inside.
+    /// The byte pixel `(x, y)` stores: `one` when [`Ellipse::full`], 0 outside a hard edge, and
+    /// otherwise the fraction of its 4×4 sub-samples inside (small) or its [`Ellipse::ramp`].
     #[inline]
-    fn coverage(&self, x: i32, y: i32, aa: bool) -> u8 {
+    fn coverage(&self, x: i32, y: i32, aa: bool, enc: &[u8; 17]) -> u8 {
+        let one = enc[16];
+        if aa && !self.small {
+            // One ramp: a full pixel's is 1, which encodes as `one`.
+            // `encode8`'s rounding, inline: this runs for every edge pixel.
+            return (self.ramp(x, y) as f32 * 255.0 + 0.5) as u8;
+        }
         if self.full(x, y, aa) {
-            return 16;
+            return one;
         }
         if !aa {
             return 0;
         }
         let (fx, fy) = (x as f32, y as f32);
-        (0..16u8).filter(|i| self.inside(fx + ((i % 4) as f32 + 0.5) / 4.0, fy + ((i / 4) as f32 + 0.5) / 4.0)).count() as u8
+        let n = (0..16u8).filter(|i| self.inside(fx + ((i % 4) as f32 + 0.5) / 4.0, fy + ((i / 4) as f32 + 0.5) / 4.0)).count();
+        enc.get(n).copied().unwrap_or(one)
     }
+}
+
+/// The bytes for 0/16 … 16/16 coverage.
+fn sixteenths() -> [u8; 17] {
+    std::array::from_fn(|n| encode8(n as f32 / 16.0))
 }
 
 /// One row of the ellipse: nothing outside `lo..hi`, fully selected in `full_lo..full_hi`, and
@@ -94,7 +142,7 @@ struct RowSpan {
 /// Bounds row `y` of `e` within `cut.x0..cut.x1` from the exact (f64) ellipse, widened by a
 /// margin that covers the f32 tests' rounding. The bounds are then checked with the exact tests
 /// (the fully selected run at both ends, nothing just outside); any doubt evaluates the whole row.
-fn row_span(e: &Ellipse, y: i32, cut: Rect, aa: bool) -> RowSpan {
+fn row_span(e: &Ellipse, y: i32, cut: Rect, aa: bool, enc: &[u8; 17]) -> RowSpan {
     let exact = RowSpan { lo: cut.x0, full_lo: cut.x1, full_hi: cut.x1, hi: cut.x1 };
     let (cx, cy, rx, ry) = (f64::from(e.cx), f64::from(e.cy), f64::from(e.rx), f64::from(e.ry));
     // Every point the tests sample in this row lies in `y..y + 1`.
@@ -118,14 +166,15 @@ fn row_span(e: &Ellipse, y: i32, cut: Rect, aa: bool) -> RowSpan {
     if inner < 0.0 || full_lo >= full_hi {
         (full_lo, full_hi) = (hi, hi);
     }
-    let empty = |x: i32| e.coverage(x, y, aa) == 0;
+    let empty = |x: i32| e.coverage(x, y, aa, enc) == 0;
     let ok = (lo <= cut.x0 || empty(lo - 1)) && (hi >= cut.x1 || empty(hi)) && (full_lo >= full_hi || (e.full(full_lo, y, aa) && e.full(full_hi - 1, y, aa)));
     if ok { RowSpan { lo, full_lo, full_hi, hi } } else { exact }
 }
 
 /// The Elliptical Marquee's shape: the ellipse inscribed in `r`, cut to `clip`, as a GRAY8
-/// selection. Anti-aliased edge pixels hold the fraction of their 4×4 sub-samples inside;
-/// without anti-aliasing a pixel is selected when its centre is inside.
+/// selection. Anti-aliased edge pixels ramp across the edge as in Photoshop ([`Ellipse::ramp`];
+/// an ellipse at most 3 px across keeps the fraction of 4×4 sub-samples inside); without
+/// anti-aliasing a pixel is selected when its centre is inside.
 pub fn ellipse_surface(r: Rect, clip: Rect, anti_alias: bool) -> Surface {
     let mut s = Surface::new(PixelFormat::GRAY8);
     let cut = r.intersect(&clip);
@@ -133,9 +182,9 @@ pub fn ellipse_surface(r: Rect, clip: Rect, anti_alias: bool) -> Surface {
         return s;
     }
     let e = Ellipse::new(r);
-    let enc: [u8; 17] = std::array::from_fn(|n| encode8(n as f32 / 16.0));
+    let enc = sixteenths();
     let one = encode8(1.0);
-    let rows = par_map(cut.height() as usize, |i| row_span(&e, cut.y0 + i as i32, cut, anti_alias));
+    let rows = par_map(cut.height() as usize, |i| row_span(&e, cut.y0 + i as i32, cut, anti_alias, &enc));
     let span = |y: i32| rows.get(usize::try_from(y - cut.y0).ok()?);
     let full = s.solid_tile(&[1.0]);
     let blank = s.solid_tile(&[0.0]);
@@ -159,11 +208,11 @@ pub fn ellipse_surface(r: Rect, clip: Rect, anti_alias: bool) -> Surface {
                 d.fill(one);
             }
             for x in (sp.lo.max(tr.x0)..sp.full_lo.min(tr.x1)).chain(sp.full_hi.max(tr.x0)..sp.hi.min(tr.x1)) {
-                let n = e.coverage(x, y, anti_alias);
+                let n = e.coverage(x, y, anti_alias, &enc);
                 if n > 0
                     && let Some(d) = tile.get_or_insert_with(|| Tile::clone(&blank)).bytes_mut().get_mut(at(x))
                 {
-                    *d = enc.get(usize::from(n)).copied().unwrap_or(one);
+                    *d = n;
                 }
             }
         }
@@ -302,7 +351,8 @@ pub fn combine_sparse(a: &Surface, b: &Surface, area: Rect, f: impl Fn(f32, f32)
 mod tests {
     use super::*;
 
-    /// The Elliptical Marquee as it was: every pixel tested and written one at a time.
+    /// The Elliptical Marquee one pixel at a time: every pixel tested and written on its own (the
+    /// anti-aliased ramp through [`Ellipse::ramp`]).
     fn old_ellipse(r: Rect, area: Rect, aa: bool) -> Surface {
         let cut = r.intersect(&area);
         let mut shape = Surface::new(PixelFormat::GRAY8);
@@ -318,6 +368,8 @@ mod tests {
                 let corners = [(fx, fy), (fx + 1.0, fy), (fx, fy + 1.0), (fx + 1.0, fy + 1.0)].iter().filter(|(a, b)| inside(*a, *b)).count();
                 let cov = if !aa {
                     if inside(fx + 0.5, fy + 0.5) { 1.0 } else { 0.0 }
+                } else if r.width().min(r.height()) > SMALL {
+                    Ellipse::new(r).ramp(x, y) as f32
                 } else if corners == 4 {
                     1.0
                 } else {

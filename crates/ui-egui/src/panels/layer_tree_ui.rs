@@ -24,6 +24,7 @@ pub fn display_rows(doc: &Document, show_all: bool) -> Vec<(usize, &Layer)> {
         for l in layers.iter().rev() {
             out.push((depth, l));
             if let LayerContent::Group(g) = &l.content
+                && l.frame.is_none()
                 && (g.expanded || show_all)
             {
                 rec(&g.children, depth + 1, show_all, out);
@@ -39,7 +40,7 @@ pub fn display_rows(doc: &Document, show_all: bool) -> Vec<(usize, &Layer)> {
 /// Mask session's working text, which is no layer to the user: Photoshop shows only the mask
 /// overlay while you type (#3036).
 pub fn panel_rows<'a>(app: &PhotocraftApp, doc: &'a Document) -> Vec<(usize, &'a Layer)> {
-    let mut rows = display_rows(doc, crate::layer_filter_ui::Filter::of(&app.ui).active());
+    let mut rows = display_rows(doc, crate::layer_filter_ui::Filter::of(&app.ui).show_all());
     if let Some(working) = app.ui.text_edit.as_ref().filter(|ed| ed.mask).map(|ed| ed.layer) {
         rows.retain(|(_, l)| l.id.0 != working);
     }
@@ -51,12 +52,33 @@ pub fn triangle_rect(row: Rect, x: f32) -> Rect {
     Rect::from_min_size(pos2(x - 2.0, row.top()), vec2(TRIANGLE_W + 2.0, row.height()))
 }
 
-/// Paint and handle a group row's disclosure triangle at `*x` (advancing it). Returns true when
-/// it was clicked this frame, so the row doesn't also treat the click as a selection.
+/// A group row's disclosure triangle as a widget only, at `x`: its hit area, the click that queues
+/// `layer.setExpanded`, the tooltip and the accessibility label ("Expand group {name}" / "Collapse
+/// group {name}"). Paints nothing, so a row scrolled out of view keeps the widget (accessibility,
+/// scroll-to) without painting its row (#13117). `None` for a layer that is no group, or a frame.
+pub fn disclosure_widget(ui: &mut egui::Ui, row: Rect, x: f32, l: &Layer, actions: &mut Vec<(String, Value)>) -> Option<egui::Response> {
+    if l.frame.is_some() {
+        return None;
+    }
+    let LayerContent::Group(g) = &l.content else { return None };
+    let resp = ui.interact(triangle_rect(row, x), ui.scope_id().with(("disclosure", l.id.0)), Sense::click());
+    if resp.clicked() {
+        let all = ui.input(|i| i.modifiers.alt);
+        actions.push(("layer.setExpanded".into(), json!({"layer": l.id.0, "expanded": !g.expanded, "all": all})));
+    }
+    let (verb, name) = (if g.expanded { tl!("Collapse") } else { tl!("Expand") }, l.name.clone());
+    let tip = if g.expanded { tl!("Collapse group  ({key}-click: all groups)") } else { tl!("Expand group  ({key}-click: all groups)") };
+    let resp = resp.on_hover_text(crate::i18n::fmt(tip, &[("key", &crate::shortcuts::pretty("Alt"))]));
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, format!("{verb} group {name}")));
+    Some(resp)
+}
+
+/// Paint and handle a group row's disclosure triangle at `*x` (advancing it): the widget of
+/// [`disclosure_widget`] plus the triangle. Returns true when it was clicked this frame, so the row
+/// doesn't also treat the click as a selection.
 pub fn disclosure(ui: &mut egui::Ui, row: Rect, x: &mut f32, l: &Layer, actions: &mut Vec<(String, Value)>) -> bool {
+    let Some(resp) = disclosure_widget(ui, row, *x, l, actions) else { return false };
     let LayerContent::Group(g) = &l.content else { return false };
-    let hit = triangle_rect(row, *x);
-    let resp = ui.interact(hit, ui.scope_id().with(("disclosure", l.id.0)), Sense::click());
     let t = Tokens::get(ui.ctx());
     let c = pos2(*x + TRIANGLE_W / 2.0 - 1.0, row.center().y);
     let s = 3.5;
@@ -68,16 +90,7 @@ pub fn disclosure(ui: &mut egui::Ui, row: Rect, x: &mut f32, l: &Layer, actions:
     let color = if resp.hovered() { t.text } else { t.icon };
     ui.painter().add(Shape::convex_polygon(pts, color, Stroke::NONE));
     *x += TRIANGLE_W;
-    let clicked = resp.clicked();
-    if clicked {
-        let all = ui.input(|i| i.modifiers.alt);
-        actions.push(("layer.setExpanded".into(), json!({"layer": l.id.0, "expanded": !g.expanded, "all": all})));
-    }
-    let (verb, name) = (if g.expanded { tl!("Collapse") } else { tl!("Expand") }, l.name.clone());
-    let tip = if g.expanded { tl!("Collapse group  ({key}-click: all groups)") } else { tl!("Expand group  ({key}-click: all groups)") };
-    let resp = resp.on_hover_text(crate::i18n::fmt(tip, &[("key", &crate::shortcuts::pretty("Alt"))]));
-    resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, format!("{verb} group {name}")));
-    clicked
+    resp.clicked()
 }
 
 #[cfg(test)]

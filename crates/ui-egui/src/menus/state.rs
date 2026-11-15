@@ -12,9 +12,10 @@ pub fn is_enabled(app: &PhotocraftApp, id: &str) -> bool {
     if id == "ui.symmetryTransform" {
         return crate::symmetry_ui::can_transform(app);
     }
-    // Draft Pen points can be undone even when the document has no History entries.
-    if id == "edit.undo" && app.ui.pen.as_ref().is_some_and(|pen| !pen.knots.is_empty()) {
-        return true;
+    // Draft Pen points can be undone even when the document has no History entries; Redo would
+    // put a finished Pen path back beside its own edited draft. Step Backward/Forward alike.
+    if let Some(on) = crate::vector_ui::pen_history_enabled(app, id) {
+        return on;
     }
     // Photoshop greys these for the Background layer, other layer kinds or single-layer documents.
     if crate::enable_rules::disabled(app, id) {
@@ -80,6 +81,7 @@ pub fn is_enabled(app: &PhotocraftApp, id: &str) -> bool {
         // "Custom…" is the full Proof Setup dialog.
         "view.proofSetup.custom" => app.session.active().is_some(),
         "view.rulers" | "view.show.grid" | "view.show.guides" | "view.snap" | "view.lockGuides" => true,
+        "view.editSelectedGuides" | "view.clearSelectedGuides" => crate::guide_select::selected(app).is_some(),
         "edit.cut" | "edit.copy" if app.ui.text_edit.is_some() => crate::type_tool::selected_range(app).is_some(),
         "edit.paste" | "select.all" if app.ui.text_edit.is_some() => true,
         // An image copied in another app can only be seen by reading the OS clipboard, which happens
@@ -150,6 +152,12 @@ pub(super) fn checked(app: &PhotocraftApp, id: &str) -> Option<bool> {
     if id == "select.isolateLayers" {
         return Some(app.session.active().is_some_and(|d| !d.isolated_layers.is_empty()));
     }
+    // Edit › Transform › Warp carries a check while the active layer is warped (a smart object
+    // with a stored warp, or a Warp box open), as the reference's does: picking it then edits
+    // that warp (#9798).
+    if id == "edit.transform.warp" {
+        return Some(crate::transform_tool::warps_active_layer(app));
+    }
     if id == "view.proofColors" || id == "view.gamutWarning" {
         let Some(d) = app.session.active() else { return Some(false) };
         let pv = app.session.color.proof(d.doc.id);
@@ -198,6 +206,7 @@ pub(super) fn checked(app: &PhotocraftApp, id: &str) -> Option<bool> {
         "window.toggle.dock" => p.dock,
         "window.togglePanels" => p.toolbar || p.options_bar || p.dock,
         "window.toggle.options" => p.options_bar,
+        "window.toggle.contextualTaskBar" => p.context_task_bar,
         "window.toggle.brushSettings" => p.brush_settings,
         "window.toggle.brushes" => p.brushes,
         _ => return None,
@@ -211,7 +220,7 @@ pub(crate) fn reveal_label() -> &'static str {
     if cfg!(target_os = "macos") {
         "Reveal in Finder"
     } else if cfg!(windows) {
-        "Show in Explorer"
+        "Reveal in Explorer"
     } else {
         "Show in Folder"
     }

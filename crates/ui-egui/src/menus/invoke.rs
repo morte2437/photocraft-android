@@ -10,6 +10,7 @@ pub(crate) fn panel_alias(id: &str) -> Option<&'static str> {
         "navigator" | "info" | "histogram" => "window.toggle.navigator",
         "tools" => "window.toggle.toolbar",
         "options" => "window.toggle.options",
+        "contextualTaskBar" => "window.toggle.contextualTaskBar",
         "brushSettings" => "window.toggle.brushSettings",
         "brushes" => "window.toggle.brushes",
         _ => return None,
@@ -38,12 +39,40 @@ pub(super) fn workspace_name(id: &str) -> Option<&'static str> {
     })
 }
 
+/// Whether command `id` leaves a Type box-handle drag going: only the ones that change what is
+/// on screen and nothing else. `UI_COMMANDS` is every command the shell carries out itself, so it
+/// can't tell them apart: it holds `edit.freeTransform` and `file.save`, which must see the dragged
+/// box, `view.clearSelectedGuides`, which edits the document, and `window.nextDocument`, which
+/// switches to another one mid-drag. So the commands that cannot touch either are listed one by
+/// one, and the panel ones (open, close, arrange: `window.panel.*`, `window.toggle.*` and
+/// `type.panels.*`, the Character panel's Cmd+T among them) by prefix, since they only lay out
+/// windows. Everything else applies the box first, which is harmless when no drag is going.
+fn keeps_box_drag(id: &str) -> bool {
+    const VIEW: &[&str] = &[
+        "view.zoomIn",
+        "view.zoomOut",
+        "view.fitOnScreen",
+        "view.actualPixels",
+        "view.rotateView",
+        "view.resetView",
+        "view.screenMode.cycle",
+        "view.darkenInterface",
+        "view.lightenInterface",
+    ];
+    VIEW.contains(&id) || ["window.panel.", "window.toggle.", "type.panels."].iter().any(|prefix| id.starts_with(prefix))
+}
+
 /// Run a command id from any source (menu, shortcut, palette, automation).
 pub fn invoke(app: &mut PhotocraftApp, ctx: &egui::Context, id: &str, params: Value) -> Result<Value, String> {
     if app.automation_input
         && let Some(authorize) = app.services.automation_command.as_ref()
     {
         authorize(id, &params)?;
+    }
+    // A held Type box handle applies its box before any command that may read or edit the
+    // document runs; a command that edits it first would make the drag's box stale and lose it.
+    if !keeps_box_drag(id) {
+        crate::type_box_preview::end_drag(app);
     }
     if crate::discard_ui::intercept(app, id, &params) {
         return Ok(Value::Null);
@@ -56,14 +85,45 @@ pub fn invoke(app: &mut PhotocraftApp, ctx: &egui::Context, id: &str, params: Va
     Ok(r)
 }
 
+/// Layer › New › Convert to Frame without params: asks for the frame's name and size first.
+fn frame_convert_dialog(app: &mut PhotocraftApp, id: &str) -> Result<Value, String> {
+    let st = app.session.active().ok_or("no document")?;
+    let layer = st.active_layer.and_then(|id| st.doc.layer(id)).ok_or("select a shape or type layer")?;
+    let b = photocraft_engine::transform_cmds::transform_frame(&st.doc, layer);
+    let mut fixed = serde_json::Map::new();
+    fixed.insert("layer".into(), json!(layer.id.0));
+    let dialog = crate::filter_dialog::open_with_spec(app, id, tl!("New Frame"), r#"{"name":text,"width":1..300000=100,"height":1..300000=100}"#, fixed);
+    if let Some(d) = app.ui.dialog_mut(dialog) {
+        d.fields.insert("__preview".into(), json!(false));
+        d.fields.insert("name".into(), json!("Frame"));
+        d.fields.insert("width".into(), json!(b.width().max(1)));
+        d.fields.insert("height".into(), json!(b.height().max(1)));
+    }
+    Ok(json!({"dialog":dialog}))
+}
+
 /// [`invoke`] without the unsaved-changes prompt, for once the user has already answered it.
 fn invoke_early_commands(app: &mut PhotocraftApp, ctx: &egui::Context, id: &str, params: &Value) -> Option<Result<Value, String>> {
     if let Some(tool) = crate::tool_shortcuts::tool(id) {
         crate::tool_memory::select(app, tool);
+        // The tool's own brush now, not at the next frame, so a paint command right after uses
+        // it: a first Pencil pick its 1 px tip (#12200), any other tool its remembered brush.
+        crate::paint_mouse::sync_tool_brush(app);
         return Some(Ok(json!({"tool": tool})));
+    }
+    if id == "layer.frame.convert" && params.as_object().is_none_or(|o| o.is_empty()) {
+        return Some(frame_convert_dialog(app, id));
     }
     if id == "help.checkForUpdates" {
         return Some(crate::updates_ui::check(app, ctx, params.clone()));
+    }
+    // Layer › Copy CSS: the engine writes the CSS, the clipboard is the shell's (#9372).
+    if id == photocraft_engine::layer_css_cmds::ID {
+        return Some(app.run(id, params.clone()).inspect(|r| {
+            if let Some(css) = r.get("css").and_then(Value::as_str) {
+                ctx.copy_text(css.to_string());
+            }
+        }));
     }
     if id == "ui.symmetryTransform" {
         return Some(crate::symmetry_ui::begin(app).map(|_| Value::Null));
@@ -75,9 +135,12 @@ fn invoke_early_commands(app: &mut PhotocraftApp, ctx: &egui::Context, id: &str,
     if let Some(r) = crate::rasterize_prompt::intercept_filter(app, id, params) {
         return Some(r);
     }
-    // A pending Pen anchor is gesture state; Edit › Undo must match the keyboard.
-    if id == "edit.undo" && crate::vector_ui::pen_undo_last_point(app) {
-        return Some(Ok(Value::Null));
+    // A pending Pen anchor is gesture state; Edit › Undo must match the keyboard. Undo back to
+    // where a Pen path was finished (closed, ↩/Esc, another tool) gives the path back to the Pen
+    // rather than deleting it; Redo finishes it again. Step Backward/Forward step the same way.
+    // An open Free Transform or Crop box steps itself first.
+    if let Some(r) = crate::vector_ui::pen_history_step(app, id) {
+        return Some(r.map(|_| Value::Null));
     }
     // Image › Crop while the Crop tool has a pending frame commits that frame (#1918).
     if id == "image.crop" && crate::crop_ui::pending(app) {
@@ -182,15 +245,23 @@ fn invoke_shell_commands(app: &mut PhotocraftApp, ctx: &egui::Context, id: &str,
     None
 }
 
+/// The commands the shell answers itself before the engine (File › Open and Save with the
+/// dialogs they ask, loading a path as a selection, …); `Ok(None)` for any other.
 fn invoke_file_commands(app: &mut PhotocraftApp, ctx: &egui::Context, id: &str, params: &Value) -> Result<Option<Value>, String> {
     let result = match id {
         // ⌘↩ / Ctrl+Enter (#306): load the path selected in the Paths panel (or the one being
         // drawn) as a selection.
         "path.toSelection" if params.get("name").is_none() => crate::vector_ui::path_to_selection(app, params.clone()),
-        // ⌘⇧↩ / ⌘⌥↩ load the same path, adding it to or subtracting it from the selection.
-        "path.addToSelection" | "path.subtractFromSelection" if params.get("name").is_none() => {
+        // ⌘⇧↩ / ⌘⌥↩ / ⇧⌥⌘↩ load the same path, adding it to, subtracting it from or intersecting
+        // it with the selection.
+        "path.addToSelection" | "path.subtractFromSelection" | "path.intersectWithSelection" if params.get("name").is_none() => {
             let mut p = params.as_object().cloned().unwrap_or_default();
-            p.insert("mode".into(), json!(if id == "path.addToSelection" { "add" } else { "subtract" }));
+            let mode = match id {
+                "path.addToSelection" => "add",
+                "path.subtractFromSelection" => "subtract",
+                _ => "intersect",
+            };
+            p.insert("mode".into(), json!(mode));
             crate::vector_ui::path_to_selection(app, Value::Object(p))
         }
         // Layer › Rename Layer from a menu starts in-place renaming in the Layers panel.
@@ -218,7 +289,16 @@ fn invoke_file_commands(app: &mut PhotocraftApp, ctx: &egui::Context, id: &str, 
             }
         }
         "file.import.videoFramesToLayers" if params.get("path").and_then(Value::as_str).is_none() => {
-            app.ask_folder(|app, path| app.run("file.import.videoFramesToLayers", json!({"path": path})).map_err(|e| e.to_string()))
+            app.ask_folder(|app, path| {
+                let r = app.run("file.import.videoFramesToLayers", json!({"path": &path}));
+                if let Ok(v) = &r {
+                    // #11113: a truncated GIF or WebP in the folder salvages its early frames;
+                    // the command's warning says the animation arrived shortened.
+                    let what = crate::i18n::fmt(crate::i18n::t("Imported {name}"), &[("name", &crate::file_open::display_name(&path))]);
+                    crate::notices::footage_warnings(app, v, &what);
+                }
+                r.map_err(|e| e.to_string())
+            })
         }
         // File > Import > Variable Data Sets… asks for the CSV (#8816); with a `path` the engine reads it itself.
         "file.import.variableDataSets" if params.get("path").and_then(Value::as_str).is_none() => {
@@ -257,7 +337,19 @@ fn invoke_file_commands(app: &mut PhotocraftApp, ctx: &egui::Context, id: &str, 
                             crate::notices::post(app, title, lines, false, None);
                             app.save_as_with(None, choices)
                         }
-                        // A flat file asks for its name; confirming its own file records a
+                        // Its own flat file, while it still keeps the whole document (one plain
+                        // layer it can store): written back, as Photoshop's Save does (#5733),
+                        // asking first if another app changed it (#6596), then JPEG Options for a
+                        // JPEG (#2223), or TIFF, Targa or DDS Options for those. Cancel in either writes
+                        // nothing.
+                        Some((false, path, d)) if crate::saves_flat_in_place(&d.doc, &path) => {
+                            let doc = d.doc.id;
+                            if app.save_options_open() {
+                                return Err(crate::SAVE_OPTIONS_OPEN.into());
+                            }
+                            crate::disk_change_prompt::intercept(app, doc, &path, false, choices).unwrap_or_else(|| app.save_flat_in_place(path, choices))
+                        }
+                        // Any other flat file asks for its name; confirming its own file records a
                         // plain Save that writes the file an action is played on (#3531).
                         _ => app.save_dialog_flow(None, choices, true),
                     }
@@ -301,6 +393,7 @@ fn invoke_file_commands(app: &mut PhotocraftApp, ctx: &egui::Context, id: &str, 
     result.map(Some)
 }
 
+/// Dispatch UI actions and dialogs, falling back to the engine for other commands.
 pub(crate) fn invoke_unguarded(app: &mut PhotocraftApp, ctx: &egui::Context, id: &str, params: Value) -> Result<Value, String> {
     if let Some(result) = crate::smart_svg_ui::intercept(app, id, &params) {
         return result;
@@ -380,7 +473,8 @@ pub(crate) fn invoke_unguarded(app: &mut PhotocraftApp, ctx: &egui::Context, id:
         // Edit › Stroke…: open its full options dialog when called from menus/context
         // menus. Explicit params from Actions, CLI, MCP and control channel execute directly.
         crate::stroke_ui::COMMAND if params.as_object().is_none_or(|o| o.is_empty()) => {
-            if let Some(Err(why)) = photocraft_engine::commands::find(id).map(|c| (c.enabled)(&app.session)) {
+            // A targeted smart-filter mask can admit Stroke without a raster layer.
+            if let Some(why) = app.session.disabled_reason_with(id, &app.with_mask_target(id, params)) {
                 return Err(why);
             }
             Ok(json!({"dialog": crate::stroke_ui::open(app)}))
@@ -395,18 +489,34 @@ pub(crate) fn invoke_unguarded(app: &mut PhotocraftApp, ctx: &egui::Context, id:
             Ok(json!({"dialog": crate::new_group_ui::open(app, id)}))
         }
         // Channels › Channel Options… without params: the dialog on the targeted alpha/spot
-        // channel, Layer Mask Display Options on a targeted layer mask, or Quick Mask Options while
-        // in Quick Mask (with params: the engine directly).
+        // channel (also in Quick Mask mode, where its row is the selected one), Quick Mask Options
+        // in Quick Mask otherwise, or Layer Mask Display Options on a targeted layer mask (with
+        // params: the engine directly).
         crate::channel_options_ui::COMMAND if params.as_object().is_none_or(|o| o.is_empty()) => {
             let mask = app.layer_mask_targeted();
             let st = app.session.active().ok_or("no document is open")?;
             let channel = match st.channel_view.target {
-                _ if st.doc.quick_mask.is_some() => json!("quickMask"),
                 photocraft_engine::channel_cmds::ChannelTarget::Alpha(i) => json!(i),
+                _ if st.doc.quick_mask.is_some() => json!("quickMask"),
                 _ if mask => json!("mask"),
                 _ => return Err("target an alpha or spot channel, or a layer mask, first".into()),
             };
             let dialog = crate::channel_options_ui::open(app, &channel).ok_or("no such channel")?;
+            Ok(json!({"dialog": dialog}))
+        }
+        // Channels › New Channel… without params: its dialog (with params: the engine). The
+        // panel's New button makes one at once, as Photoshop's does.
+        crate::channel_options_ui::NEW_CHANNEL if params.as_object().is_none_or(|o| o.is_empty()) => {
+            let dialog = crate::channel_options_ui::open_new_channel(app).ok_or("no document is open")?;
+            Ok(json!({"dialog": dialog}))
+        }
+        // Channels › Merge Channels… without params: its dialog, which picks the mode and the
+        // documents (with params: the engine).
+        crate::dialogs::merge_channels_ui::COMMAND if params.as_object().is_none_or(|o| o.is_empty()) => {
+            if let Some(Err(why)) = photocraft_engine::commands::find(id).map(|c| (c.enabled)(&app.session)) {
+                return Err(why);
+            }
+            let dialog = crate::dialogs::merge_channels_ui::open(app).ok_or("no document is open")?;
             Ok(json!({"dialog": dialog}))
         }
         // Channels › New Spot Channel… without params: its dialog (with params: the engine).
@@ -414,6 +524,8 @@ pub(crate) fn invoke_unguarded(app: &mut PhotocraftApp, ctx: &egui::Context, id:
             let dialog = crate::channel_options_ui::open_new_spot(app).ok_or("no document is open")?;
             Ok(json!({"dialog": dialog}))
         }
+        // Select › Find Layers: the Layers panel's Name filter (#10884).
+        "select.findLayers" => crate::layer_filter_ui::find::invoke(app, ctx, params),
         // Photoshop's "Select and Mask…" is the engine's select.refineEdge.
         // Select › Color Range… from the menu: the dialog (with params: the engine directly).
         "select.colorRange" if params.as_object().is_none_or(|o| o.is_empty()) => Ok(json!({"dialog": crate::color_range_ui::open(app)})),
@@ -424,7 +536,8 @@ pub(crate) fn invoke_unguarded(app: &mut PhotocraftApp, ctx: &egui::Context, id:
         }
         // Edit › Fill… from the menu or its shortcuts: the Fill dialog (with params: the engine).
         crate::fill_ui::COMMAND if params.as_object().is_none_or(|o| o.is_empty()) => {
-            if let Some(Err(why)) = photocraft_engine::commands::find(id).map(|c| (c.enabled)(&app.session)) {
+            // Admission follows the effective mask/channel target, just like enablement and run.
+            if let Some(why) = app.session.disabled_reason_with(id, &app.with_mask_target(id, params)) {
                 return Err(why);
             }
             Ok(json!({"dialog": crate::fill_ui::open(app)}))
@@ -464,6 +577,13 @@ pub(crate) fn invoke_unguarded(app: &mut PhotocraftApp, ctx: &egui::Context, id:
         {
             let kind = &ls["layer.layerStyle.".len()..];
             crate::layer_style::open(app, Some(kind)).map(|d| json!({"dialog": d})).ok_or_else(|| "no active layer".to_string())
+        }
+        "layer.videoLayers.reloadFrame" => {
+            let r = app.run(id, params)?;
+            // #11113: reloading a clip salvaged from a truncated GIF or WebP discloses the loss,
+            // as the import and replace-footage paths do.
+            crate::notices::footage_warnings(app, &r, crate::i18n::t("Reloaded the footage"));
+            Ok(r)
         }
         _ => app.run(id, params),
     }
@@ -590,6 +710,10 @@ fn type_command_target(app: &PhotocraftApp) -> Option<Value> {
 fn invoke_view_command(app: &mut PhotocraftApp, ctx: &egui::Context, id: &str, params: &Value) -> Option<Result<Value, String>> {
     match id {
         "view.zoomIn" | "view.zoomOut" | "view.fitOnScreen" | "view.actualPixels" => Some(app.run(id, params.clone())),
+        "view.editSelectedGuides" => Some(crate::new_guide_ui::open_edit(app).map(|_| Value::Null)),
+        "view.clearSelectedGuides" => {
+            Some(crate::guide_select::delete_selected(app).and_then(|done| if done { Ok(Value::Null) } else { Err("No guide is selected".to_string()) }))
+        }
         "view.rulers" | "view.show.grid" | "view.show.guides" | "view.snap" | "view.lockGuides" => {
             let extras = &mut app.ui.extras;
             let slot = match id {
@@ -646,6 +770,10 @@ fn invoke_view_command(app: &mut PhotocraftApp, ctx: &egui::Context, id: &str, p
             Some(crate::sizing::open(app, sz).map(|dialog| json!({"dialog": dialog})).ok_or_else(|| "no document".to_string()))
         }
         "view.newGuide" if params.as_object().is_none_or(|object| object.is_empty()) => Some(Ok(json!({"dialog": crate::new_guide_ui::open(app)}))),
+        // Image › Adjustments › Equalize with a selection asks what to equalize, as in Photoshop.
+        crate::equalize_ui::COMMAND if params.as_object().is_none_or(|object| object.is_empty()) && crate::equalize_ui::asks(app) => {
+            Some(Ok(json!({"dialog": crate::equalize_ui::open(app)})))
+        }
         fl if crate::filter_dialog::has_dialog(fl) && params.as_object().is_none_or(|object| object.is_empty()) => {
             Some(Ok(json!({"dialog": crate::filter_dialog::open(app, fl)})))
         }
@@ -696,6 +824,8 @@ fn invoke_window_command(app: &mut PhotocraftApp, ctx: &egui::Context, id: &str)
         }
         _ if id.starts_with(crate::native_menu::LANGUAGE_PREFIX) => {
             let code = &id[crate::native_menu::LANGUAGE_PREFIX.len()..];
+            // Serbian was `sr` before the catalogs moved to craft-i18n; old scripts still switch.
+            let code = if code.eq_ignore_ascii_case("sr") { "sr-latn" } else { code };
             if code != "auto" && !crate::i18n::Lang::all().any(|lang| lang.code() == code) {
                 Some(Err(format!("unknown UI language `{code}`")))
             } else {
@@ -763,6 +893,7 @@ fn toggle_panel(app: &mut PhotocraftApp, id: &str) -> Result<Value, String> {
         "navigator" => &mut panels.navigator,
         "toolbar" => &mut panels.toolbar,
         "options" => &mut panels.options_bar,
+        "contextualTaskBar" => &mut panels.context_task_bar,
         "brushSettings" => &mut panels.brush_settings,
         "brushes" => &mut panels.brushes,
         "dock" => &mut panels.dock,

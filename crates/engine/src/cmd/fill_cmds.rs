@@ -106,7 +106,8 @@ pub fn fill(s: &mut Session, p: &Value) -> Result<Value> {
     let restore = contents == "history";
     let source = match contents {
         "foreground" => color_source(s, s.tools.foreground),
-        "background" => color_source(s, s.tools.background),
+        // As the document takes the swatch: its gray profile's value in a Grayscale document (#11940).
+        "background" => color_source(s, crate::color_cmds::swatch_in_doc(s, s.tools.background)),
         "color" => color_source(s, color_param(CMD, p, "color", s.tools.foreground)?),
         "black" => Source::Color([0.0, 0.0, 0.0, 1.0]),
         "gray" => Source::Color([128.0 / 255.0, 128.0 / 255.0, 128.0 / 255.0, 1.0]),
@@ -279,7 +280,7 @@ fn content_aware_native_with_options(
     let window = sampling_window(hole_bounds, canvas);
     let n = surf.format().channels();
     let (w, h) = window_size(window)?;
-    let img = surf.read_region(window);
+    let img = crate::allocation::read_region(surf, window, "Content-Aware fill samples")?;
     let len = w.checked_mul(h).ok_or_else(|| EngineError::Other("the area is too large for Content-Aware fill".into()))?;
     let mut hole = crate::allocation::filled(len, false, "Content-Aware fill")?;
     let mut source = crate::allocation::filled(len, false, "Content-Aware fill")?;

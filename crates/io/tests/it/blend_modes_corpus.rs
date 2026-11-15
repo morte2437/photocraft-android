@@ -2,10 +2,10 @@
 //! one 64 × 64 cell per mode, a duck over a rainbow backdrop.
 #![cfg(feature = "corpus")]
 
+use craft_psd::PsdFile;
 use photocraft_color::BlendMode;
 use photocraft_geom::Rect;
 use photocraft_io::{import, merged_composite};
-use photocraft_psd::PsdFile;
 
 const CELL: i32 = 64;
 

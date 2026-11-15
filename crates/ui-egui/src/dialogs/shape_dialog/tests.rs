@@ -81,7 +81,7 @@ fn from_center_and_the_other_tools() {
     press(&mut app, Tool::Triangle, [5.0, 6.0], [5.0, 6.0]);
     let id = only_dialog(&app);
     crate::dialogs::confirm(&mut app, id).unwrap();
-    let LiveShape::Polygon { sides: 3, .. } = live(&app) else { panic!("a triangle") };
+    assert_eq!(live(&app), LiveShape::Triangle { rect: [5.0, 6.0, 100.0, 100.0], corner_radius: 0.0 });
 }
 
 #[test]
@@ -174,7 +174,7 @@ fn a_click_with_jitter_opens_the_dialog_on_hidpi() {
     let i = app.session.active_index().unwrap();
     app.ui.views[i].zoom = 1.0;
     let before = layers(&app);
-    press(&mut app, Tool::Rectangle, [20.0, 30.0], [24.0, 30.0]);
+    press(&mut app, Tool::Rectangle, [20.0, 30.0], [22.0, 30.0]);
     only_dialog(&app);
     assert_eq!(layers(&app), before, "a jittery click draws nothing");
 }
@@ -347,10 +347,42 @@ fn right_click_picks_the_unit_of_that_field_only_and_it_is_not_remembered() {
     set(&mut app, id, json!({"widthUnit": "mm", "width": 50}));
     crate::dialogs::confirm(&mut app, id).unwrap();
     app.run("prefs.set", json!({"path": "unitsAndRulers.rulers", "value": "cm"})).unwrap();
-    press(&mut app, Tool::Rectangle, [40.0, 40.0], [40.0, 40.0]);
+    press(&mut app, Tool::Rectangle, [140.0, 140.0], [140.0, 140.0]);
     let id = only_dialog(&app);
     let mut f = app.ui.dialog_mut(id).unwrap().fields.clone();
     assert_eq!((f.get("widthUnit"), f["width"].as_f64()), (None, Some(50.0)), "the size is remembered, the unit isn't");
     let s = sides(&frame(&egui::Context::default(), &app, &mut f, vec![]));
     assert_eq!(shown(&s), [("1.76".to_string(), "cm".to_string()), ("3.53".to_string(), "cm".to_string())]);
+}
+
+/// CodeRabbit on #9456: in Path mode a click opens no Create dialog, whose OK would make a shape
+/// layer; Path mode never draws one (a drag adds its outline to the work path).
+#[test]
+fn a_path_mode_click_opens_no_create_dialog() {
+    for tool in [Tool::Rectangle, Tool::EllipseShape, Tool::Triangle, Tool::Polygon] {
+        let mut app = app();
+        app.ui.tool_options.shape_mode = "path".into();
+        let before = layers(&app);
+        press(&mut app, tool, [20.4, 30.2], [20.4, 30.2]);
+        assert!(app.ui.dialogs.is_empty(), "{tool:?}: no Create dialog in Path mode");
+        assert_eq!(layers(&app), before, "{tool:?}: and no layer");
+    }
+}
+
+/// CodeRabbit on #9456: a Path-mode click that moved a little, still within the click slop, adds
+/// nothing to the work path either. Its box would round to a 1 × 1 or 2 × 2 px outline.
+#[test]
+fn a_path_mode_click_that_moved_a_little_adds_no_subpath() {
+    let work = |app: &PhotocraftApp| app.session.active().unwrap().doc.work_path.as_ref().map_or(0, |p| p.subpaths.len());
+    for tool in [Tool::Rectangle, Tool::EllipseShape, Tool::Triangle, Tool::Polygon, Tool::Line] {
+        for end in [[20.8, 30.8], [21.8, 31.9]] {
+            let mut app = app();
+            app.ui.tool_options.shape_mode = "path".into();
+            let before = layers(&app);
+            press(&mut app, tool, [20.2, 30.2], end);
+            assert_eq!(work(&app), 0, "{tool:?} to {end:?}: no subpath");
+            assert!(app.ui.dialogs.is_empty(), "{tool:?} to {end:?}: no Create dialog");
+            assert_eq!(layers(&app), before, "{tool:?} to {end:?}: and no layer");
+        }
+    }
 }

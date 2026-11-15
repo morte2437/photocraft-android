@@ -203,7 +203,9 @@ pub fn save_bytes_with_renderer(
         }
         return Ok((bytes, warnings));
     }
-    let result = photocraft_io::export_with_renderer(doc, &ext, opts, &photocraft_raster::Interrupt::NONE, renderer)?;
+    // No ambient authority: a linked path inside the document must not be read and embedded.
+    let opts = ExportOptions { read_linked_files: false, ..opts.clone() };
+    let result = photocraft_io::export_with_renderer(doc, &ext, &opts, &photocraft_raster::Interrupt::NONE, renderer)?;
     Ok((result.bytes, result.warnings))
 }
 

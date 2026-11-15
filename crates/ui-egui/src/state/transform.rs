@@ -73,8 +73,8 @@ pub struct TransformSession {
     pub skew_v: f64,
     /// Free Transform of several selected layers (#6501): every layer the box moves, in
     /// `edit.transform`'s `layers` order. Empty when it moves `layer` alone. `layer` stays the
-    /// active layer, which need not be one of them (the Background is left out, a selected group
-    /// carries its selected children).
+    /// active layer, which need not be one of them (a selected group carries its selected
+    /// children).
     #[serde(default)]
     pub layers: Vec<u64>,
 }

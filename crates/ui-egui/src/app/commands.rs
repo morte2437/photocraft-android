@@ -6,6 +6,7 @@ use super::{
 impl PhotocraftApp {
     /// Run an engine command, reporting errors in the status bar.
     pub fn run(&mut self, id: &str, params: Value) -> Result<Value, String> {
+        let params = if id == "select.findLayers" { crate::layer_filter_ui::find::params_for_run(self, params) } else { params };
         if let Some(result) = delete_layer_prompt::intercept(self, id, &params) {
             return result;
         }
@@ -30,6 +31,13 @@ impl PhotocraftApp {
                 self.ui.vector_mask_target = t == ChannelTarget::VectorMask;
             }
             self.sync_mask_targets();
+        }
+        // Find Layers sets the Layers panel's Name filter however it runs: the menu, the shortcut,
+        // `engine.execute` or an action step (#10884).
+        if id == "select.findLayers"
+            && let Ok(reply) = &result
+        {
+            crate::layer_filter_ui::find::apply(self, reply);
         }
         result
     }
@@ -63,7 +71,16 @@ impl PhotocraftApp {
             self.session.precheck(id, &params).map_err(|e| e.to_string())?;
             transform_tool::commit(self);
             if transform_tool::committing(self).is_some() {
-                return Err(tl!("Free Transform is still being applied; try again when it has finished.").into());
+                // A click stays a click: it runs when the commit lands (#9974). Only a click in the
+                // committing document, one at a time: a script, a control request or an action step
+                // needs its answer now, and a click in another tab wasn't meant for this one.
+                let committing_here = self.transform_preview.as_ref().is_some_and(|pv| self.session.active().is_some_and(|st| st.doc.id == pv.doc.id));
+                let click = !self.automation_input && self.session.authorize.is_none() && self.run_depth == 1;
+                if !click || !committing_here || self.after_transform_commit.is_some() {
+                    return Err(tl!("Free Transform is still being applied; try again when it has finished.").into());
+                }
+                self.after_transform_commit = Some((id.to_string(), params));
+                return Ok(Value::Null);
             }
             if self.ui.transform.is_some() {
                 return Err(if self.ui.status.is_empty() { tl!("The transform couldn't be applied.").into() } else { self.ui.status.clone() });
@@ -75,6 +92,18 @@ impl PhotocraftApp {
         }
         if let Some(result) = smart_svg_ui::intercept(self, id, &params) {
             return result;
+        }
+        // Document exports read committed pixels, not the pending Free Transform preview.
+        // Check on execution (also dialog OK and automation), leaving Folder processing usable.
+        if id == "file.scripts.imageProcessor"
+            && self.ui.transform.is_some()
+            && match params.get("source").and_then(Value::as_str) {
+                Some("open") => true,
+                Some("current") => self.transform_preview.as_ref().is_none_or(|preview| self.session.active().is_some_and(|st| st.doc.id == preview.doc.id)),
+                _ => false,
+            }
+        {
+            return Err("Commit or cancel the transform first".into());
         }
         if let Some(r) = transform_tool::intercept(self, id) {
             return r;
@@ -200,6 +229,23 @@ impl PhotocraftApp {
         self.tool_override.unwrap_or(self.ui.tool)
     }
 
+    /// Selects the newly attached type path on composite channel target so the path becomes immediately editable.
+    fn select_attached_type_path(&mut self, command: &str, result: &Result<Value, String>) {
+        if command != "type.attachToPath" {
+            return;
+        }
+        let attached = result.as_ref().ok().and_then(|value| value.get("layer")).and_then(Value::as_u64);
+        let active = self.session.active().and_then(|state| state.active_layer).map(|layer| layer.0);
+        if attached.is_some() && attached == active {
+            // New path text becomes the editable target; its source work path stays intact.
+            let _ = self.session.execute("channel.target.composite", json!({}));
+            self.ui.selected_path = Some("layer".into());
+            self.ui.vector_mask_target = false;
+            self.ui.mask_target = false;
+        }
+    }
+
+    /// Updates secondary UI state following command execution.
     fn sync_command_side_effects(
         &mut self,
         id: &str,
@@ -255,11 +301,13 @@ impl PhotocraftApp {
                     | "path.toSelection"
                     | "path.addToSelection"
                     | "path.subtractFromSelection"
+                    | "path.intersectWithSelection"
             )
             && self.session.active().is_some_and(|st| st.doc.selection.is_some())
         {
             self.ui.view.extras = true;
         }
+        self.select_attached_type_path(id, result);
         if result.is_ok() && id == "select.toWorkPath" {
             // Make Work Path selects the new work path in the Paths panel, as in Photoshop.
             self.ui.selected_path = Some("work".into());
@@ -290,11 +338,23 @@ impl PhotocraftApp {
         }
     }
 
+    /// Reconciles canvas view state with open documents in the session.
     pub fn sync_views(&mut self) {
+        crate::type_path_placement::cancel_stale(self);
         // The Paths panel selection belongs to the active document. Ordinary edits replace the
         // snapshot and advance its revision; a replaced snapshot without a newer revision is a
         // reopened document, even with the same ID.
         let document = self.session.active().map(|st| (st.doc.id, st.revision, std::sync::Arc::downgrade(&st.doc)));
+        // Crop's Fill goes back to its default entry when another document that was already open
+        // becomes active (a tab switch, or closing the active one), as in the reference
+        // application. A new or opened document isn't in `view_docs` yet, so it keeps the setting,
+        // as do tool switches, commits and cancels, which leave the active document alone (#10894).
+        if let (Some((id, ..)), Some((old_id, ..))) = (&document, &self.path_document)
+            && id != old_id
+            && self.view_docs.contains(id)
+        {
+            self.ui.tool_options.crop_content_aware = false;
+        }
         let same_document = match (&self.path_document, &document) {
             (Some((old_id, old_revision, old_source)), Some((id, revision, source))) => old_id == id && (revision > old_revision || old_source.ptr_eq(source)),
             (None, None) => true,
@@ -304,12 +364,15 @@ impl PhotocraftApp {
             self.ui.selected_path = None;
         }
         self.path_document = document;
+        // A shape box handle drag belongs to its document, revision and tool.
+        crate::shape_bounds_box::cancel_stale(self);
         vector_ui::cancel_stale_pen(self);
         crate::direct_select::cancel_stale(self);
         canvas::cancel_stale_vector_drag(self);
         type_transform::cancel_stale(self);
         crate::cam_transform::cancel_stale(self);
         crate::lasso_ui::cancel_stale(self);
+        crate::retouch_ui::cancel_stale(self);
         // A polygon under construction belongs to the Polygonal Lasso tool, not the next tool.
         if self.ui.tool != Tool::PolygonLasso {
             self.ui.polygon.clear();
@@ -346,6 +409,7 @@ impl PhotocraftApp {
         }
         self.canvases.retain(|(doc, _), _| ids.contains(doc));
         self.navigator_textures.retain(|doc, _| ids.contains(doc));
+        self.snapshot_thumbs.retain(|(doc, _), _| ids.contains(doc));
         // Closing a document cancels its page work; its GPU pages go with `retain_gpu_documents`.
         self.streams.retain(|doc, _| ids.contains(doc));
         self.view_docs = ids;
@@ -355,6 +419,10 @@ impl PhotocraftApp {
         if !self.channel_views.is_empty() {
             let docs = self.session.documents();
             self.channel_views.retain(|id, _| docs.iter().any(|d| d.doc.id.0 == *id));
+        }
+        // With no document left, no canvas paints the Levels clipping display to drop its cache.
+        if self.session.documents().is_empty() {
+            self.levels_clipping = None;
         }
         // Commands may close and reopen a preserved-ID document before the next repaint.
         canvas::retain_gpu_documents(self);

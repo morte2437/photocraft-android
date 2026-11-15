@@ -8,7 +8,8 @@
 //!   `egui::Event::Touch { force }` alongside the emulated pointer. [`Stylus::update`] reads it.
 //!   winit drops the pen's tilt and rotation, so those stay 0, and reports pressure 0 (a tap
 //!   lighter than the pen's first pressure level) as no force, which [`Stylus::update`] reads as
-//!   pressure 0 once it knows a pen is in use.
+//!   pressure 0 once it knows a pen is in use. The desktop app's pointer message hook
+//!   (`photocraft-tablet`) reports which end of the pen is in use through `Services::pen_end`.
 //! - **Web**: eframe forwards touch force but not pen pointer events, so the web runner listens
 //!   to `pointerdown`/`pointermove` itself and writes `pressure`, `tiltX`, `tiltY`, `twist` and
 //!   the eraser button of `pointerType == "pen"` events into the [`StylusFeed`].
@@ -317,9 +318,10 @@ impl Stylus {
     }
 
     /// Did the pen just flip to its eraser end (`Some(true)`) or back to its tip (`Some(false)`)?
-    /// Each flip is reported once; a mouse in between changes nothing.
-    pub(crate) fn take_end_flip(&mut self) -> Option<bool> {
-        let eraser = self.feed.get()?.eraser;
+    /// Each flip is reported once; a mouse in between changes nothing. `platform_end` is the end
+    /// a platform reports outside the feed (Windows), read when the feed has no pen.
+    pub(crate) fn take_end_flip(&mut self, platform_end: Option<bool>) -> Option<bool> {
+        let eraser = self.feed.get().map(|s| s.eraser).or(platform_end)?;
         let flipped = self.end.map_or(eraser, |e| e != eraser);
         self.end = Some(eraser);
         flipped.then_some(eraser)
@@ -332,10 +334,13 @@ impl Stylus {
         if app.drag.is_some() {
             return false;
         }
-        match app.stylus.take_end_flip() {
+        let platform_end = app.services.pen_end.as_ref().and_then(|f| f());
+        match app.stylus.take_end_flip(platform_end) {
             Some(true) if app.ui.tool != Tool::Eraser => {
                 app.stylus.tool_before_eraser = Some(app.ui.tool);
                 app.ui.tool = Tool::Eraser;
+                // A tool switch like any other: Add New Artboard's placing mode ends (#11386).
+                crate::tool_memory::ended_by_tool(app);
                 true
             }
             Some(false) => match app.stylus.tool_before_eraser.take() {

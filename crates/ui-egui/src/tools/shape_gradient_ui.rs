@@ -348,7 +348,7 @@ fn stops_strip(ui: &mut egui::Ui, fill: &Fill, id: egui::Id, fg: [f32; 4], bg: [
         let pos = resp.interact_pointer_pos();
         if let Some(pos) = pos {
             // Dragged well off the strip, a stop is deleted (while at least two remain), as in Photoshop.
-            let off = pos.y > bar.bottom() + 28.0 || pos.y < bar.top() - 26.0;
+            let off = crate::gradient_ui::off_strip(pos, bar);
             let loc = loc_of(pos.x);
             let edit = match drag.marker {
                 Marker::Color(i) if off && start_cs.len() > 2 => json!({"action": "delete", "index": i}),

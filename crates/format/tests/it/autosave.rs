@@ -28,6 +28,24 @@ fn autosave_then_recover() {
     std::fs::remove_dir_all(dir).unwrap();
 }
 
+/// A recovered document opened from a multi-frame GIF comes back at its original path with its
+/// frame count, so File › Save still goes through Save As rather than writing one frame over
+/// the animation (#5733).
+#[test]
+fn recovery_keeps_the_source_image_count() {
+    let dir = temp_dir("recovery-source-images");
+    let mut doc = rich_doc(ColorMode::Rgb, SampleType::U8);
+    doc.file_encoding.source_images = Some(4);
+    let saver = Autosaver::new(&dir, "gif-1");
+    saver.request(Arc::new(doc), 1, Some("/work/anim.gif".into()), SaveOptions::default());
+    saver.flush().expect("a save ran").unwrap();
+    let entries = list_recovery(&dir);
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].info.original_path.as_deref(), Some("/work/anim.gif"));
+    assert_eq!(recover(&entries[0]).unwrap().file_encoding.source_images, Some(4));
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
 /// A queued snapshot can fail later; callers must observe and retry that revision.
 #[test]
 fn background_save_outcomes_report_failure_then_recovery() {

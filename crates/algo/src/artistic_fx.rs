@@ -447,7 +447,7 @@ pub(crate) fn effect_reach(e: &GalleryEffect) -> i32 {
         F::Plaster => gs(0.5 + g("smoothness") * 0.8) + gs(1.5) + 2,
         F::Stamp => gs(0.3 + g("smoothness") * 0.3),
         F::TornEdges => gs(1.0),
-        F::WaterPaper => 2 * (g("fiberLength") / 6.0) as i32 + 2,
+        F::WaterPaper => 2 * (fiber_length(e) / 6.0) as i32 + 2,
         F::GlowingEdges => gs(0.3 + g("smoothness") * 0.25) + gs(g("edgeWidth") * 0.4) + 2,
         F::Craquelure => 0,
         F::Patchwork => patch_size(e).ceil() as i32 + 2,
@@ -518,6 +518,12 @@ fn plastic_sigma(e: &GalleryEffect) -> f32 {
 fn watercolor_radius(e: &GalleryEffect) -> usize {
     1 + ((15.0 - e.get("brushDetail")) / 2.5) as usize
 }
+/// Water Paper's fiber length within its parameter range (3..=50): raw gallery values bypass the
+/// setter's clamp, and the reach estimate and the blur radius must agree on one bounded value.
+fn fiber_length(e: &GalleryEffect) -> f32 {
+    e.get("fiberLength").clamp(3.0, 50.0)
+}
+
 fn basrelief_sigma(e: &GalleryEffect) -> f32 {
     0.3 + e.get("smoothness") * 0.5 + (15.0 - e.get("detail")) * 0.12
 }
@@ -1178,7 +1184,7 @@ fn apply_sketch(e: &GalleryEffect, win: &mut Win, ctx: &Ctx) -> bool {
             }
         }
         F::WaterPaper => {
-            let fl = g("fiberLength");
+            let fl = fiber_length(e);
             let (br, co) = (g("brightness") / 100.0, g("contrast") / 100.0);
             let r = (fl / 6.0) as usize;
             line_blur3(&mut win.c, w, h, (1, 0), r);
@@ -1358,6 +1364,17 @@ mod tests {
             }
         }
         s
+    }
+
+    #[test]
+    fn gallery_window_budget_counts_working_temporaries() {
+        // A 6300 px square RGBA window is 159 M samples for the source read alone, 476 M with the old
+        // 3x factor, and over the 512 Mi-sample budget once the working window and temporaries count.
+        // The check runs before any window is read, so nothing that large is allocated.
+        let s = pattern(SampleType::F32);
+        let big = Rect::new(0, 0, 6300, 6300);
+        let fp = FilterParams::FilterGallery { effects: vec![GalleryEffect::new(crate::GalleryFilter::ALL[0])] };
+        assert!(crate::apply_tiled_with(&s, &fp, big, big, None, 6300, None, &photocraft_raster::Interrupt::NONE).is_none());
     }
 
     #[test]

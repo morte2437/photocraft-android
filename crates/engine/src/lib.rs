@@ -32,6 +32,7 @@ pub mod layer_style;
 pub mod link_watch;
 pub mod malloc_tuning;
 pub mod memory;
+pub mod memory_gate;
 pub mod new_layer;
 mod param_check;
 mod pixels;
@@ -96,7 +97,7 @@ pub use cmd::fill_cmds;
 pub use cmd::fill_key_cmds;
 pub use cmd::float_cmds;
 pub use cmd::font_library_cmds;
-use cmd::frame_cmds;
+pub use cmd::frame_cmds;
 pub use cmd::fx_view_cmds;
 pub use cmd::fx_visibility_cmds;
 pub use cmd::gallery_cmds;
@@ -109,6 +110,7 @@ pub use cmd::history_select_cmds;
 pub use cmd::history_source_cmds;
 pub use cmd::image_cmds;
 pub use cmd::layer_copy_cmds;
+pub use cmd::layer_css_cmds;
 pub use cmd::layer_label_cmds;
 pub use cmd::layer_list_cmds;
 pub use cmd::layer_mask_props_cmds;
@@ -174,6 +176,16 @@ pub use session::move_item;
 use session::restore_target;
 pub(crate) use session::{carry_visibility, fix_selection, visibility_changes};
 
+/// A type layer for [`Session::refresh_type_layers`]: in the open document, or in its first
+/// History snapshot (the document as opened) when `first_snapshot`. The caller picks each against
+/// that version of the layer, which may differ from the open one or be gone from it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TypeLayerRef {
+    pub doc: photocraft_doc::DocId,
+    pub layer: LayerId,
+    pub first_snapshot: bool,
+}
+
 /// The pixels of a raster layer (typically one a command just created), as an error instead
 /// of a panic if the layer has none.
 pub(crate) fn pixels_mut(l: &mut photocraft_doc::Layer) -> Result<&mut photocraft_raster::Surface> {
@@ -190,6 +202,12 @@ pub(crate) fn active_layer_of(s: &Session) -> std::result::Result<&photocraft_do
 #[derive(Default)]
 pub struct Session {
     docs: Vec<DocState>,
+    /// Override Open belongs only to one Batch scratch session, never to caller preferences.
+    pub(crate) batch_open: Option<file_cmds::BatchOpen>,
+    /// Import diagnostics retained by a Batch scratch that suppresses only profile prompts.
+    pub(crate) batch_open_notices: Option<Vec<Value>>,
+    /// Frozen RAW workflow settings for one noninteractive Batch input.
+    pub(crate) batch_raw_open: Option<prefs::RawDefaults>,
     /// Admitted document identities in opening order, independent of visual-tab reordering.
     open_document_order: Vec<photocraft_doc::DocId>,
     active: Option<usize>,
@@ -199,6 +217,13 @@ pub struct Session {
     active_generation: u64,
     /// The document id [`Self::active_generation`] was last bumped for.
     active_doc_for_generation: Option<photocraft_doc::DocId>,
+    /// Change marker: advances at least once whenever the active document or layer changes through
+    /// the `Session` API (commands via `execute`, `start` and finished jobs, `select_layer`,
+    /// `restore_layer_selection`, `layer_multi_cmds::set_selection`, `set_active_layer`, undo / redo /
+    /// rollback, document switches). Compare two readings for equality to know whether anything
+    /// changed in between; it is not an exact count of operations (one operation may advance it
+    /// more than once). Writing `DocState::active_layer` directly bypasses it.
+    active_layer_changes: u64,
     pub tools: ToolState,
     /// Log of executed commands (for action recording and debugging).
     pub journal: Vec<(String, Value)>,
@@ -259,6 +284,12 @@ pub struct Session {
     /// the same check a top-level request sees. `None` runs everything, which is what a local
     /// UI and `photocraft-cli run` do.
     pub authorize: Option<fn(&str, &serde_json::Value) -> Result<()>>,
+    /// The gate automation runs under in this process (the desktop's policy). An action
+    /// automation wrote ([`actions_cmds::Action::automation`]) plays under it when no gate is
+    /// installed, as when the user presses its key, so it never gets the user's file access.
+    /// `None` when there is no automation policy to keep (headless sessions gate everything
+    /// with `authorize`).
+    pub automation_gate: Option<fn(&str, &serde_json::Value) -> Result<()>>,
     /// A further route for File › Print when neither `lp` nor a CUPS server over IPP is
     /// reachable (the XDG Print portal in a Flatpak); see `print_cmds::Spooler`.
     pub print_spooler: Option<print_cmds::Spooler>,
@@ -313,16 +344,39 @@ pub struct Session {
     /// command reporting too narrow a redraw area (#4053). Counted in debug and test builds only;
     /// tests read it.
     pub damage_misses: usize,
+    /// Commands that left the whole document to redraw (`last_damage` None) while changing under
+    /// 25 % of it ([`Session::dispatch`]). Counted in debug and test builds only; tests read it.
+    pub whole_redraws: usize,
 }
 
 #[cfg(test)]
+mod brush_pressure_size_default_tests;
+#[cfg(test)]
+mod embed_all_linked_tests;
+#[cfg(test)]
+mod eraser_gray_background_tests;
+#[cfg(test)]
 mod fill_layer_mode_tests;
 #[cfg(test)]
+mod mixer_indexed_bitmap_tests;
+
+#[cfg(test)]
+mod mixer_toggle_commands_tests;
+#[cfg(test)]
 mod pattern_mode_tests;
+#[cfg(test)]
+mod second_keys_zoom_actions_tests;
 #[cfg(test)]
 mod tests;
 
 #[cfg(test)]
 mod fx_mode_tests;
 
+#[cfg(test)]
+mod dense_budget_tests;
+
+#[cfg(test)]
+mod brush_clear_background_tests;
 pub mod command_hints;
+#[cfg(test)]
+mod pencil_auto_erase_exact_tests;

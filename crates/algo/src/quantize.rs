@@ -805,27 +805,45 @@ fn pass_down(errs: &[f32], below: &mut [f32]) {
 /// spaced levels `(k + 0.5) / n`, whatever the pattern's own contrast, as Photoshop's does
 /// (measured: a 2x2 pattern of 32/96/160/224, a 3x1 of 50/128/200 and a 7x1 ramp all give
 /// exactly those levels).
-pub fn custom_pattern_thresholds(lightness: &[f32]) -> Vec<f32> {
+/// Reject oversized workspace or allocation failure rather than aborting the process.
+pub fn custom_pattern_thresholds(lightness: &[f32]) -> Result<Vec<f32>, photocraft_raster::AllocationError> {
     let n = lightness.len();
+    let bytes = custom_pattern_working_bytes(n)?;
     let key = |i: usize| lightness.get(i).copied().filter(|v| v.is_finite()).unwrap_or(0.0);
-    let mut order: Vec<usize> = (0..n).collect();
-    order.sort_by(|a, b| key(*a).total_cmp(&key(*b)));
-    let mut out = vec![0.5; n];
+    let allocation = || photocraft_raster::AllocationError::NotEnoughMemory { bytes };
+    let mut order = Vec::new();
+    order.try_reserve_exact(n).map_err(|_| allocation())?;
+    order.extend((0..n).map(|i| i as u32));
+    // Ties receive the same mean rank, so stability is unnecessary. This sort
+    // uses no heap scratch; fixed-width indices also bound web/desktop equally.
+    order.sort_unstable_by(|a, b| key(*a as usize).total_cmp(&key(*b as usize)));
+    let mut out = Vec::new();
+    out.try_reserve_exact(n).map_err(|_| allocation())?;
+    out.resize(n, 0.5);
     let mut start = 0;
     while start < n {
-        let v = order.get(start).map(|i| key(*i));
-        let end = (start..n).find(|&j| order.get(j).map(|i| key(*i)) != v).unwrap_or(n);
+        let v = order.get(start).map(|i| key(*i as usize));
+        let end = (start..n).find(|&j| order.get(j).map(|i| key(*i as usize)) != v).unwrap_or(n);
         // Ranks start..end share their mean.
         let rank = (start + end - 1) as f32 / 2.0;
         let t = 1.0 - (rank + 0.5) / n as f32;
         for i in order.get(start..end).unwrap_or_default() {
-            if let Some(o) = out.get_mut(*i) {
+            if let Some(o) = out.get_mut(*i as usize) {
                 *o = t;
             }
         }
         start = end;
     }
-    out
+    Ok(out)
+}
+
+/// Admit input lightness, fixed-width order and output thresholds before reading any pattern pixels.
+pub fn custom_pattern_working_bytes(count: usize) -> Result<usize, photocraft_raster::AllocationError> {
+    let bytes = count.checked_mul(12).ok_or(photocraft_raster::AllocationError::SizeOverflow)?;
+    if bytes > 256 << 20 {
+        return Err(photocraft_raster::AllocationError::SizeOverflow);
+    }
+    Ok(bytes)
 }
 
 /// Bitmap's Custom Pattern over a whole image (gray 0..=1, row-major `w` wide), see

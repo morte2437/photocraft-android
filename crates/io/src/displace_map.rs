@@ -21,10 +21,10 @@
 
 use std::sync::Arc;
 
+use craft_psd::descriptor::{Descriptor, Id, Value};
 use photocraft_algo::Image;
 use photocraft_doc::SmartFilter;
 use photocraft_geom::Rect;
-use photocraft_psd::descriptor::{Descriptor, Id, Value};
 use serde_json::{Value as J, json};
 
 use super::{blend_options, from_hex, get_desc, int, set, to_hex};
@@ -233,7 +233,7 @@ pub fn embed_map(params: &J, map: &Image) -> Option<J> {
     // and when it is written to PSD (`export_item`).
     let neutral = SmartFilter { command: String::new(), params: J::Null, blend: photocraft_color::BlendMode::Normal, opacity: 1.0, visible: true };
     let item = Descriptor::new("filterFX")
-        .with("Nm  ", Value::Text(photocraft_psd::descriptor::UnicodeString::new_nul("Displace...")))
+        .with("Nm  ", Value::Text(craft_psd::descriptor::UnicodeString::new_nul("Displace...")))
         .with("blendOptions", blend_options(&neutral))
         .with("enab", Value::Boolean(true))
         .with("hasoptions", Value::Boolean(true))
@@ -305,7 +305,7 @@ mod tests {
     fn item(map: Vec<u8>) -> Descriptor {
         let e = |t: &str, v: &str| Value::Enumerated { type_id: Id::new(t), value: Id::new(v) };
         Descriptor::new("filterFX")
-            .with("Nm  ", Value::Text(photocraft_psd::descriptor::UnicodeString::new_nul("Displace...")))
+            .with("Nm  ", Value::Text(craft_psd::descriptor::UnicodeString::new_nul("Displace...")))
             .with(
                 "blendOptions",
                 blend_options(&SmartFilter {

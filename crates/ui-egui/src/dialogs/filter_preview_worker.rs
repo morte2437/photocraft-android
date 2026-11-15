@@ -117,12 +117,14 @@ mod tests {
         FilterPreviewKey {
             doc: photocraft_doc::DocId(1),
             revision,
+            sources: Vec::new(),
             dialog,
             active: None,
             target: Default::default(),
             command: "image.mode.indexedColor".into(),
             params: json!({"colors": colors}),
             k: 1,
+            tool_colors: ([0.0, 0.0, 0.0, 1.0], [1.0; 4]),
         }
     }
 

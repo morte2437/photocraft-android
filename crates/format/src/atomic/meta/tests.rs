@@ -311,6 +311,34 @@ mod windows {
     }
 }
 
+/// A replacement owned by another group does not give that group the file: the original's group
+/// is restored, or its group bits are dropped when it cannot be.
+#[cfg(unix)]
+#[test]
+fn a_replacement_in_another_group_does_not_widen_group_access() {
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+    let d = TempDir::new("group");
+    let original = d.join("a");
+    let replacement = d.join("b");
+    std::fs::write(&original, b"old").unwrap();
+    std::fs::write(&replacement, b"new").unwrap();
+    std::fs::set_permissions(&original, std::fs::Permissions::from_mode(0o660)).unwrap();
+    // Another group this process belongs to; without one there is nothing to test.
+    let status = std::fs::read_to_string("/proc/self/status").unwrap_or_default();
+    let own = std::fs::metadata(&original).unwrap().gid();
+    let groups: Vec<u32> =
+        status.lines().find_map(|l| l.strip_prefix("Groups:")).unwrap_or_default().split_whitespace().filter_map(|g| g.parse().ok()).collect();
+    // The original's group must be one this process can assign; a setgid parent can give it another.
+    let Some(other) = groups.iter().copied().find(|g| *g != own).filter(|_| groups.contains(&own)) else {
+        return;
+    };
+    std::os::unix::fs::chown(&replacement, None, Some(other)).unwrap();
+    super::copy_metadata(&original, &replacement).unwrap();
+    let after = std::fs::metadata(&replacement).unwrap();
+    assert_eq!(after.gid(), own, "the original's group is restored");
+    assert_eq!(after.permissions().mode() & 0o777, 0o660);
+}
+
 // ---------------------------------------------------------------- MOVE_REPLACEMENT_2 ladder (#11178)
 //
 // The Windows `ReplaceFileW` cannot be made to return `ERROR_UNABLE_TO_MOVE_REPLACEMENT_2` on

@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicUsize};
 use std::time::{Duration, Instant};
 
 use serde_json::json;
@@ -927,7 +928,7 @@ fn an_exr_path_open_decodes_in_bands_and_cancels_cleanly() {
 fn an_open_that_asks_about_its_profile_holds_the_document_back() {
     let mut src = session(8, 8);
     let mut doc = (*src.active().unwrap().doc).clone();
-    doc.icc_profile = Some(photocraft_cms::Builtin::from_id("adobe-rgb-compat").unwrap().profile().to_bytes());
+    doc.icc_profile = Some(craft_cms::Builtin::from_id("adobe-rgb-compat").unwrap().profile().to_bytes());
     let bytes = Arc::new(photocraft_io::export(&doc, "x.png", &Default::default()).unwrap().bytes);
     src.close(0);
     let mut s = Session::new();
@@ -1106,6 +1107,71 @@ fn a_job_lands_in_the_recording_it_was_started_in_only() {
     assert_eq!(action_steps(&mut s, "A"), ["filter.blur.gaussianBlur"]);
 }
 
+/// The automation policy the next tests stand in for: Gaussian Blur is refused.
+fn deny_blur(id: &str, _: &Value) -> Result<()> {
+    if id == "filter.blur.gaussianBlur" { Err(EngineError::Other(format!("automation command `{id}` is disabled"))) } else { Ok(()) }
+}
+
+/// The gate a control client's request runs under: its policy admitted the step, so it runs.
+fn admit(_: &str, _: &Value) -> Result<()> {
+    Ok(())
+}
+
+/// Whether the action named `name` is marked as written by automation.
+fn marked(s: &Session, name: &str) -> bool {
+    s.actions.list.iter().find(|a| a.name == name).unwrap().automation
+}
+
+/// A background step a gated client starts during the user's recording marks the recorded action
+/// as automation's, though the job is applied after the client's gate is removed: played
+/// ungated later (the user's key, the panel), the step still meets automation's gate.
+#[test]
+fn a_job_a_gated_client_starts_into_a_recording_keeps_its_gate_when_applied_ungated() {
+    let mut s = session(40, 30);
+    s.automation_gate = Some(deny_blur);
+    s.execute("actions.record", json!({"name": "Shared"})).unwrap();
+    s.authorize = Some(admit);
+    let id = job(s.start("filter.blur.gaussianBlur", json!({"radius": 1})).unwrap());
+    s.authorize = None;
+    s.wait_job(id).unwrap();
+    s.execute("actions.stop", json!({})).unwrap();
+    assert_eq!(action_steps(&mut s, "Shared"), ["filter.blur.gaussianBlur"]);
+    assert!(marked(&s, "Shared"), "the client's background step marks the recorded action");
+    let r = s.execute("actions.play", json!({"action": "Shared"})).unwrap();
+    assert_eq!(r["failed"]["id"], "filter.blur.gaussianBlur", "{r}");
+    assert!(r["failed"]["error"].as_str().unwrap().contains("disabled"), "{r}");
+    assert!(s.authorize.is_none(), "the kept gate is removed after playback");
+}
+
+/// The converse: the user's own job, applied while a gated client waits on it, stays the user's.
+/// A gated client's job applied during a recording started after it marks nothing, since that
+/// recording doesn't get its step.
+#[test]
+fn a_users_job_applied_while_a_gated_client_waits_stays_the_users() {
+    let mut s = session(40, 30);
+    s.automation_gate = Some(deny_blur);
+    s.execute("actions.record", json!({"name": "Mine"})).unwrap();
+    let id = job(s.start("filter.blur.gaussianBlur", json!({"radius": 1})).unwrap());
+    s.authorize = Some(admit);
+    s.wait_job(id).unwrap();
+    s.authorize = None;
+    s.execute("actions.stop", json!({})).unwrap();
+    assert_eq!(action_steps(&mut s, "Mine"), ["filter.blur.gaussianBlur"]);
+    assert!(!marked(&s, "Mine"), "the user's job is not marked by the caller that applied it");
+    let r = s.execute("actions.play", json!({"action": "Mine"})).unwrap();
+    assert!(r.get("failed").is_none(), "{r}");
+
+    // A gated client's job started before the user records lands outside that recording.
+    s.authorize = Some(admit);
+    let id = job(s.start("filter.blur.gaussianBlur", json!({"radius": 1})).unwrap());
+    s.authorize = None;
+    s.execute("actions.record", json!({"name": "Later"})).unwrap();
+    s.wait_job(id).unwrap();
+    s.execute("actions.stop", json!({})).unwrap();
+    assert!(action_steps(&mut s, "Later").is_empty());
+    assert!(!marked(&s, "Later"), "a recording that doesn't get the step is not marked");
+}
+
 /// Exercise six terminal job routes so prepared paint snapshots cannot outlive a completed or discarded job.
 #[test]
 fn every_job_terminal_path_drops_a_live_commit_stroke() {
@@ -1159,6 +1225,296 @@ fn every_job_terminal_path_drops_a_live_commit_stroke() {
         }
         assert!(s.live_commit.is_none(), "terminal path {outcome} retained the preview");
     }
+}
+
+// ---------- cooperative jobs (no worker threads, as on the web) ----------
+
+/// A job that needs `needed` calls, and records what each one saw.
+struct Counting {
+    needed: usize,
+    done: usize,
+    /// How far ahead the deadline of each call was.
+    ahead: Arc<Mutex<Vec<Duration>>>,
+    calls: Arc<AtomicUsize>,
+    thread: Arc<Mutex<Option<std::thread::ThreadId>>>,
+    dropped: Arc<AtomicBool>,
+}
+
+impl Drop for Counting {
+    fn drop(&mut self) {
+        self.dropped.store(true, Ordering::Relaxed);
+    }
+}
+
+impl StepWork<usize> for Counting {
+    fn step(&mut self, ctx: &JobCtx, deadline: web_time::Instant) -> Result<Option<usize>> {
+        self.ahead.lock().unwrap().push(deadline.saturating_duration_since(web_time::Instant::now()));
+        *self.thread.lock().unwrap() = Some(std::thread::current().id());
+        self.calls.fetch_add(1, Ordering::Relaxed);
+        self.done += 1;
+        ctx.progress(self.done as f32 / self.needed as f32, "Counting");
+        Ok((self.done >= self.needed).then_some(self.done))
+    }
+}
+
+struct Probe {
+    ahead: Arc<Mutex<Vec<Duration>>>,
+    calls: Arc<AtomicUsize>,
+    thread: Arc<Mutex<Option<std::thread::ThreadId>>>,
+    dropped: Arc<AtomicBool>,
+}
+
+fn counting(needed: usize) -> (Counting, Probe) {
+    let probe = Probe { ahead: Arc::default(), calls: Arc::default(), thread: Arc::default(), dropped: Arc::default() };
+    let work =
+        Counting { needed, done: 0, ahead: probe.ahead.clone(), calls: probe.calls.clone(), thread: probe.thread.clone(), dropped: probe.dropped.clone() };
+    (work, probe)
+}
+
+fn start_counting(s: &mut Session, needed: usize, lock: bool) -> (JobId, Probe) {
+    let (work, probe) = counting(needed);
+    let id = job(s.start_job_stepped("test.stepped", json!({}), "Stepping", lock, work, |_, n| Ok(json!({"steps": n}))).unwrap());
+    (id, probe)
+}
+
+#[test]
+fn a_cooperative_job_gets_one_slice_per_poll_on_the_calling_thread() {
+    let mut s = session(40, 30);
+    s.set_cooperative_jobs(true);
+    let (id, probe) = start_counting(&mut s, 3, true);
+    assert!(s.has_jobs());
+    assert_eq!(probe.calls.load(Ordering::Relaxed), 0, "starting does no work");
+    // The document is locked as for a worker.
+    let refused = s.execute("layer.new.layer", json!({})).unwrap_err().to_string();
+    assert!(refused.contains("Stepping"), "{refused}");
+    for polls in 1..=2 {
+        assert!(s.poll_jobs().is_empty(), "poll {polls}");
+        assert_eq!(probe.calls.load(Ordering::Relaxed), polls);
+        assert!(s.has_jobs());
+    }
+    let info = s.job(id).unwrap();
+    assert_eq!(info.message, "Counting");
+    assert!((info.progress - 2.0 / 3.0).abs() < 1e-6, "{}", info.progress);
+    let events = s.poll_jobs();
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].outcome, JobOutcome::Done(json!({"steps": 3})));
+    assert_eq!((events[0].command.as_str(), events[0].label.as_str()), ("test.stepped", "Stepping"));
+    assert!(!s.has_jobs());
+    assert_eq!(*probe.thread.lock().unwrap(), Some(std::thread::current().id()), "no worker thread");
+    // Each slice was given about a frame's budget: no more than 8 ms from the poll.
+    let ahead = probe.ahead.lock().unwrap().clone();
+    assert!(ahead.iter().all(|d| *d <= STEP_BUDGET), "{ahead:?}");
+    assert!(ahead.iter().any(|d| *d > Duration::ZERO), "{ahead:?}");
+    assert!(probe.dropped.load(Ordering::Relaxed), "the finished work is let go");
+    s.execute("layer.new.layer", json!({})).unwrap();
+}
+
+#[test]
+fn a_cooperative_job_reports_real_elapsed_time() {
+    let mut s = session(8, 8);
+    s.set_cooperative_jobs(true);
+    let (id, _) = start_counting(&mut s, 5, false);
+    std::thread::sleep(Duration::from_millis(20));
+    assert!(s.job(id).unwrap().elapsed_ms >= 15.0, "{}", s.job(id).unwrap().elapsed_ms);
+    assert_eq!(s.wait_job(id).unwrap(), json!({"steps": 5}));
+}
+
+/// A budget too large to add to an `Instant` runs the slice to the end instead of overflowing.
+#[test]
+fn a_huge_step_budget_does_not_panic() {
+    let mut s = session(8, 8);
+    s.set_cooperative_jobs(true);
+    s.set_job_step_budget(Duration::MAX);
+    let (id, probe) = start_counting(&mut s, 2, false);
+    s.poll_jobs();
+    assert_eq!(probe.calls.load(Ordering::Relaxed), 1, "one slice still runs");
+    assert_eq!(s.wait_job(id).unwrap(), json!({"steps": 2}));
+}
+
+#[test]
+fn only_one_cooperative_job_is_stepped_per_poll() {
+    let mut s = session(8, 8);
+    s.set_cooperative_jobs(true);
+    let (a, pa) = start_counting(&mut s, 5, false);
+    let (b, pb) = start_counting(&mut s, 5, false);
+    s.poll_jobs();
+    assert_eq!((pa.calls.load(Ordering::Relaxed), pb.calls.load(Ordering::Relaxed)), (1, 0));
+    s.poll_jobs();
+    assert_eq!((pa.calls.load(Ordering::Relaxed), pb.calls.load(Ordering::Relaxed)), (2, 0));
+    // Both finish all the same.
+    assert_eq!(s.wait_job(a).unwrap(), json!({"steps": 5}));
+    assert_eq!(s.wait_job(b).unwrap(), json!({"steps": 5}));
+}
+
+#[test]
+fn wait_job_runs_a_cooperative_job_to_the_end() {
+    let mut s = session(8, 8);
+    s.set_cooperative_jobs(true);
+    let (id, probe) = start_counting(&mut s, 50, true);
+    assert_eq!(s.wait_job(id).unwrap(), json!({"steps": 50}));
+    assert_eq!(probe.calls.load(Ordering::Relaxed), 50);
+    assert!(!s.has_jobs());
+}
+
+#[test]
+fn cancelling_a_cooperative_job_between_polls_discards_it() {
+    let mut s = session(8, 8);
+    s.set_cooperative_jobs(true);
+    let (id, probe) = start_counting(&mut s, 10, true);
+    s.poll_jobs();
+    assert!(s.cancel_job(id));
+    assert!(probe.dropped.load(Ordering::Relaxed), "the work is let go at once");
+    assert!(!s.has_jobs());
+    let events = s.poll_jobs();
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].outcome, JobOutcome::Cancelled);
+    assert_eq!(probe.calls.load(Ordering::Relaxed), 1, "no slice after the cancel");
+    assert!(matches!(s.wait_job(id), Err(EngineError::Cancelled)));
+    s.execute("layer.new.layer", json!({})).unwrap();
+}
+
+#[test]
+fn a_failing_or_panicking_slice_fails_the_job() {
+    struct Fails(bool);
+    impl StepWork<()> for Fails {
+        fn step(&mut self, _: &JobCtx, _: web_time::Instant) -> Result<Option<()>> {
+            if self.0 { Err(EngineError::Other("the slice failed".into())) } else { panic!("a bug in the slice") }
+        }
+    }
+    for panics in [false, true] {
+        let mut s = session(8, 8);
+        s.set_cooperative_jobs(true);
+        let id = job(s.start_job_stepped("test.stepped", json!({}), "Failing", true, Fails(!panics), |_, ()| Ok(json!({}))).unwrap());
+        let events = s.poll_jobs();
+        assert_eq!(events.len(), 1, "panics={panics}");
+        let JobOutcome::Failed(msg) = &events[0].outcome else { panic!("{:?}", events[0]) };
+        assert_eq!(events[0].id, id);
+        if panics {
+            assert!(msg.contains("internal error"), "{msg}");
+        } else {
+            assert_eq!(msg, "the slice failed");
+        }
+        assert!(!s.has_jobs());
+        s.execute("layer.new.layer", json!({})).unwrap();
+    }
+}
+
+#[test]
+fn a_cooperative_session_runs_other_commands_inline() {
+    let mut s = session(60, 40);
+    s.set_cooperative_jobs(true);
+    assert!(matches!(s.start("filter.blur.gaussianBlur", json!({"radius": 3})).unwrap(), Started::Done(_)));
+    assert!(!s.has_jobs());
+    let opened = s.start_open("a.png", OpenSource::Bytes(Arc::new(Vec::new())));
+    assert!(opened.is_err() || matches!(opened, Ok(Started::Done(_))), "opening runs inline too");
+}
+
+#[test]
+fn stepped_work_without_cooperation_runs_on_a_worker_or_inline() {
+    // A worker thread, when started in the background.
+    let mut s = session(8, 8);
+    assert!(!s.cooperative_jobs() || cfg!(target_arch = "wasm32"));
+    let (id, probe) = start_counting(&mut s, 4, true);
+    let e = wait_event(&mut s, id);
+    assert_eq!(e.outcome, JobOutcome::Done(json!({"steps": 4})));
+    assert_ne!(*probe.thread.lock().unwrap(), Some(std::thread::current().id()), "ran on a worker");
+    assert_eq!(probe.calls.load(Ordering::Relaxed), 4);
+
+    // Inline, when run as part of a command.
+    let (work, probe) = counting(6);
+    let v = run_stepped(&mut s, "Inline", true, work, |_, n| Ok(json!({"steps": n}))).unwrap();
+    assert_eq!(v, json!({"steps": 6}));
+    assert_eq!(*probe.thread.lock().unwrap(), Some(std::thread::current().id()));
+    assert!(!s.has_jobs());
+
+    // Cooperative, but not started in the background: inline as well.
+    s.set_cooperative_jobs(true);
+    let (work, _) = counting(3);
+    assert_eq!(run_stepped(&mut s, "Inline", true, work, |_, n| Ok(json!({"steps": n}))).unwrap(), json!({"steps": 3}));
+}
+
+#[test]
+fn an_inline_stepped_job_stops_when_cancelled() {
+    let mut s = session(8, 8);
+    let ctx = JobCtx::new();
+    s.set_inline_job_ctx(Some(ctx.clone()));
+    let (work, probe) = counting(1_000_000);
+    ctx.cancel();
+    let r = run_stepped(&mut s, "Inline", true, work, |_, n| Ok(json!({"steps": n})));
+    assert!(matches!(r, Err(EngineError::Cancelled)), "{r:?}");
+    assert!(probe.calls.load(Ordering::Relaxed) <= 1);
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn background_admission_counts_cancelled_workers_until_they_finish() {
+    // Dropping the senders releases every worker even if an assertion unwinds.
+    let mut gates = Vec::new();
+    let mut s = Session::new();
+    let mut ids = Vec::new();
+    for _ in 0..MAX_BACKGROUND_JOBS {
+        let (tx, rx) = std::sync::mpsc::channel::<()>();
+        gates.push(tx);
+        ids.push(job(s
+            .start_job(
+                "test.gated",
+                json!({}),
+                "gated",
+                false,
+                move |_| {
+                    let _ = rx.recv();
+                    Ok(())
+                },
+                |_, ()| Ok(Value::Null),
+            )
+            .unwrap()));
+    }
+    let rejected = s.start_job("test.extra", json!({}), "extra", false, |_| -> Result<()> { panic!("over-limit worker ran") }, |_, ()| Ok(Value::Null));
+    assert!(rejected.unwrap_err().to_string().contains("too many background jobs"));
+    for id in ids {
+        assert!(s.cancel_job(id));
+    }
+    assert!(s.jobs.running.is_empty());
+    assert_eq!(s.jobs.draining.len(), MAX_BACKGROUND_JOBS);
+    let rejected =
+        s.start_job("test.extra", json!({}), "extra", false, |_| -> Result<()> { panic!("draining workers bypassed the cap") }, |_, ()| Ok(Value::Null));
+    assert!(rejected.unwrap_err().to_string().contains("too many background jobs"));
+    drop(gates);
+    s.join_cancelled_jobs();
+    let id = job(s.start_job("test.resumed", json!({}), "resumed", false, |_| Ok(()), |_, ()| Ok(json!("resumed"))).unwrap());
+    assert_eq!(s.wait_job(id).unwrap(), json!("resumed"));
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn reaping_finished_workers_preserves_the_release_request() {
+    let (tx, rx) = std::sync::mpsc::channel::<()>();
+    let mut draining = vec![
+        Draining { handle: std::thread::spawn(|| {}), doc: None, release: true },
+        Draining {
+            handle: std::thread::spawn(move || {
+                let _ = rx.recv();
+            }),
+            doc: None,
+            release: true,
+        },
+    ];
+    let start = Instant::now();
+    while !draining[0].handle.is_finished() {
+        assert!(start.elapsed() < Duration::from_secs(30));
+        std::thread::yield_now();
+    }
+    assert!(reap_draining(&mut draining));
+    assert_eq!(draining.len(), 1);
+    assert!(!reap_draining(&mut draining), "a running worker must retain its release request");
+    drop(tx);
+    let start = Instant::now();
+    while !draining[0].handle.is_finished() {
+        assert!(start.elapsed() < Duration::from_secs(30));
+        std::thread::yield_now();
+    }
+    assert!(reap_draining(&mut draining));
+    assert!(draining.is_empty());
 }
 
 #[cfg(unix)]
@@ -1278,14 +1634,14 @@ fn a_failed_job_keeps_its_typed_error_for_wait_and_events() {
             json!({}),
             "Test hard budget",
             false,
-            |_ctx| -> Result<()> { Err(EngineError::PsdHardBudget { name: "too-big.psd".into(), required: 9000, limit: 4000 }) },
+            |_ctx| -> Result<()> { Err(EngineError::PsdHardBudget { name: "too-big.psd".into(), required: 9000, limit: 4000, free_memory: None }) },
             |_, _| Ok(Value::Null),
         )
         .unwrap();
     let id = job(started);
     let err = s.wait_job(id).expect_err("the job fails");
     assert!(
-        matches!(&err, EngineError::PsdHardBudget { name, required, limit } if name == "too-big.psd" && *required == 9000 && *limit == 4000),
+        matches!(&err, EngineError::PsdHardBudget { name, required, limit, .. } if name == "too-big.psd" && *required == 9000 && *limit == 4000),
         "wait_job must not flatten the typed refusal: {err:?}"
     );
     let event = s.poll_jobs().into_iter().find(|e| e.id == id).expect("the job event");

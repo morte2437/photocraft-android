@@ -1,5 +1,5 @@
+use craft_psd::descriptor::{Descriptor, Id, UnicodeString, Value, VersionedDescriptor};
 use photocraft_doc::adjust::{CurvePoint, HueRange, LevelsChannel, LutFormat, LutSource, ToneSpace, curve_map_outputs};
-use photocraft_psd::descriptor::{Descriptor, Id, UnicodeString, Value, VersionedDescriptor};
 
 use super::{BW_KEYS, BW_TINT, clamp_i16, cube_file_name, levels_write, lut_source_for, psd_lut_format, put16, q255, rgb_desc};
 
@@ -133,13 +133,16 @@ pub(super) fn color_lookup(name: &str, lut: Option<&[f32]>, size: u32, dither: b
         Some(cube) => match lut_source_for(source, cube, n) {
             Some(src) => (src.format, src.bytes.to_vec(), name.to_string(), dither),
             None => {
-                let file = photocraft_cms::lutfile::LutFile { title: String::new(), size: n, data: cube.to_vec(), domain_min: [0.0; 3], domain_max: [1.0; 3] };
-                (LutFormat::Cube, photocraft_cms::lutfile::write_cube(&file).into_bytes(), cube_file_name(name), dither)
+                let file = craft_cms::lutfile::LutFile { title: String::new(), size: n, data: cube.to_vec(), domain_min: [0.0; 3], domain_max: [1.0; 3] };
+                (LutFormat::Cube, craft_cms::lutfile::write_cube(&file).into_bytes(), cube_file_name(name), dither)
             }
         },
         _ => {
-            let file = photocraft_cms::lutfile::LutFile { title: String::new(), ..photocraft_cms::lutfile::LutFile::identity(2) };
-            (LutFormat::Cube, photocraft_cms::lutfile::write_cube(&file).into_bytes(), cube_file_name(name), false)
+            // A 2³ identity is always within the table size limits, so this never comes back empty.
+            let cube = craft_cms::lutfile::LutFile::identity(2)
+                .map(|id| craft_cms::lutfile::write_cube(&craft_cms::lutfile::LutFile { title: String::new(), ..id }).into_bytes())
+                .unwrap_or_default();
+            (LutFormat::Cube, cube, cube_file_name(name), false)
         }
     };
     let en = |t: &str, val: &str| Value::Enumerated { type_id: Id::new(t), value: Id::new(val) };

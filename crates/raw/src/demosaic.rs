@@ -147,6 +147,7 @@ impl Padded {
 }
 
 /// Per 2×2 position, per output colour: kernel taps as (offset, weight).
+#[cfg(test)]
 fn kernels(phase: [u8; 4], method: Demosaic, stride: usize) -> [[Vec<(isize, f32)>; 3]; 4] {
     let color = |x: isize, y: isize| phase[((y & 1) * 2 + (x & 1)) as usize];
     let s = stride as isize;
@@ -213,9 +214,8 @@ pub(crate) fn demosaic(p: &Padded, phase: [u8; 4], method: Demosaic, to_xyz: &Ma
         );
         return out;
     }
-    let ks = kernels(phase, method, s);
     let rows = par::band_rows(w);
-    par::chunks_mut(&mut out, rows * w * 3, |band, chunk| linear_band(&p.data, w, s, phase, method, &ks, band * rows, 0, chunk));
+    par::chunks_mut(&mut out, rows * w * 3, |band, chunk| linear_band(&p.data, w, s, phase, method, band * rows, 0, chunk));
     out
 }
 
@@ -266,13 +266,12 @@ pub(crate) fn demosaic_fused(
         });
         return;
     }
-    let ks = kernels(phase, method, s);
     let rows = h.min(FUSED_ROWS);
     let init = || (vec![0.0f32; rows * w * 3], vec![0.0f32; (rows + 2 * PAD) * s]);
     for_bands(out, FUSED_ROWS * w * 3, h.div_ceil(FUSED_ROWS), jobs, init, |band, chunk, (buf, win)| {
         load(win, band * FUSED_ROWS, chunk.len() / (w * 3));
         let buf = &mut buf[..chunk.len()];
-        linear_band(win, w, s, phase, method, &ks, band * FUSED_ROWS, band * FUSED_ROWS, buf);
+        linear_band(win, w, s, phase, method, band * FUSED_ROWS, band * FUSED_ROWS, buf);
         emit(buf, chunk);
     });
 }
@@ -283,38 +282,118 @@ pub(crate) const FUSED_ROWS: usize = 32;
 /// Rows `y0..` of bilinear or MHC output (`chunk.len() / (w * 3)` of them); `d` is the padded
 /// plane from image row `dy` on (`dy` 0: all of it).
 #[allow(clippy::too_many_arguments)]
-fn linear_band(d: &[f32], w: usize, s: usize, phase: [u8; 4], method: Demosaic, ks: &[[Vec<(isize, f32)>; 3]; 4], y0: usize, dy: usize, chunk: &mut [f32]) {
+fn linear_band(d: &[f32], w: usize, s: usize, phase: [u8; 4], method: Demosaic, y0: usize, dy: usize, chunk: &mut [f32]) {
     for (r, row) in chunk.chunks_exact_mut(w * 3).enumerate() {
         let y = y0 + r;
         let base = (y - dy + PAD) * s + PAD;
-        for (x, o) in row.as_chunks_mut::<3>().0.iter_mut().enumerate() {
-            let pos = (y & 1) * 2 + (x & 1);
-            let i = base + x;
-            if method == Demosaic::Bilinear {
-                // Direct Bayer bilinear (the kernels' result without the tap loops).
-                let own = usize::from(phase[pos]).min(2);
-                let (n, so, e, wv) = (d[i - s], d[i + s], d[i + 1], d[i - 1]);
-                if own == 1 {
-                    let hc = usize::from(phase[(y & 1) * 2 + ((x + 1) & 1)]).min(2);
-                    o[1] = d[i];
-                    o[hc] = (e + wv) * 0.5;
-                    o[2 - hc] = (n + so) * 0.5;
-                } else {
-                    o[own] = d[i];
-                    o[1] = (n + so + e + wv) * 0.25;
-                    o[2 - own] = (d[i - s - 1] + d[i - s + 1] + d[i + s - 1] + d[i + s + 1]) * 0.25;
+        // The two colours of this row's 2-pixel period; the row kinds a Bayer pattern has get
+        // code of their own with the colours as constants.
+        let (c0, c1) = (usize::from(phase[(y & 1) * 2]).min(2), usize::from(phase[(y & 1) * 2 + 1]).min(2));
+        match (method == Demosaic::Bilinear, c0, c1) {
+            (true, 0, 1) => linear_row::<0, 1, false>(d, base, s, row),
+            (true, 1, 0) => linear_row::<1, 0, false>(d, base, s, row),
+            (true, 2, 1) => linear_row::<2, 1, false>(d, base, s, row),
+            (true, 1, 2) => linear_row::<1, 2, false>(d, base, s, row),
+            (false, 0, 1) => linear_row::<0, 1, true>(d, base, s, row),
+            (false, 1, 0) => linear_row::<1, 0, true>(d, base, s, row),
+            (false, 2, 1) => linear_row::<2, 1, true>(d, base, s, row),
+            (false, 1, 2) => linear_row::<1, 2, true>(d, base, s, row),
+            (bilinear, _, _) => {
+                for (x, o) in row.as_chunks_mut::<3>().0.iter_mut().enumerate() {
+                    let (own, hc) = if x & 1 == 0 { (c0, c1) } else { (c1, c0) };
+                    *o = if bilinear { bilinear_site(d, base + x, s, own, hc) } else { mhc_site(d, base + x, s, own, hc) };
                 }
-                continue;
-            }
-            for (c, k) in ks[pos].iter().enumerate() {
-                let mut v = 0.0f32;
-                for &(off, wt) in k {
-                    v += wt * d[(i as isize + off) as usize];
-                }
-                o[c] = v.clamp(0.0, 1.0);
             }
         }
     }
+}
+
+/// A row of output whose even pixels are colour `A` and odd pixels colour `B`, MHC or bilinear.
+fn linear_row<const A: usize, const B: usize, const MHC: bool>(d: &[f32], base: usize, s: usize, row: &mut [f32]) {
+    let site = |i: usize, own: usize, hc: usize| if MHC { mhc_site(d, i, s, own, hc) } else { bilinear_site(d, i, s, own, hc) };
+    let (pairs, rest) = row.as_chunks_mut::<6>();
+    for (j, pair) in pairs.iter_mut().enumerate() {
+        let i = base + 2 * j;
+        pair[..3].copy_from_slice(&site(i, A, B));
+        pair[3..].copy_from_slice(&site(i + 1, B, A));
+    }
+    if let Some(last) = rest.first_chunk_mut::<3>() {
+        *last = site(base + 2 * pairs.len(), A, B);
+    }
+}
+
+/// Direct Bayer bilinear (the kernels' result without the tap loops) for the pixel at plane index
+/// `i` of colour `own` (and, when green, its row neighbours' colour `hc`).
+#[inline(always)]
+fn bilinear_site(d: &[f32], i: usize, s: usize, own: usize, hc: usize) -> [f32; 3] {
+    let mut o = [0.0f32; 3];
+    let (n, so, e, wv) = (d[i - s], d[i + s], d[i + 1], d[i - 1]);
+    if own == 1 {
+        o[1] = d[i];
+        o[hc] = (e + wv) * 0.5;
+        o[2 - hc] = (n + so) * 0.5;
+    } else {
+        o[own] = d[i];
+        o[1] = (n + so + e + wv) * 0.25;
+        o[2 - own] = (d[i - s - 1] + d[i - s + 1] + d[i + s - 1] + d[i + s + 1]) * 0.25;
+    }
+    o
+}
+
+/// Malvar–He–Cutler for the pixel at plane index `i`, whose colour is `own` (and, when green, its
+/// row neighbours' `hc`): the kernels of `kernels` written out, the same taps in the same order
+/// with their weights (kernel / 8, exact in f32), so the sums are those of the tap loop.
+#[inline(always)]
+fn mhc_site(d: &[f32], i: usize, s: usize, own: usize, hc: usize) -> [f32; 3] {
+    let mut o = [0.0f32; 3];
+    o[own] = (0.0 + d[i]).clamp(0.0, 1.0);
+    if own == 1 {
+        // R and B at a green site: the row neighbours' colour from the row, the other from the
+        // column.
+        o[hc] = mhc_at_green(d, i, 1, s, s).clamp(0.0, 1.0);
+        o[2 - hc] = mhc_at_green(d, i, s, 1, s).clamp(0.0, 1.0);
+    } else {
+        let v = 0.0
+            + 0.5 * d[i]
+            + 0.25 * d[i - 1]
+            + 0.25 * d[i + 1]
+            + 0.25 * d[i - s]
+            + 0.25 * d[i + s]
+            + -0.125 * d[i - 2]
+            + -0.125 * d[i + 2]
+            + -0.125 * d[i - 2 * s]
+            + -0.125 * d[i + 2 * s];
+        o[1] = v.clamp(0.0, 1.0);
+        let v = 0.0
+            + 0.75 * d[i]
+            + 0.25 * d[i - s - 1]
+            + 0.25 * d[i - s + 1]
+            + 0.25 * d[i + s - 1]
+            + 0.25 * d[i + s + 1]
+            + -0.1875 * d[i - 2]
+            + -0.1875 * d[i + 2]
+            + -0.1875 * d[i - 2 * s]
+            + -0.1875 * d[i + 2 * s];
+        o[2 - own] = v.clamp(0.0, 1.0);
+    }
+    o
+}
+
+/// MHC's red or blue at a green site: `a` is the step along the colour's own line (1 along the
+/// row, `s` down the column), `b` the step across it.
+#[inline(always)]
+fn mhc_at_green(d: &[f32], i: usize, a: usize, b: usize, s: usize) -> f32 {
+    0.0 + 0.625 * d[i]
+        + 0.5 * d[i - a]
+        + 0.5 * d[i + a]
+        + -0.125 * d[i - s - 1]
+        + -0.125 * d[i - s + 1]
+        + -0.125 * d[i + s - 1]
+        + -0.125 * d[i + s + 1]
+        + -0.125 * d[i - 2 * a]
+        + -0.125 * d[i + 2 * a]
+        + 0.0625 * d[i - 2 * b]
+        + 0.0625 * d[i + 2 * b]
 }
 
 /// Runs `f(band, chunk, scratch)` over the `unit`-sized chunks of `out` (`bands` of them), with
@@ -1281,6 +1360,85 @@ mod tests {
                         let v: f32 = k.iter().map(|&(off, wt)| wt * p.data[(i as isize + off) as usize]).sum();
                         assert!((fast[(y * w + x) * 3 + c] - v).abs() < 1e-6, "({x},{y}) c{c}");
                     }
+                }
+            }
+        }
+    }
+
+    /// The tap-loop evaluation of bilinear and MHC that `linear_band` replaced.
+    #[allow(clippy::too_many_arguments)]
+    fn linear_band_ref(
+        d: &[f32],
+        w: usize,
+        s: usize,
+        phase: [u8; 4],
+        method: Demosaic,
+        ks: &[[Vec<(isize, f32)>; 3]; 4],
+        y0: usize,
+        dy: usize,
+        chunk: &mut [f32],
+    ) {
+        for (r, row) in chunk.chunks_exact_mut(w * 3).enumerate() {
+            let y = y0 + r;
+            let base = (y - dy + PAD) * s + PAD;
+            for (x, o) in row.as_chunks_mut::<3>().0.iter_mut().enumerate() {
+                let pos = (y & 1) * 2 + (x & 1);
+                let i = base + x;
+                if method == Demosaic::Bilinear {
+                    // Direct Bayer bilinear (the kernels' result without the tap loops).
+                    let own = usize::from(phase[pos]).min(2);
+                    let (n, so, e, wv) = (d[i - s], d[i + s], d[i + 1], d[i - 1]);
+                    if own == 1 {
+                        let hc = usize::from(phase[(y & 1) * 2 + ((x + 1) & 1)]).min(2);
+                        o[1] = d[i];
+                        o[hc] = (e + wv) * 0.5;
+                        o[2 - hc] = (n + so) * 0.5;
+                    } else {
+                        o[own] = d[i];
+                        o[1] = (n + so + e + wv) * 0.25;
+                        o[2 - own] = (d[i - s - 1] + d[i - s + 1] + d[i + s - 1] + d[i + s + 1]) * 0.25;
+                    }
+                    continue;
+                }
+                for (c, k) in ks[pos].iter().enumerate() {
+                    let mut v = 0.0f32;
+                    for &(off, wt) in k {
+                        v += wt * d[(i as isize + off) as usize];
+                    }
+                    o[c] = v.clamp(0.0, 1.0);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn mhc_written_out_gives_the_bits_of_the_tap_loop() {
+        // Every Bayer phase, odd and tiny sizes, values outside 0..1, signed zeros, NaN and infinities.
+        for (w, h) in [(1, 1), (2, 3), (5, 4), (17, 13), (64, 9)] {
+            let mut s = 0x9E37_79B9_7F4A_7C15u64;
+            let mut plane: Vec<f32> = (0..w * h)
+                .map(|_| {
+                    s = s.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+                    ((s >> 40) as f32 / (1u64 << 24) as f32) * 1.6 - 0.3
+                })
+                .collect();
+            for (k, v) in [0.0, -0.0, f32::NAN, f32::INFINITY, f32::NEG_INFINITY, 1.0, 1e-30].into_iter().enumerate() {
+                let n = plane.len();
+                plane[(k * 7 + 1) % n] = v;
+            }
+            let p = Padded::from_plane(&plane, w, h);
+            for phase in [[0, 1, 1, 2], [2, 1, 1, 0], [1, 0, 2, 1], [1, 2, 0, 1]] {
+                for method in [Demosaic::Bilinear, Demosaic::Mhc] {
+                    let ks = kernels(phase, method, p.stride);
+                    let mut want = vec![0.0f32; w * h * 3];
+                    linear_band_ref(&p.data, w, p.stride, phase, method, &ks, 0, 0, &mut want);
+                    let mut got = vec![0.0f32; w * h * 3];
+                    linear_band(&p.data, w, p.stride, phase, method, 0, 0, &mut got);
+                    // Equal bits; a NaN may come out with another sign or payload (the order the
+                    // two evaluations meet two NaNs in), which the encoding maps to the same code.
+                    let bad: Vec<_> =
+                        got.iter().zip(&want).enumerate().filter(|(_, (a, b))| a.to_bits() != b.to_bits() && !(a.is_nan() && b.is_nan())).collect();
+                    assert!(bad.is_empty(), "{w}x{h} {phase:?} {}: {bad:?}", method.id());
                 }
             }
         }

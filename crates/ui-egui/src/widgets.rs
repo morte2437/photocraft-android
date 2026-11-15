@@ -10,6 +10,7 @@ mod color_count;
 pub use angle_dial::{angle_dial_line, angle_dial_row};
 pub use color_count::color_count_row;
 mod type_ahead;
+pub use type_ahead::close_list as close_dropdown_list;
 pub use type_ahead::list_open as dropdown_list_open;
 
 mod buttons;
@@ -18,6 +19,7 @@ mod dropdown;
 pub mod field_tab;
 pub mod field_wheel;
 mod fields;
+mod label_column;
 pub(super) mod numeric_expression;
 mod panel;
 pub mod point_curve;
@@ -26,6 +28,7 @@ mod scrub;
 mod slider;
 pub mod swap_arrow;
 pub(super) mod tab_strip;
+pub mod task_bar;
 mod text_field;
 pub mod text_field_menu;
 pub mod tone;
@@ -37,36 +40,42 @@ pub use buttons::{
 };
 pub(crate) use color::color_swatch;
 pub use color::{
-    checker, checker_rounded, color_edit_button_rgb, color_edit_button_srgb, color_edit_button_srgba, color_swatch_button, hue_color, hue_stops, pick_pos,
-    rgb_histogram,
+    checker, checker_at, checker_rounded, color_edit_button_rgb, color_edit_button_srgb, color_edit_button_srgba, color_swatch_button, hue_color, hue_stops,
+    pick_pos, rgb_histogram,
 };
 #[cfg(test)]
 use color::{checker_tile_id, checker_uv};
-pub use dropdown::{dropdown, dropdown_hovered, dropdown_literal, dropdown_wheel_hovered, dropdown_with_tooltips, menu_scroll, swatch_popup};
+pub use dropdown::{
+    combo_list, dropdown, dropdown_enabled, dropdown_hovered, dropdown_literal, dropdown_wheel_grouped, dropdown_wheel_grouped_enabled, dropdown_wheel_hovered,
+    dropdown_with_tooltips, menu_scroll, swatch_popup,
+};
 pub(crate) use fields::compact_wrapping_value_field;
 #[cfg(test)]
 use fields::{FieldOpts, NUMERIC_INPUT_LIMIT, value_field_in};
 pub use fields::{
-    POPUP_ARROW_W, PopupFieldResponse, VALUE_FIELD_H, compact_value_field, elided_label, elided_label_sensed, popup_value_field, value_field, value_field_named,
+    POPUP_ARROW_W, PopupFieldResponse, VALUE_FIELD_H, compact_value_field, elided_label, elided_label_sensed, popup_value_field, typed_text_parses,
+    value_field, value_field_alerting, value_field_named, value_field_whole, value_field_whole_alerting, value_field_with_trailing,
 };
+pub use label_column::{LABEL_COLUMN_GAP, column_label, column_label_padded, label_column_width};
 pub(crate) use panel::body_margin;
 pub use panel::{
     FOOTER_BAR, chevron_icon, drop_line, footer_height, hairline, panel_footer, panel_menu_button, pill_tab, section_label, style_spectrum_popup_menu, surface,
     vline,
 };
+pub(crate) use scrub::scrub_label_within;
 pub use scrub::{scrub_label, scrub_option_icon, scrub_option_label};
 #[cfg(test)]
 use slider::DOUBLE_CLICK_S;
+pub(crate) use slider::count_notches;
 pub use slider::{RowGestures, row_label, second_click, slider, slider_line, slider_row, slider_row_prec, slider_row_with};
-pub(crate) use slider::{count_notches, wheel_notches_of};
 #[cfg(test)]
 pub(crate) use slider::{curve_fraction, curve_value};
 pub use text_field::{
     INPUT_EVENT_LIMIT, TEXT_FIELD_H, TEXT_FIELD_LIMIT, cap_text_events, focus_first_field, text_field, text_field_ex, text_field_with_trailing,
 };
 pub use units::{
-    FieldUnits, fmt_num, fmt_num_prec, fmt_num2, parse_num, set_field_resolution, unit_decimals, unit_of_key, value_field_extent, value_field_len,
-    value_field_prec, value_field_units,
+    FieldUnits, fmt_num, fmt_num_prec, fmt_num2, parse_num, set_field_resolution, unit_decimals, unit_of_key, value_field_extent, value_field_fixed,
+    value_field_len, value_field_prec, value_field_prec_blank, value_field_units,
 };
 
 #[cfg(test)]

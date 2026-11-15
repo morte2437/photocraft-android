@@ -600,11 +600,12 @@ pub(crate) const RECORDED_EVENT: &str = "_atnEvent";
 /// Remember the event of a step loaded from an effect's own event (`AccE`, `accentedEdges`).
 /// A `GEfc` step carries nothing and saves as `GEfc`, as does a step made in PhotoCraft.
 pub(super) fn remember_event(item: &AtnItem, steps: &mut [(String, Value)]) {
-    if !is_effect(&item.event) {
-        return;
-    }
     let [(id, Value::Object(p))] = steps else { return };
-    if effect_command(&item.event) != Some(id.as_str()) {
+    let menu = id == super::MENU_ITEM
+        && item.descriptor.is_none()
+        && super::menu_item::from_event(&item.event)
+            .is_some_and(|expected| p.get("id") == expected.get("id") && p.get("eventKind") == expected.get("eventKind"));
+    if !menu && effect_command(&item.event) != Some(id.as_str()) {
         return;
     }
     let kind = match item.event {
@@ -617,8 +618,8 @@ pub(super) fn remember_event(item: &AtnItem, steps: &mut [(String, Value)]) {
     p.insert(RECORDED_EVENT.into(), json!({"event": item.event.id(), "eventKind": kind, "name": item.dictionary(), "dictionary": dictionary}));
 }
 
-/// The event and panel name bytes a step of command `id` remembered by [`remember_event`] saves
-/// as; `None` (save as `GEfc`) when it has none or it is not the own event of `id`'s effect.
+/// Return remembered event/name bytes only while they still match the current command and kind.
+/// Otherwise the exporter uses that command's canonical event and name.
 pub(super) fn recorded_event(id: &str, params: &Value) -> Option<(AtnEvent, Vec<u8>)> {
     let r = params.get(RECORDED_EVENT)?;
     let event = jstr(r, "event")?;
@@ -631,7 +632,13 @@ pub(super) fn recorded_event(id: &str, params: &Value) -> Option<(AtnEvent, Vec<
         Some(bytes) => bytes,
         None => jstr(r, "name").unwrap_or("").as_bytes().to_vec(),
     };
-    (effect_command(&event) == Some(id)).then_some((event, name))
+    let matches = if id == super::MENU_ITEM {
+        super::menu_item::from_event(&event)
+            .is_some_and(|expected| params.get("id") == expected.get("id") && params.get("eventKind") == expected.get("eventKind"))
+    } else {
+        effect_command(&event) == Some(id)
+    };
+    matches.then_some((event, name))
 }
 
 /// A Filter Gallery step: the effect `GEfk` names, every key clamped or looked up, Photoshop's

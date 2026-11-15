@@ -219,9 +219,42 @@ pub fn magic_wand(px: &[[f32; 4]], area: Rect, seed: (i32, i32), tolerance: f32,
         }
     }
     if anti_alias {
-        antialias(&mut m, w, h);
+        let tol = (tolerance + 1e-3).floor().max(0.0);
+        let src = m.clone();
+        for (i, v) in m.iter_mut().enumerate() {
+            if src[i] == 0.0 && touches_region(i % w, i / w, w, h, |x, y| src[y * w + x] > 0.0) {
+                let p = px[i];
+                let over = (0..3).map(|c| (p[c] - target[c]).abs() * 255.0).fold(0.0f32, f32::max) - tol;
+                *v = f32::from(fringe_coverage(over, p[3].min(target[3]) * 255.0)) / 255.0;
+            }
+        }
     }
     m
+}
+
+/// How many levels past the tolerance the anti-aliased fringe fades over, from fully selected to
+/// nothing. Measured in the reference application (#11776): 3 levels past gives 251, 5 gives
+/// 249 and 123 gives 110; a straight fade to zero at 216 levels gives all three.
+const FRINGE_LEVELS: f32 = 216.0;
+
+/// Coverage (0–255) of an anti-aliased fringe pixel: a neighbour of the region whose most
+/// different colour channel is `over` levels past the tolerance, and `alpha` (0–255) the lower
+/// of its and the clicked pixel's opacity. Photoshop keeps the region itself fully selected and
+/// softens only the pixels just outside it, fading with the distance past the tolerance; a
+/// neighbour without colour (transparent, next to a shape on its own layer) gets none.
+fn fringe_coverage(over: f32, alpha: f32) -> u8 {
+    let k = (1.0 - over.max(0.0) / FRINGE_LEVELS).clamp(0.0, 1.0) * (alpha / 255.0).clamp(0.0, 1.0);
+    (k * 255.0).round() as u8
+}
+
+/// True when one of the 8 neighbours of `(x, y)` (inside a `w` x `h` area) is in the region.
+fn touches_region(x: usize, y: usize, w: usize, h: usize, selected: impl Fn(usize, usize) -> bool) -> bool {
+    (-1i32..=1).any(|dy| {
+        (-1i32..=1).any(|dx| {
+            let (nx, ny) = (x as i32 + dx, y as i32 + dy);
+            (dx, dy) != (0, 0) && nx >= 0 && ny >= 0 && (nx as usize) < w && (ny as usize) < h && selected(nx as usize, ny as usize)
+        })
+    })
 }
 
 /// Straight RGBA8 copy of `area` of a surface, read in parallel bands on native.
@@ -266,10 +299,107 @@ impl Region {
     }
 }
 
+/// How a wand-style fill measures how far an 8-bit colour is from the clicked one.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ColorDistance {
+    /// The largest difference in any one of R, G and B.
+    LargestChannel,
+    /// The spread of `{0, dR, dG, dB}`: changes in the same direction count once, opposite
+    /// changes add up. Only opaque colours were measured, so a partly transparent seed or pixel
+    /// uses [`Self::LargestChannel`].
+    Spread,
+}
+
+impl ColorDistance {
+    fn rgb(self, p: [u8; 4], seed: [u8; 4]) -> i32 {
+        let d = [0, 1, 2].map(|c| p[c] as i32 - seed[c] as i32);
+        match self {
+            Self::Spread if p[3] == 255 && seed[3] == 255 => d.iter().fold(0, |m, v| m.max(*v)) - d.iter().fold(0, |m, v| m.min(*v)),
+            Self::LargestChannel | Self::Spread => d.iter().fold(0, |m, v| m.max(v.abs())),
+        }
+    }
+}
+
 /// Magic wand on 8-bit pixels: a scanline flood fill (or a global match) that only allocates a
 /// byte mark per pixel, then anti-aliases just the edges inside the touched bounding box.
 /// Matches [`magic_wand`] for 8-bit sources. `None` if the seed is outside `area`.
 pub fn wand_region(img: &[[u8; 4]], area: Rect, seed: (i32, i32), tolerance: f32, contiguous: bool, anti_alias: bool) -> Option<Region> {
+    wand_region_within(img, area, seed, tolerance, contiguous, anti_alias, None)
+}
+
+/// [`wand_region`] whose contiguous fill only passes through pixels at least half selected in
+/// `within` (the current selection's coverage over `area`, row-major): Subtract and Intersect
+/// grow the region from the seed through the selection only (#11779). A seed outside it finds
+/// nothing. A global match (`contiguous` off) ignores `within`.
+pub fn wand_region_within(
+    img: &[[u8; 4]],
+    area: Rect,
+    seed: (i32, i32),
+    tolerance: f32,
+    contiguous: bool,
+    anti_alias: bool,
+    within: Option<&[f32]>,
+) -> Option<Region> {
+    wand_region_by(img, area, seed, tolerance, contiguous, anti_alias, within, ColorDistance::LargestChannel)
+}
+
+/// [`wand_region_within`] measuring how far a colour is from the clicked one with `distance`.
+#[allow(clippy::too_many_arguments)]
+pub fn wand_region_by(
+    img: &[[u8; 4]],
+    area: Rect,
+    seed: (i32, i32),
+    tolerance: f32,
+    contiguous: bool,
+    anti_alias: bool,
+    within: Option<&[f32]>,
+    distance: ColorDistance,
+) -> Option<Region> {
+    region_by_rule(img, area, seed, tolerance, contiguous, anti_alias, within, distance, MatchRule::Wand)
+}
+
+/// Which pixels count as "similar" to the clicked one.
+#[derive(Clone, Copy)]
+enum MatchRule {
+    /// The Magic Wand / Magic Eraser rule: colour and alpha each within Tolerance, except that
+    /// two fully transparent pixels always match.
+    Wand,
+    /// The Paint Bucket rule, see [`wand_region_bucket`].
+    Bucket,
+}
+
+/// [`wand_region`] with the Paint Bucket's match rule (measured on the reference, #12529).
+///
+/// It differs from the wand rule only when the clicked pixel is not opaque. The wand lets any
+/// pixel whose alpha is within Tolerance of the seed's match, so a bucket click on transparent
+/// pixels leaked into the anti-aliased edge of a shape and, at Tolerance 255, filled the whole
+/// layer (#6183). The bucket rule is:
+/// - seed alpha 0: only pixels with alpha 0 match; Tolerance plays no role;
+/// - seed alpha 255: unchanged (colour and alpha each within Tolerance);
+/// - seed alpha in between: a pixel of the seed's own colour matches when its alpha is
+///   above 0 — there is no alpha band for that case (alpha 40, 197 and 253 of one colour
+///   were measured to fill together). A pixel of any other colour must also sit within
+///   Tolerance of the seed's alpha, as before: that case was not measured, and unmeasured
+///   cases keep today's behaviour. Alpha-0 pixels are never taken.
+///
+/// Only that one semi-transparent case was measured; unmeasured cases keep the previous
+/// behaviour. [`wand_region`] and [`wand_region_within`] are unchanged.
+pub(crate) fn wand_region_bucket(img: &[[u8; 4]], area: Rect, seed: (i32, i32), tolerance: f32, contiguous: bool, anti_alias: bool) -> Option<Region> {
+    region_by_rule(img, area, seed, tolerance, contiguous, anti_alias, None, ColorDistance::LargestChannel, MatchRule::Bucket)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn region_by_rule(
+    img: &[[u8; 4]],
+    area: Rect,
+    seed: (i32, i32),
+    tolerance: f32,
+    contiguous: bool,
+    anti_alias: bool,
+    within: Option<&[f32]>,
+    distance: ColorDistance,
+    rule: MatchRule,
+) -> Option<Region> {
     if !area.contains(seed.0, seed.1) {
         return None;
     }
@@ -277,11 +407,23 @@ pub fn wand_region(img: &[[u8; 4]], area: Rect, seed: (i32, i32), tolerance: f32
     if w.checked_mul(h).is_none_or(|n| n > img.len()) {
         return None;
     }
+    let within = within.filter(|_| contiguous).filter(|m| m.len() >= w * h);
+    let inside = |i: usize| within.is_none_or(|m| m.get(i).is_some_and(|v| *v >= 0.5));
+    if !inside((seed.1 - area.y0) as usize * w + (seed.0 - area.x0) as usize) {
+        return None;
+    }
     let target = img[(seed.1 - area.y0) as usize * w + (seed.0 - area.x0) as usize];
     let tol = (tolerance + 1e-3).floor().max(0.0) as i32;
     // Copying a selection can leave RGB under zero alpha. Those invisible colours must not
     // split a transparent region into pieces, as if the copied source were still visible.
-    let similar = |p: [u8; 4]| (target[3] == 0 && p[3] == 0) || (0..4).all(|c| (p[c] as i32 - target[c] as i32).abs() <= tol);
+    let similar = |p: [u8; 4]| match rule {
+        MatchRule::Wand => (target[3] == 0 && p[3] == 0) || (distance.rgb(p, target) <= tol && (p[3] as i32 - target[3] as i32).abs() <= tol),
+        MatchRule::Bucket => match target[3] {
+            0 => p[3] == 0,
+            255 => distance.rgb(p, target) <= tol && (p[3] as i32 - 255).abs() <= tol,
+            _ => p[3] != 0 && distance.rgb(p, target) <= tol && (p[..3] == target[..3] || (p[3] as i32 - target[3] as i32).abs() <= tol),
+        },
+    };
     let mut marks = vec![0u8; w * h];
     let (mut bx0, mut by0, mut bx1, mut by1) = (usize::MAX, usize::MAX, 0usize, 0usize);
     if contiguous {
@@ -293,10 +435,10 @@ pub fn wand_region(img: &[[u8; 4]], area: Rect, seed: (i32, i32), tolerance: f32
                 continue;
             }
             let (mut l, mut r) = (x, x);
-            while l > 0 && marks[row + l - 1] == 0 && similar(img[row + l - 1]) {
+            while l > 0 && marks[row + l - 1] == 0 && similar(img[row + l - 1]) && inside(row + l - 1) {
                 l -= 1;
             }
-            while r + 1 < w && marks[row + r + 1] == 0 && similar(img[row + r + 1]) {
+            while r + 1 < w && marks[row + r + 1] == 0 && similar(img[row + r + 1]) && inside(row + r + 1) {
                 r += 1;
             }
             marks[row + l..=row + r].fill(255);
@@ -308,7 +450,7 @@ pub fn wand_region(img: &[[u8; 4]], area: Rect, seed: (i32, i32), tolerance: f32
                 let nrow = ny * w;
                 let mut in_run = false;
                 for nx in l..=r {
-                    let ok = marks[nrow + nx] == 0 && similar(img[nrow + nx]);
+                    let ok = marks[nrow + nx] == 0 && similar(img[nrow + nx]) && inside(nrow + nx);
                     if ok && !in_run {
                         stack.push((nx, ny));
                     }
@@ -356,25 +498,11 @@ pub fn wand_region(img: &[[u8; 4]], area: Rect, seed: (i32, i32), tolerance: f32
             let x = x0 + xx;
             let v = at(x, y);
             *o = v;
-            if !anti_alias {
-                continue;
-            }
-            // Same rule as `antialias`: edge pixels blend with their 3×3 neighbourhood; neighbours
-            // outside the area count as the pixel itself.
-            let mut sum = 0u32;
-            let mut edge = false;
-            for dy in -1i32..=1 {
-                for dx in -1i32..=1 {
-                    let (nx, ny) = (x as i32 + dx, y as i32 + dy);
-                    let n = if nx < 0 || ny < 0 || nx >= w as i32 || ny >= h as i32 { v } else { at(nx as usize, ny as usize) };
-                    edge |= n != v;
-                    sum += n as u32;
-                }
-            }
-            if edge {
-                let avg = sum as f32 / (9.0 * 255.0);
-                let f = if v > 127 { 0.5 + 0.5 * avg } else { 0.5 * avg };
-                *o = (f * 255.0).round() as u8;
+            // Same rule as `magic_wand`: the region stays fully selected; a pixel just outside
+            // it gets a fringe by how far its colour is past the tolerance.
+            if anti_alias && v == 0 && touches_region(x, y, w, h, |nx, ny| at(nx, ny) != 0) {
+                let p = img[y * w + x];
+                *o = fringe_coverage((distance.rgb(p, target) - tol) as f32, f32::from(p[3].min(target[3])));
             }
         }
     };
@@ -431,32 +559,6 @@ pub fn combine_region(old: Option<&Surface>, new: Option<&Region>, mode: Selecti
             s.write_region(b, &out);
             s.prune();
             nonempty(s)
-        }
-    }
-}
-
-/// Softens hard mask edges: edge pixels become the 3×3 average.
-fn antialias(m: &mut [f32], w: usize, h: usize) {
-    let src = m.to_vec();
-    for y in 0..h {
-        for x in 0..w {
-            let i = y * w + x;
-            let mut sum = 0.0;
-            let mut cnt = 0.0;
-            let mut edge = false;
-            for dy in -1i32..=1 {
-                for dx in -1i32..=1 {
-                    let (xx, yy) = (x as i32 + dx, y as i32 + dy);
-                    let v = if xx < 0 || yy < 0 || xx >= w as i32 || yy >= h as i32 { src[i] } else { src[yy as usize * w + xx as usize] };
-                    edge |= v != src[i];
-                    sum += v;
-                    cnt += 1.0;
-                }
-            }
-            if edge {
-                // Keep selected pixels mostly selected, add a soft fringe.
-                m[i] = if src[i] > 0.5 { 0.5 + 0.5 * sum / cnt } else { 0.5 * sum / cnt };
-            }
         }
     }
 }
@@ -778,10 +880,15 @@ pub fn tone_range(px: &[[f32; 4]], lo: f32, hi: f32, falloff: f32) -> Vec<f32> {
 }
 
 mod distance;
+#[cfg(test)]
+mod ellipse_aa_edge_tests;
+
 mod inverse;
 mod lasso;
 mod marquee;
 mod morphology;
+#[cfg(test)]
+mod wand_antialias_tests;
 
 pub use distance::edt;
 pub use inverse::inverse_surface;
@@ -923,6 +1030,186 @@ pub fn polygon_window(points: &[(f32, f32)], canvas: Rect, window: Rect, anti_al
         }
     });
     m
+}
+
+/// Matches candidate colors against a set of selected colors within an $L_\\infty$
+/// tolerance per channel.
+///
+/// Rather than checking against a single 4D axis-aligned bounding box (which would
+/// falsely include intermediate colors when disparate hues like red and blue are selected),
+/// this indexes selected colors in a bounding-volume hierarchy (BVH). Candidate colors
+/// outside the expanded bounds of subtrees are pruned in $O(1)$ time. Fully transparent
+/// pixels (`a == 0`) match each other whatever their hidden RGB, as in [`magic_wand`].
+#[derive(Clone, Debug)]
+pub struct ColorMatcher {
+    has_transparent: bool,
+    tree: ColorBvh,
+    tol: f32,
+}
+
+#[derive(Clone, Debug)]
+struct ColorBvh {
+    points: Vec<[f32; 4]>,
+    nodes: Vec<ColorNode>,
+}
+
+#[derive(Clone, Debug)]
+enum ColorNode {
+    Leaf { start: usize, end: usize },
+    Branch { min: [f32; 4], max: [f32; 4], left: usize, right: usize },
+}
+
+impl ColorBvh {
+    fn build(mut points: Vec<[f32; 4]>) -> Result<Self, &'static str> {
+        let capacity = Self::node_count(points.len());
+        let mut nodes = Self::reserve_nodes(capacity)?;
+        if !points.is_empty() {
+            Self::build_nodes(&mut points, 0, &mut nodes);
+        }
+        Ok(Self { points, nodes })
+    }
+
+    fn node_count(len: usize) -> usize {
+        if len == 0 {
+            0
+        } else if len <= 16 {
+            1
+        } else {
+            1 + Self::node_count(len / 2) + Self::node_count(len - len / 2)
+        }
+    }
+
+    fn reserve_nodes(capacity: usize) -> Result<Vec<ColorNode>, &'static str> {
+        let mut nodes = Vec::new();
+        nodes.try_reserve_exact(capacity).map_err(|_| "not enough memory to index selection colors")?;
+        Ok(nodes)
+    }
+
+    // Reserve the exact node count before recursion so pushes cannot allocate.
+    fn build_nodes(points: &mut [[f32; 4]], start: usize, nodes: &mut Vec<ColorNode>) -> usize {
+        if points.len() <= 16 {
+            let index = nodes.len();
+            nodes.push(ColorNode::Leaf { start, end: start + points.len() });
+            return index;
+        }
+        let (mut min, mut max) = ([f32::MAX; 4], [f32::MIN; 4]);
+        for p in points.iter() {
+            for c in 0..4 {
+                min[c] = min[c].min(p[c]);
+                max[c] = max[c].max(p[c]);
+            }
+        }
+        let mut axis = 0;
+        for c in 1..4 {
+            if max[c] - min[c] > max[axis] - min[axis] {
+                axis = c;
+            }
+        }
+        let mid = points.len() / 2;
+        points.select_nth_unstable_by(mid, |a, b| a[axis].total_cmp(&b[axis]));
+        let (left_points, right_points) = points.split_at_mut(mid);
+        let left = Self::build_nodes(left_points, start, nodes);
+        let right = Self::build_nodes(right_points, start + mid, nodes);
+        let index = nodes.len();
+        nodes.push(ColorNode::Branch { min, max, left, right });
+        index
+    }
+
+    fn matches_node(&self, index: usize, q: &[f32; 4], tol: f32) -> bool {
+        match self.nodes.get(index) {
+            Some(ColorNode::Leaf { start, end }) => {
+                self.points.get(*start..*end).is_some_and(|pts| pts.iter().any(|p| (0..4).all(|c| (q[c] - p[c]).abs() <= tol + 1e-6)))
+            }
+            Some(ColorNode::Branch { min, max, left, right }) => {
+                for c in 0..4 {
+                    let d = if q[c] < min[c] {
+                        min[c] - q[c]
+                    } else if q[c] > max[c] {
+                        q[c] - max[c]
+                    } else {
+                        0.0
+                    };
+                    if d > tol + 1e-6 {
+                        return false;
+                    }
+                }
+                self.matches_node(*left, q, tol) || self.matches_node(*right, q, tol)
+            }
+            None => false,
+        }
+    }
+
+    fn matches(&self, q: &[f32; 4], tol: f32) -> bool {
+        self.nodes.len().checked_sub(1).is_some_and(|root| self.matches_node(root, q, tol))
+    }
+}
+
+/// Bytes of memory the index is charged per distinct colour: the dedupe set entry and its
+/// table slack, the colour in the point list, and its share of the tree nodes. It is an
+/// approximate average, not a worst case: while the set rehashes or the point list doubles,
+/// the peak runs to roughly 70–90 bytes per colour.
+const COLOR_INDEX_BYTES: usize = 64;
+
+/// The most memory the index may be charged. It scales with the distinct colours rather than the
+/// canvas, so a noisy 24 MP photo, or a float document where every pixel is its own colour,
+/// still builds; it only keeps the index within the sampled pixels' own budget. On 32-bit
+/// (the web build) 1 GiB still admits every distinct colour of a 24 MP photo.
+const COLOR_INDEX_BUDGET: usize = if cfg!(target_pointer_width = "64") { 4 << 30 } else { 1 << 30 };
+
+impl ColorMatcher {
+    /// Creates a color matcher from selected RGBA colors and an $L_\\infty$ tolerance in $[0, 1]$.
+    pub fn new(selected_colors: impl IntoIterator<Item = [f32; 4]>, tol: f32) -> Result<Self, &'static str> {
+        Self::with_budget(selected_colors, tol, COLOR_INDEX_BUDGET)
+    }
+
+    // Bound the index by `budget` bytes, charged at `COLOR_INDEX_BYTES` per distinct colour, and
+    // fail without altering the selection.
+    fn with_budget(selected_colors: impl IntoIterator<Item = [f32; 4]>, tol: f32, budget: usize) -> Result<Self, &'static str> {
+        let limit = budget / COLOR_INDEX_BYTES;
+        let mut has_transparent = false;
+        let mut seen = std::collections::HashSet::new();
+        let mut opaque_or_semi = Vec::new();
+        for c in selected_colors {
+            // A transparent color also stays in the tree: a nearly transparent query is compared
+            // by its RGB and alpha like any other.
+            has_transparent |= c[3] == 0.0;
+            let norm = |x: f32| if x == 0.0 { 0.0f32.to_bits() } else { x.to_bits() };
+            let key = [norm(c[0]), norm(c[1]), norm(c[2]), norm(c[3])];
+            if !seen.contains(&key) {
+                if seen.len() >= limit {
+                    return Err("the selection contains too many distinct colors to match; select a smaller area");
+                }
+                seen.try_reserve(1).map_err(|_| "not enough memory to index selection colors")?;
+                opaque_or_semi.try_reserve(1).map_err(|_| "not enough memory to index selection colors")?;
+                seen.insert(key);
+                opaque_or_semi.push(c);
+            }
+        }
+        drop(seen);
+        opaque_or_semi.sort_unstable_by(|a, b| {
+            a[0].total_cmp(&b[0]).then_with(|| a[1].total_cmp(&b[1])).then_with(|| a[2].total_cmp(&b[2])).then_with(|| a[3].total_cmp(&b[3]))
+        });
+        opaque_or_semi.dedup_by(|a, b| a == b);
+        // The tree keeps this list; give back the slack its doubling left.
+        opaque_or_semi.shrink_to_fit();
+
+        Ok(Self { has_transparent, tree: ColorBvh::build(opaque_or_semi)?, tol: tol.max(0.0) })
+    }
+
+    /// Returns `true` if no colors (including transparent pixels) were provided.
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        !self.has_transparent && self.tree.nodes.is_empty()
+    }
+
+    /// Returns `true` if `q` falls within `tol` of any selected color.
+    #[inline]
+    pub fn matches(&self, q: [f32; 4]) -> bool {
+        if q[3] == 0.0 && self.has_transparent {
+            return true;
+        }
+        self.tree.matches(&q, self.tol)
+    }
 }
 
 #[cfg(test)]
