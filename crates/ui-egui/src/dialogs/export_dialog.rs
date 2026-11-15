@@ -173,7 +173,8 @@ fn scale_all_fields(ui: &mut egui::Ui, f: &mut Map<String, Value>) {
                 let name = crate::i18n::fmt(tl!("Size {n}"), &[("n", &n)]);
                 crate::widgets::dropdown_literal(ui, &format!("export-scale-size-{i}"), &name, size, &sizes, 70.0);
                 let name = crate::i18n::fmt(tl!("Suffix {n}"), &[("n", &n)]);
-                ui.add(egui::TextEdit::singleline(suffix).desired_width(110.0).hint_text(tl!("Suffix"))).accessible_name(&name);
+                // At most the accepted length (`valid_scale_rows`): a longer one would discard the whole list.
+                ui.add(egui::TextEdit::singleline(suffix).desired_width(110.0).char_limit(64).hint_text(tl!("Suffix"))).accessible_name(&name);
                 let name = crate::i18n::fmt(tl!("Remove size {n}"), &[("n", &n)]);
                 if ui.add_enabled_ui(!single, |ui| crate::icons::button(ui, "trash", 20.0, false, &name)).inner.clicked() {
                     remove = Some(i);
@@ -1187,6 +1188,19 @@ pub fn confirm(app: &mut PhotocraftApp, f: &Map<String, Value>) -> Result<Value,
     })
 }
 
+/// The file names a batch writes, `<name><suffix>.<ext>` per row, or an error naming the first one two
+/// rows share (suffixes that sanitize alike, or differ only in case, count: a file system may fold them).
+/// Nothing is written then; replacing a file that already exists is unchanged.
+fn batch_file_names(stem: &str, ext: &str, rows: &[(String, String)]) -> Result<Vec<String>, String> {
+    let names: Vec<String> = rows.iter().map(|(_, suffix)| format!("{stem}{}.{ext}", file_suffix(suffix))).collect();
+    for (i, name) in names.iter().enumerate() {
+        if names[..i].iter().any(|other| other.to_lowercase() == name.to_lowercase()) {
+            return Err(format!("Two sizes would write the same file, {name}; give each size its own suffix"));
+        }
+    }
+    Ok(names)
+}
+
 /// [`confirm`] with several Scale All rows: a folder choice, then `<name><suffix>.<ext>` there for
 /// each row, at the row's size.
 fn confirm_sizes(
@@ -1198,11 +1212,11 @@ fn confirm_sizes(
     rows: Vec<(String, String)>,
 ) -> Result<Value, String> {
     let (f, stem) = (f.clone(), export_name(stem));
+    let names = batch_file_names(&stem, &s_fmt(&f), &rows)?;
     app.ask_folder(move |app, dir| {
-        let ext = s_fmt(&f);
         let mut exported = Vec::new();
-        for (size, suffix) in &rows {
-            let path = std::path::Path::new(&dir).join(format!("{stem}{}.{ext}", file_suffix(suffix)));
+        for ((size, _), name) in rows.iter().zip(&names) {
+            let path = std::path::Path::new(&dir).join(name);
             // The writer follows links, so one planted where a file is written would redirect it.
             #[cfg(not(target_arch = "wasm32"))]
             if path.symlink_metadata().is_ok_and(|m| m.file_type().is_symlink()) {

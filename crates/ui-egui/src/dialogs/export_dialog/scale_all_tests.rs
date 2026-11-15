@@ -168,3 +168,45 @@ fn rows_are_remembered_after_export_not_after_cancel() {
     open_dialog(&mut h);
     assert_eq!(dialog_rows(&h), rows(&[("1x", ""), ("0.5x", "@0.5x"), ("0.75x", "@0.75x")]), "Export remembers them");
 }
+
+/// CodeRabbit on #15028: two rows that would write one file are refused before anything is written.
+#[test]
+fn rows_that_share_an_output_file_are_refused() {
+    let same = rows(&[("1x", ""), ("0.5x", "")]);
+    let err = batch_file_names("harbor", "png", &same).unwrap_err();
+    assert!(err.contains("harbor.png"), "{err}");
+    // Suffixes that sanitize alike, or differ only in case.
+    assert!(batch_file_names("harbor", "png", &rows(&[("1x", "a/b"), ("2x", "a:b")])).is_err());
+    assert!(batch_file_names("harbor", "png", &rows(&[("1x", "@Big"), ("2x", "@big")])).is_err());
+    // Distinct suffixes pass, in row order.
+    let ok = batch_file_names("harbor", "png", &rows(&[("1x", ""), ("0.5x", "@0.5x")])).unwrap();
+    assert_eq!(ok, ["harbor.png", "harbor@0.5x.png"]);
+}
+
+#[test]
+fn exporting_rows_with_one_name_writes_nothing_and_says_why() {
+    let dir = std::env::temp_dir().join(format!("pc-scale-dup-{}", std::process::id()));
+    let (mut h, writes, asked) = harness(crate::FileDialogAnswer::FolderTo(dir.to_string_lossy().into_owned()));
+    open_dialog(&mut h);
+    click(&mut h, "Add a size");
+    h.state_mut().ui.dialogs.last_mut().unwrap().fields.insert("scaleAll".into(), scale_rows_value(&rows(&[("1x", ""), ("0.5x", "")])));
+    h.run_steps(2);
+    h.get_by_role_and_label(Role::Button, "Export").click();
+    h.run_steps(6);
+    assert!(writes.borrow().is_empty(), "nothing written");
+    assert!(asked.borrow().is_empty(), "no folder asked for");
+    assert!(h.state().ui.status.contains("would write the same file"), "{}", h.state().ui.status);
+}
+
+/// CodeRabbit on #15028: a suffix field takes at most the accepted 64 characters.
+#[test]
+fn a_suffix_longer_than_the_limit_cannot_be_typed() {
+    let (mut h, _, _) = harness(crate::FileDialogAnswer::SaveTo("x.png".into()));
+    open_dialog(&mut h);
+    h.get_by_label("Suffix 1").click();
+    h.run_steps(2);
+    h.get_by_label("Suffix 1").type_text(&"s".repeat(80));
+    h.run_steps(4);
+    let list = dialog_rows(&h);
+    assert_eq!(list, vec![("1x".to_string(), "s".repeat(64))], "capped, and the row list kept");
+}
