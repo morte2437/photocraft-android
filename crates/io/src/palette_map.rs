@@ -28,18 +28,20 @@ pub(crate) fn document_to_psd(
     force_psb: bool,
     size_limit: Option<u64>,
     patterns: Option<&[photocraft_doc::PsdGlobalBlock]>,
-) -> Option<(PsdFile, Vec<String>)> {
+) -> Result<Option<(PsdFile, Vec<String>)>, crate::IoError> {
     if !doc.channels.is_empty() || doc.quick_mask.is_some() {
-        return None;
+        return Ok(None);
     }
     let table = doc.color_table.as_ref().filter(|t| t.colors.len() <= 256 && (0..t.colors.len()).any(|i| Some(i) != t.transparent.map(usize::from)));
     let (mode, plane, color_mode_data) = match doc.mode {
         ColorMode::Indexed => {
-            let table = table?;
+            let Some(table) = table else {
+                return Ok(None);
+            };
             (PsdMode::Indexed, indices(doc, table), palette(table))
         }
         ColorMode::Bitmap => (PsdMode::Bitmap, bits(doc), Vec::new()),
-        _ => return None,
+        _ => return Ok(None),
     };
     let mut warnings = Vec::new();
     if !flattens_losslessly(doc) {
@@ -70,8 +72,8 @@ pub(crate) fn document_to_psd(
     }
     // An imported transparency index that no longer applies is not copied either.
     let keep = |id: u16, _: &[u8]| !CHANNEL_RESOURCES.contains(&id) && id != TRANSPARENCY_INDEX && id != COLOR_TABLE_COUNT;
-    let file = crate::multichannel_map::layerless_file(doc, header, image_data, color_mode_data, resources, keep, size_limit, &mut warnings, patterns);
-    Some((file, warnings))
+    let file = crate::multichannel_map::layerless_file(doc, header, image_data, color_mode_data, resources, keep, size_limit, &mut warnings, patterns)?;
+    Ok(Some((file, warnings)))
 }
 
 /// Whether the merged image holds everything the layers do: no layer, or a single visible pixel

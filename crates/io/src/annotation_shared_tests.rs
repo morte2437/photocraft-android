@@ -61,3 +61,32 @@ fn legacy_anno(notes: &[Note], raw_extra: &[Vec<u8>]) -> Vec<u8> {
     out
 }
 
+#[test]
+fn shared_writer_matches_valid_legacy_bytes() {
+    for text in ["", "ascii", "héllo ✓", "one\r\ntwo\nthree", "𝄞"] {
+        for x in [0.0, -5.5, f64::from(i32::MAX), f64::INFINITY] {
+            let note = Note { text: text.into(), author: "ä✓".repeat(180), modified: "date".into(), position: [x, 2.5], ..Default::default() };
+            let extra = vec![vec![0, 0, 0, 8, b's', b'n', b'd', b'A']];
+            assert_eq!(write_anno(&[note.clone()], &extra).unwrap(), legacy_anno(&[note], &extra));
+        }
+    }
+}
+#[test]
+fn every_export_path_refuses_excess_notes() {
+    for mode in [photocraft_doc::ColorMode::Rgb, photocraft_doc::ColorMode::Multichannel, photocraft_doc::ColorMode::Bitmap] {
+        let mut d = Document::new("notes", photocraft_doc::Size::new(1, 1), mode, photocraft_doc::SampleType::U8);
+        d.notes = vec![Note::default(); 4097];
+        assert!(export_blocks(&d, vec![]).is_err());
+        assert!(crate::document_to_psd(&d).is_err());
+        assert!(crate::document_to_psd_with(&d, &Default::default()).is_err());
+        assert!(crate::encode_with(&d, "psd", &Default::default(), &photocraft_raster::Interrupt::NONE).is_err());
+        assert!(crate::encode_with(&d, "tiff", &Default::default(), &photocraft_raster::Interrupt::NONE).is_err());
+    }
+}
+#[test]
+fn text_cannot_cross_declared_record_boundary() {
+    let mut block = write_anno(&[Note { text: "payload".into(), ..Default::default() }], &[]).unwrap();
+    let length = u32::from_be_bytes(block[8..12].try_into().unwrap());
+    block[8..12].copy_from_slice(&(length - 2).to_be_bytes());
+    assert!(parse_entries(&block).is_none());
+}
