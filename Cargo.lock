@@ -5859,8 +5859,8 @@ dependencies = [
 name = "photocraft-text"
 version = "0.23.1"
 dependencies = [
- "craft-plist",
  "base64 0.23.1",
+ "craft-plist",
  "craft-psd",
  "flate2",
  "parley",
