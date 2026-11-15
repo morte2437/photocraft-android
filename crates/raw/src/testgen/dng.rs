@@ -365,7 +365,27 @@ impl DngSpec {
         let bytes: Vec<u8> = match self.bits {
             8 => v.iter().map(|&x| x as u8).collect(),
             16 => v.iter().flat_map(|&x| if self.big_endian { x.to_be_bytes() } else { x.to_le_bytes() }).collect(),
-            _ => v.iter().flat_map(|x| x.to_le_bytes()).collect(),
+            // Other depths are bit-packed, most significant bit first, a row at a time (the TIFF layout).
+            bits => v
+                .chunks(n)
+                .flat_map(|row| {
+                    let mut out = Vec::new();
+                    let (mut acc, mut have) = (0u32, 0u32);
+                    for &x in row {
+                        acc = acc << bits | u32::from(x) & ((1 << bits) - 1);
+                        have += u32::from(bits);
+                        while have >= 8 {
+                            have -= 8;
+                            out.push((acc >> have) as u8);
+                        }
+                        acc &= (1 << have) - 1;
+                    }
+                    if have > 0 {
+                        out.push((acc << (8 - have)) as u8);
+                    }
+                    out
+                })
+                .collect(),
         };
         let mut e = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
         e.write_all(&bytes).expect("zlib");
