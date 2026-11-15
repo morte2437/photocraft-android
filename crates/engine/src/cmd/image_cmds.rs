@@ -1186,6 +1186,9 @@ pub(crate) fn change_depth(doc: &mut Document, depth: SampleType) {
 fn duplicate(s: &mut Session, p: &Value) -> Result<Value> {
     let d = s.active().ok_or(EngineError::NoDocument)?;
     let mut doc = (*d.doc).clone();
+    // As Photoshop: the copy starts without a selection (the source keeps its own); alpha
+    // channels, guides and paths are copied.
+    doc.selection = None;
     doc.id = photocraft_doc::DocId::fresh();
     doc.name = p.get("name").and_then(Value::as_str).map(str::to_string).unwrap_or_else(|| format!("{} copy", d.doc.name));
     if p.get("mergedOnly").and_then(Value::as_bool).unwrap_or(false) {
@@ -1296,6 +1299,10 @@ pub fn specs() -> Vec<CommandSpec> {
         spec!("image.duplicate", "Duplicate…", ["Image"], r##"{"name":str,"mergedOnly":bool=false}"##, has_doc, duplicate),
     ]
 }
+
+#[cfg(test)]
+#[path = "image_cmds/duplicate_selection_tests.rs"]
+mod duplicate_selection_tests;
 
 #[cfg(test)]
 mod tests;
