@@ -5,7 +5,7 @@ use photocraft_doc::{FxCommon, Satin};
 /// #14983: black Satin over an orange rectangle, measured down its centre column.
 fn green_column(size: f32) -> Vec<u8> {
     let mut shape = Map::new(400, 300, 0.0);
-    for row in shape.v.chunks_exact_mut(400).skip(75).take(150) {
+    for row in shape.v.as_chunks_mut::<400>().0.iter_mut().skip(75).take(150) {
         row[100..300].fill(1.0);
     }
     let satin = Satin {
