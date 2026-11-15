@@ -50,7 +50,10 @@ fn metadata() {
     assert!((wb[2] - 1.0 / 0.617).abs() < 1e-9, "{wb:?}");
     assert_eq!((sensor.make.as_deref(), sensor.model.as_deref()), (Some("Hasselblad"), Some("X2D II 100C")));
     assert_eq!(sensor.orientation, 1);
-    assert!(sensor.warnings.is_empty(), "{:?}", sensor.warnings);
+    // This real-layout fixture deliberately has no CFAPattern tag. All source
+    // metadata is retained, while the decoder discloses its assumed RGGB phase.
+    assert_eq!(sensor.warnings.len(), 1, "{:?}", sensor.warnings);
+    assert!(sensor.warnings[0].contains("Bayer phase") && sensor.warnings[0].contains("fallback"), "{:?}", sensor.warnings);
 }
 
 #[test]
@@ -77,7 +80,7 @@ fn compressed_3fr_is_reported_unsupported() {
     let mut s = spec();
     s.compression = 7;
     let e = decode(&s.build(), &Limits::default()).unwrap_err();
-    assert!(matches!(&e, RawError::Unsupported(reason) if reason.contains("lossless-JPEG")), "{e:?}");
+    assert!(matches!(&e, RawError::Unsupported(reason) if reason.contains("lossless JPEG")), "{e:?}");
 }
 
 #[test]
@@ -92,8 +95,11 @@ fn missing_levels_fall_back() {
     let sensor = decode(&s.build(), &Limits::default()).unwrap();
     assert_eq!(sensor.black, BlackLevels::uniform(0.0));
     assert!(sensor.warnings.iter().any(|w| w.contains("black level")), "{:?}", sensor.warnings);
-    // clip_level backs the clipped plateau off slightly.
-    assert!((sensor.white[0] - f32::from(u16::MAX) * 0.995).abs() < 1.0, "{:?}", sensor.white);
+    // Shared provenance identifies this as the declared-depth default. The
+    // non-DNG adapter must not silently rescale the stored samples afterward.
+    assert_eq!(sensor.white, [f32::from(u16::MAX); 3]);
+    assert_eq!(sensor.data, s.data);
+    assert!(sensor.warnings.iter().any(|warning| warning.contains("white level")), "{:?}", sensor.warnings);
 }
 
 #[test]

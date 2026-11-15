@@ -30,6 +30,36 @@ fn every_storage_decodes_exactly() {
     }
 }
 
+const SMALL_ROW_VALUES: [u16; 16] = [0, 1, 0x3FFF, 0x2000, 0x1234, 42, 255, 0x1555, 0x2AAA, 2, 0x3FFE, 4096, 8191, 1023, 7, 37];
+
+#[test]
+fn small_word_packed_rows_decode_exactly() {
+    // Eight 14-bit samples need four words per row. At two rows this has the
+    // same payload size as U16, so the packed-word flag must select the decoder.
+    for data in [vec![1; 16], SMALL_ROW_VALUES.to_vec()] {
+        let mut spec = RafSpec::new(8, 2, data.clone(), RGGB.to_vec());
+        spec.packing = RafPacking::Words14;
+        spec.bits = 14;
+        let sensor = decode(&spec.build(), &Limits::default()).unwrap();
+        assert_eq!((sensor.width, sensor.height), (8, 2));
+        assert_eq!(sensor.data, data);
+    }
+}
+
+#[test]
+fn small_u16_rows_keep_their_container_packing() {
+    for le in [false, true] {
+        for data in [vec![1; 16], SMALL_ROW_VALUES.to_vec()] {
+            let mut spec = RafSpec::new(8, 2, data.clone(), RGGB.to_vec());
+            spec.packing = RafPacking::U16 { le };
+            spec.bits = 14;
+            let sensor = decode(&spec.build(), &Limits::default()).unwrap();
+            assert_eq!((sensor.width, sensor.height), (8, 2));
+            assert_eq!(sensor.data, data, "U16 little-endian: {le}");
+        }
+    }
+}
+
 #[test]
 fn xtrans_metadata() {
     let mut spec = xtrans(RafPacking::U16 { le: true }, 14);
@@ -48,7 +78,11 @@ fn xtrans_metadata() {
     assert!((s.baseline_exposure - 0.72).abs() < 1e-9);
     assert_eq!(s.orientation, 6);
     assert_eq!((s.make.as_deref(), s.model.as_deref()), (Some("FUJIFILM"), Some("X-Synthetic")));
-    assert!(s.warnings.is_empty(), "{:?}", s.warnings);
+    // This RAF records black/WB but no white tag; the full 14-bit range is an
+    // explicit fallback, not a missing-CFA or missing-black warning.
+    assert_eq!(s.white, [16383.; 3]);
+    assert_eq!(s.warnings.len(), 1, "{:?}", s.warnings);
+    assert!(s.warnings[0].contains("white level") && s.warnings[0].contains("full sample range"), "{:?}", s.warnings);
 }
 
 #[test]
@@ -152,7 +186,7 @@ fn compressed_variants_that_cannot_be_decoded_fail_cleanly() {
     for cfa in [other.as_slice(), &[1, 0, 2, 1]] {
         let b = compressed(cfa, 14, false).build();
         match decode(&b, &Limits::default()) {
-            Err(RawError::Unsupported(m)) => assert!(m.contains("CFA"), "{m}"),
+            Err(RawError::Unsupported(m)) => assert!(m.contains("layout"), "{m}"),
             other => panic!("expected unsupported, got {other:?}"),
         }
     }

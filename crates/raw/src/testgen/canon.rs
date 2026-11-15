@@ -212,10 +212,12 @@ pub fn tiff_ep(make: &str, width: usize, height: usize, data: &[u16], cfa: [u8; 
         (33421, Val::Short(vec![2, 2])),
         (33422, Val::Byte(cfa.to_vec())),
     ];
-    raw.extend(extra_raw_tags);
+    // Make and Model belong to IFD0, where readers look for them; anything else is raw-IFD data.
+    let (ifd0_tags, raw_tags): (Vec<_>, Vec<_>) = extra_raw_tags.into_iter().partition(|(tag, _)| matches!(tag, 271 | 272));
+    raw.extend(raw_tags);
     let raw_ifd = t.ifd(raw);
     let thumb = t.blob(vec![128; 12]);
-    let ifd0 = t.ifd(vec![
+    let mut ifd0 = vec![
         (254, Val::Long(vec![1])),
         (256, Val::Long(vec![2])),
         (257, Val::Long(vec![2])),
@@ -226,7 +228,9 @@ pub fn tiff_ep(make: &str, width: usize, height: usize, data: &[u16], cfa: [u8; 
         (277, Val::Short(vec![3])),
         (279, Val::Long(vec![12])),
         (330, Val::Ifds(vec![raw_ifd])),
-    ]);
+    ];
+    ifd0.extend(ifd0_tags);
+    let ifd0 = t.ifd(ifd0);
     t.chain = vec![ifd0];
     t.build()
 }
