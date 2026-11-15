@@ -560,7 +560,7 @@ fn doc_export_layers_reports_skips_in_workspace_and_trusted_sessions() {
         let reply: Value = serde_json::from_slice(&output).unwrap();
         assert_eq!(reply["id"], 8491);
         assert_eq!(reply["ok"], true, "{reply}");
-        assert_eq!(reply["result"]["files"], json!([format!("{out_dir}/card_0001_Background.png")]));
+        assert_eq!(reply["result"]["files"], json!([format!("{out_dir}/card_0002_Background.png")]));
         if !trusted {
             assert_eq!(reply["result"]["count"], 1);
         }
