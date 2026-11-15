@@ -20,13 +20,9 @@
 //! Filter has none). Without `HasCrop`, or with `HasCrop="False"`, the crop keys are stale and
 //! mean nothing. A straightened crop (`CropAngle` other than 0) isn't applied.
 
+pub use craft_crs::{CROP_KEYS, CRS_NS, Crop, MAX_XMP_BYTES};
+use craft_crs::{CropState, Settings, Value, number, points, signed, toolkit};
 use photocraft_algo::camera_raw::{CameraRaw, validate_curve};
-
-/// The Camera Raw settings namespace.
-pub const CRS_NS: &str = "http://ns.adobe.com/camera-raw-settings/1.0/";
-const RDF_NS: &str = "http://www.w3.org/1999/02/22-rdf-syntax-ns#";
-/// Largest settings file read; real ones are a few kilobytes.
-pub const MAX_XMP_BYTES: usize = 4 * 1024 * 1024;
 
 type Field = fn(&mut CameraRaw) -> &mut f32;
 
@@ -157,54 +153,6 @@ const METADATA: &[&str] = &[
     "RawFileName",
 ];
 
-/// The crop's keys besides `HasCrop`, and their values without a crop (the whole frame, level).
-pub const CROP_KEYS: [&str; 5] = ["CropTop", "CropLeft", "CropBottom", "CropRight", "CropAngle"];
-const NO_CROP: [f32; 5] = [0.0, 0.0, 1.0, 1.0, 0.0];
-
-/// A Camera Raw crop: fractions of the developed frame in the raw's stored orientation, before
-/// its Orientation tag turns it upright, with `0 <= left < right <= 1` and
-/// `0 <= top < bottom <= 1`.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Crop {
-    pub top: f32,
-    pub left: f32,
-    pub bottom: f32,
-    pub right: f32,
-}
-
-impl Crop {
-    /// The crop of the frame turned upright by TIFF orientation `o` (1–8; anything else is 1),
-    /// as fractions of the upright frame: the corners map as the pixels do.
-    pub fn oriented(self, o: u16) -> Crop {
-        let map = |u: f32, v: f32| match o {
-            2 => (1.0 - u, v),
-            3 => (1.0 - u, 1.0 - v),
-            4 => (u, 1.0 - v),
-            5 => (v, u),
-            6 => (1.0 - v, u),
-            7 => (1.0 - v, 1.0 - u),
-            8 => (v, 1.0 - u),
-            _ => (u, v),
-        };
-        let (ax, ay) = map(self.left, self.top);
-        let (bx, by) = map(self.right, self.bottom);
-        Crop { top: ay.min(by), left: ax.min(bx), bottom: ay.max(by), right: ax.max(bx) }
-    }
-
-    /// The crop on a `w × h` frame in pixels, `(x0, y0, x1, y1)` with `x1` and `y1` exclusive:
-    /// at least one pixel, inside the frame. `None` for an empty frame.
-    pub fn pixels(self, w: usize, h: usize) -> Option<(usize, usize, usize, usize)> {
-        let edge = |f: f32, n: usize| ((f64::from(f).clamp(0.0, 1.0) * n as f64).round() as usize).min(n);
-        let span = |a: f32, b: f32, n: usize| {
-            let lo = edge(a, n).min(n.checked_sub(1)?);
-            Some((lo, edge(b, n).max(lo + 1)))
-        };
-        let (x0, x1) = span(self.left, self.right, w)?;
-        let (y0, y1) = span(self.top, self.bottom, h)?;
-        Some((x0, y0, x1, y1))
-    }
-}
-
 /// What [`load`] applied.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct LoadReport {
@@ -219,71 +167,15 @@ pub struct LoadReport {
     pub crop: Option<Crop>,
 }
 
-/// The crop keys as read, resolved by [`crop`] once the whole file is read.
-#[derive(Default)]
-struct CropFields {
-    has: Option<String>,
-    values: [Option<String>; 5],
-}
-
-/// The file's crop from its keys: applied when `HasCrop` is `True` and the values make a level,
-/// non-empty rectangle (fractions are clamped to 0..1); otherwise its keys are reported.
-fn crop(fields: &CropFields, report: &mut LoadReport) {
-    match fields.has.as_deref().map(str::trim) {
-        // No crop: the other keys are what Camera Raw left from an earlier or reset crop.
-        None => return,
-        Some(v) if v.eq_ignore_ascii_case("false") => return,
-        Some(v) if v.eq_ignore_ascii_case("true") => {}
-        Some(_) => {
-            report.ignored.push("HasCrop".into());
-            return;
-        }
-    }
-    let mut v = NO_CROP;
-    let mut usable = true;
-    for (slot, text) in v.iter_mut().zip(&fields.values) {
-        if let Some(text) = text {
-            match number(text) {
-                Some(n) => *slot = n,
-                None => usable = false,
-            }
-        }
-    }
-    let [top, left, bottom, right] = [v[0], v[1], v[2], v[3]].map(|f| f.clamp(0.0, 1.0));
-    // A straightened crop's rectangle is measured on the rotated frame: not applied.
-    usable &= v[4] == 0.0 && top < bottom && left < right;
-    if !usable {
-        let present = CROP_KEYS.iter().zip(&fields.values).filter(|(_, t)| t.is_some());
-        report.ignored.extend(present.map(|(k, _)| k.to_string()));
-        return;
-    }
-    if [top, left, bottom, right] != [0.0, 0.0, 1.0, 1.0] {
-        report.crop = Some(Crop { top, left, bottom, right });
-        report.applied += 1;
-    }
-}
-
-fn number(s: &str) -> Option<f32> {
-    let s = s.trim();
-    let v: f32 = s.strip_prefix('+').unwrap_or(s).parse().ok()?;
-    v.is_finite().then_some(v)
-}
-
 /// `"0, 0"` items of an `rdf:Seq` → curve points.
-fn curve(node: roxmltree::Node<'_, '_>) -> Option<Vec<[f32; 2]>> {
-    let seq = node.children().find(|c| c.is_element() && c.tag_name().namespace() == Some(RDF_NS) && c.tag_name().name() == "Seq")?;
-    let mut points = Vec::new();
-    for li in seq.children().filter(|c| c.is_element() && c.tag_name().name() == "li") {
-        let text = li.text().unwrap_or("");
-        let (x, y) = text.split_once(',')?;
-        points.push([number(x)?, number(y)?]);
-    }
-    validate_curve(&points).ok()?;
+fn curve(items: &[String]) -> Option<Vec<[f32; 2]>> {
+    let mut pts = points(items)?;
+    validate_curve(&pts).ok()?;
     // Camera Raw's linear curve is the identity's two end points; PhotoCraft's is empty.
-    if points == [[0.0, 0.0], [255.0, 255.0]] {
-        points.clear();
+    if pts == [[0.0, 0.0], [255.0, 255.0]] {
+        pts.clear();
     }
-    Some(points)
+    Some(pts)
 }
 
 /// An unsupported setting at its neutral value changes nothing, so it isn't reported: zero,
@@ -301,14 +193,11 @@ fn neutral(name: &str, value: &str) -> bool {
     }
 }
 
-fn apply(params: &mut CameraRaw, report: &mut LoadReport, crop: &mut CropFields, name: &str, value: &str) {
-    if name == "HasCrop" {
-        crop.has = Some(value.to_string());
-    } else if let Some(i) = CROP_KEYS.iter().position(|k| *k == name) {
-        if let Some(slot) = crop.values.get_mut(i) {
-            *slot = Some(value.to_string());
-        }
-    } else if let Some((_, field, lo, hi)) = SCALARS.iter().find(|(n, ..)| *n == name) {
+fn apply_text(params: &mut CameraRaw, report: &mut LoadReport, name: &str, value: &str) {
+    if name == "HasCrop" || CROP_KEYS.contains(&name) {
+        return;
+    }
+    if let Some((_, field, lo, hi)) = SCALARS.iter().find(|(n, ..)| *n == name) {
         match number(value) {
             Some(v) => {
                 *field(params) = v.clamp(*lo, *hi);
@@ -332,77 +221,54 @@ fn apply(params: &mut CameraRaw, report: &mut LoadReport, crop: &mut CropFields,
 /// Apply a Camera Raw settings file over `params`. Fails on input that isn't XMP or holds no
 /// Camera Raw settings; never panics on malformed input.
 pub fn load(params: &mut CameraRaw, bytes: &[u8]) -> Result<LoadReport, String> {
-    if bytes.len() > MAX_XMP_BYTES {
-        return Err("the settings file is too large".into());
-    }
-    let text = std::str::from_utf8(bytes).map_err(|_| "not a Camera Raw settings file (not UTF-8 text)".to_string())?;
-    // Some writers put a byte order mark or an `<?xpacket?>` wrapper first; roxmltree takes both.
-    let text = text.trim_start_matches('\u{feff}');
-    let doc = crate::xml::parse(text, roxmltree::ParsingOptions::default()).map_err(|e| format!("not a Camera Raw settings file ({e})"))?;
+    let settings = Settings::parse(bytes).map_err(|e| e.to_string())?;
     let mut next = params.clone();
     let mut report = LoadReport::default();
-    let mut found = false;
-    let mut crop_fields = CropFields::default();
-    for desc in doc.descendants().filter(|n| n.is_element() && n.tag_name().namespace() == Some(RDF_NS) && n.tag_name().name() == "Description") {
-        for a in desc.attributes().filter(|a| a.namespace() == Some(CRS_NS)) {
-            found = true;
-            apply(&mut next, &mut report, &mut crop_fields, a.name(), a.value());
-        }
-        for c in desc.children().filter(|c| c.is_element() && c.tag_name().namespace() == Some(CRS_NS)) {
-            found = true;
-            let name = c.tag_name().name();
-            if let Some((_, field)) = CURVES.iter().find(|(n, _)| *n == name) {
-                match curve(c) {
-                    Some(points) => {
-                        *field(&mut next) = points;
+    for (name, val) in &settings.entries {
+        if let Some((_, field)) = CURVES.iter().find(|(n, _)| *n == name.as_str()) {
+            match val {
+                Value::Seq(items) => match curve(items) {
+                    Some(pts) => {
+                        *field(&mut next) = pts;
                         report.applied += 1;
                     }
-                    None => report.ignored.push(name.to_string()),
+                    None => report.ignored.push(name.clone()),
+                },
+                _ => report.ignored.push(name.clone()),
+            }
+        } else {
+            match val {
+                Value::Text(t) => apply_text(&mut next, &mut report, name, t),
+                Value::Seq(_) | Value::Structured(_) => {
+                    if !METADATA.contains(&name.as_str()) {
+                        report.ignored.push(name.clone());
+                    }
                 }
-            } else if c.children().any(|g| g.is_element()) {
-                // Structured settings (masks, looks, lens profiles…) have no counterpart.
-                if !METADATA.contains(&name) {
-                    report.ignored.push(name.to_string());
-                }
-            } else {
-                apply(&mut next, &mut report, &mut crop_fields, name, c.text().unwrap_or(""));
             }
         }
     }
-    if !found {
-        return Err("no Camera Raw settings in the file".into());
+    match settings.crop() {
+        CropState::None => {}
+        CropState::Crop(c) => {
+            report.crop = Some(c);
+            report.applied += 1;
+        }
+        CropState::Unusable(keys) => {
+            report.ignored.extend(keys.into_iter().map(str::to_string));
+        }
     }
-    crop(&crop_fields, &mut report);
     *params = next;
     Ok(report)
 }
 
-fn signed(v: f32, decimals: usize) -> String {
-    let s = format!("{v:.decimals$}");
-    if v > 0.0 && !s.starts_with('+') { format!("+{s}") } else { s }
-}
-
-fn escape(s: &str) -> String {
-    s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;")
-}
-
 /// The XMP toolkit [`save`] names on `x:xmpmeta`.
 const TOOLKIT: &str = "PhotoCraft";
-const META_NS: &str = "adobe:ns:meta/";
 
 /// Did [`save`] write this file? True when its `x:xmpmeta` names PhotoCraft as the toolkit
 /// (`x:xmptk`). Lightroom, Bridge and Camera Raw put their own toolkit there when they write a
 /// file, so a sidecar another application touched since reads false. Never panics.
 pub fn is_photocraft_xmp(bytes: &[u8]) -> bool {
-    if bytes.len() > MAX_XMP_BYTES {
-        return false;
-    }
-    let Ok(text) = std::str::from_utf8(bytes) else { return false };
-    let Ok(doc) = roxmltree::Document::parse(text.trim_start_matches('\u{feff}')) else { return false };
-    doc.descendants()
-        .find(|n| n.is_element() && n.tag_name().namespace() == Some(META_NS) && n.tag_name().name() == "xmpmeta")
-        .and_then(|n| n.attribute((META_NS, "xmptk")))
-        == Some(TOOLKIT)
+    toolkit(bytes).as_deref() == Some(TOOLKIT)
 }
 
 /// Write `params` as a Camera Raw settings file Photoshop's Load Settings… reads.
@@ -414,42 +280,34 @@ pub fn save(params: &CameraRaw) -> String {
 pub fn save_with_crop(params: &CameraRaw, crop: Option<Crop>) -> String {
     let mut p = params.clone();
     let wb = if p.temperature != 0.0 || p.tint != 0.0 { "Custom" } else { "As Shot" };
-    let mut out = String::from(
-        "<x:xmpmeta xmlns:x=\"adobe:ns:meta/\" x:xmptk=\"PhotoCraft\">\n <rdf:RDF xmlns:rdf=\"http://www.w3.org/1999/02/22-rdf-syntax-ns#\">\n  <rdf:Description rdf:about=\"\"\n    xmlns:crs=\"http://ns.adobe.com/camera-raw-settings/1.0/\"\n",
-    );
-    out.push_str("   crs:Version=\"18.4\"\n   crs:ProcessVersion=\"15.4\"\n");
-    out.push_str(&format!("   crs:WhiteBalance=\"{wb}\"\n"));
+    let mut settings = Settings::default();
+    settings.set("Version", "18.4");
+    settings.set("ProcessVersion", "15.4");
+    settings.set("WhiteBalance", wb);
     for (name, field, lo, _) in SCALARS {
         let v = *field(&mut p);
-        // Exposure has two decimals in Camera Raw, the sharpening radius one; the rest are levels.
         let text = match *name {
             "Exposure2012" => signed(v, 2),
             "SharpenRadius" => signed(v, 1),
             _ if *lo < 0.0 => signed(v.round(), 0),
             _ => format!("{:.0}", v.round()),
         };
-        out.push_str(&format!("   crs:{name}=\"{text}\"\n"));
+        settings.set(name, text);
     }
     let style = STYLES.iter().find(|(_, s)| *s == p.vignette_style).map_or("1", |(n, _)| n);
-    out.push_str(&format!("   crs:PostCropVignetteStyle=\"{}\"\n", escape(style)));
+    settings.set("PostCropVignetteStyle", style);
     if let Some(c) = crop {
-        out.push_str(&format!(
-            "   crs:HasCrop=\"True\"\n   crs:CropTop=\"{:.6}\"\n   crs:CropLeft=\"{:.6}\"\n   crs:CropBottom=\"{:.6}\"\n   crs:CropRight=\"{:.6}\"\n   crs:CropAngle=\"0\"\n",
-            c.top, c.left, c.bottom, c.right
-        ));
+        settings.set_crop(c);
     }
-    out.push_str("   crs:ToneCurveName2012=\"Custom\"\n   crs:HasSettings=\"True\">\n");
+    settings.set("ToneCurveName2012", "Custom");
+    settings.set("HasSettings", "True");
     for (name, field) in CURVES {
-        let points = field(&mut p);
-        let points = if points.is_empty() { vec![[0.0, 0.0], [255.0, 255.0]] } else { points.clone() };
-        out.push_str(&format!("   <crs:{name}>\n    <rdf:Seq>\n"));
-        for [x, y] in points {
-            out.push_str(&format!("     <rdf:li>{}, {}</rdf:li>\n", x.round(), y.round()));
-        }
-        out.push_str(&format!("    </rdf:Seq>\n   </crs:{name}>\n"));
+        let pts = field(&mut p);
+        let pts = if pts.is_empty() { vec![[0.0, 0.0], [255.0, 255.0]] } else { pts.clone() };
+        let items = pts.into_iter().map(|[x, y]| format!("{}, {}", x.round(), y.round())).collect();
+        settings.set_seq(name, items);
     }
-    out.push_str("  </rdf:Description>\n </rdf:RDF>\n</x:xmpmeta>\n");
-    out
+    settings.to_xmp(TOOLKIT)
 }
 
 #[cfg(test)]

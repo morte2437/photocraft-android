@@ -367,3 +367,109 @@ fn gpu_path_stays_on_with_rotation() {
     assert!(!crate::gpu_canvas::gpu_view_ok(true, 45.0, 1.0));
     assert!(crate::gpu_canvas::gpu_view_ok(false, 0.0, 1.0));
 }
+
+/// #4911: view-only steps are relative, wrap, and leave every other document state alone.
+#[test]
+fn rotation_step_commands_preserve_pixels_history_and_other_tabs() {
+    let ctx = egui::Context::default();
+    let mut app = app_docs(2);
+    app.ui.views[1].rotation = 7.0;
+    let doc = app.session.active().unwrap().doc.clone();
+    let history = app.session.active().unwrap().history.past_len();
+    let (zoom, center) = (app.ui.views[1].zoom, app.ui.views[1].center);
+    for _ in 0..3 {
+        crate::menus::invoke(&mut app, &ctx, "view.rotateRight", json!({})).unwrap();
+    }
+    assert_eq!(app.ui.views[1].rotation, 52.0);
+    crate::menus::invoke(&mut app, &ctx, "view.rotateLeft", json!({})).unwrap();
+    assert_eq!(app.ui.views[1].rotation, 37.0);
+    app.ui.views[1].rotation = 175.0;
+    crate::menus::invoke(&mut app, &ctx, "view.rotateRight", json!({})).unwrap();
+    assert_eq!(app.ui.views[1].rotation, -170.0);
+    crate::menus::invoke(&mut app, &ctx, "view.rotateLeft", json!({})).unwrap();
+    assert_eq!(app.ui.views[1].rotation, 175.0);
+    crate::menus::invoke(&mut app, &ctx, "view.resetView", json!({})).unwrap();
+    assert_eq!(app.ui.views[1].rotation, 0.0);
+    assert_eq!(app.ui.views[0].rotation, 0.0);
+    assert_eq!((app.ui.views[1].zoom, app.ui.views[1].center), (zoom, center));
+    assert!(std::sync::Arc::ptr_eq(&doc, &app.session.active().unwrap().doc));
+    assert_eq!(app.session.active().unwrap().history.past_len(), history);
+}
+
+#[test]
+fn rotation_step_direction_is_screen_relative_even_when_flipped() {
+    let ctx = egui::Context::default();
+    for flip in [false, true] {
+        for (id, degrees) in [("view.rotateLeft", -15.0), ("view.rotateRight", 15.0)] {
+            let mut app = app_docs(1);
+            app.ui.view.flip_horizontal = flip;
+            app.ui.views[0].rotation = 23.0;
+            let before =
+                ViewXform { rect: Rect::from_min_size(Pos2::ZERO, vec2(400.0, 300.0)), zoom: 1.0, center: [0.0, 0.0], flip, rotation: 23.0, aspect: 1.0 };
+            crate::menus::invoke(&mut app, &ctx, id, json!({})).unwrap();
+            let after = ViewXform { rotation: app.ui.views[0].rotation, ..before };
+            let angle = |xf: &ViewXform| {
+                let v = xf.to_screen(100.0, 0.0) - xf.rect.center();
+                v.y.atan2(v.x).to_degrees()
+            };
+            assert!((wrap_deg(angle(&after) - angle(&before)) - degrees).abs() < 0.001, "{id}, flip={flip}");
+        }
+    }
+}
+
+#[test]
+fn rotation_step_commands_reject_bad_params_and_need_a_document() {
+    let ctx = egui::Context::default();
+    let mut empty = app_docs(0);
+    let mut app = app_docs(1);
+    for id in ["view.rotateLeft", "view.rotateRight"] {
+        assert!(!crate::menus::is_enabled(&empty, id));
+        assert!(crate::menus::invoke(&mut empty, &ctx, id, json!({})).is_err());
+        for params in [Value::Null, json!(1), json!([]), json!({"delta": 90})] {
+            assert!(crate::menus::invoke(&mut app, &ctx, id, params).is_err());
+            assert_eq!(app.ui.views[0].rotation, 0.0);
+        }
+    }
+}
+
+fn step_keys(app: &mut PhotocraftApp, ctx: &egui::Context, shortcut: &str, repeats: usize) {
+    let sc = crate::shortcuts::parse(shortcut).unwrap();
+    let mut events = vec![Event::ModifiersChanged(sc.modifiers)];
+    for n in 0..repeats {
+        events.push(Event::Key { key: sc.logical_key, physical_key: Some(sc.logical_key), pressed: true, repeat: n != 0, modifiers: sc.modifiers });
+    }
+    ctx.begin_pass(egui::RawInput { events, ..Default::default() });
+    crate::shortcuts::handle(app, ctx);
+    ctx.end_pass().textures_delta.clear();
+}
+
+#[test]
+fn rotation_shortcuts_repeat_rebind_persist_and_respect_dialogs() {
+    let ctx = egui::Context::default();
+    let mut app = app_docs(1);
+    for (id, shortcut) in [("view.rotateLeft", "Alt+Shift+,"), ("view.rotateRight", "Alt+Shift+.")] {
+        let sc = crate::shortcuts::parse(shortcut).unwrap();
+        assert!(crate::shortcut_dispatch::bindings(&app).iter().any(|(owner, bound)| owner == id && *bound == sc));
+        assert!(!crate::shortcut_dispatch::Focus::Text.allows(&sc));
+        assert!(crate::prefs_ui::shortcut_items(&app).iter().any(|item| item.0 == id));
+    }
+    step_keys(&mut app, &ctx, "Alt+Shift+.", 3);
+    assert_eq!(app.ui.views[0].rotation, 45.0);
+    step_keys(&mut app, &ctx, "Alt+Shift+,", 1);
+    assert_eq!(app.ui.views[0].rotation, 30.0);
+    // Exercise the dialog's apply path: shell commands are intentionally absent from
+    // the engine registry and the dialog handles their bindings and conflicts.
+    let fields = json!({"__prefsui": "shortcuts", "overrides": {"view.rotateRight": "Alt+K", "view.rotateLeft": ""}});
+    crate::prefs_ui::confirm(&mut app, fields.as_object().unwrap()).unwrap();
+    let saved = serde_json::to_value(app.session.prefs()).unwrap();
+    app.session.edit_prefs(|p| *p = serde_json::from_value(saved).unwrap());
+    step_keys(&mut app, &ctx, "Alt+Shift+.", 1);
+    step_keys(&mut app, &ctx, "Alt+Shift+,", 1);
+    assert_eq!(app.ui.views[0].rotation, 30.0, "removed defaults do not fire");
+    step_keys(&mut app, &ctx, "Alt+K", 1);
+    assert_eq!(app.ui.views[0].rotation, 45.0);
+    app.ui.open_dialog(crate::state::DialogKind::Command, serde_json::Map::new());
+    step_keys(&mut app, &ctx, "Alt+K", 1);
+    assert_eq!(app.ui.views[0].rotation, 45.0, "a dialog owns its keys");
+    assert_eq!(app.session.active().unwrap().history.past_len(), 0);
+}

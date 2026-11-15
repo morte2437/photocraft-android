@@ -8,7 +8,7 @@
 //! panel menu (the group's "…" button) adds New Swatch, New Group, Import/Replace (`.aco`,
 //! `.act`, `.ase`), Export (`.aco`) and Export for Exchange (`.ase`) and Reset. Every action is a
 //! `swatches.*` engine command; this module only draws and dispatches. Colours are shown in the
-//! RGB working space through `photocraft-cms` (cached per library revision and colour settings).
+//! RGB working space through `craft-cms` (cached per library revision and colour settings).
 
 use std::ffi::OsStr;
 use std::sync::Arc;

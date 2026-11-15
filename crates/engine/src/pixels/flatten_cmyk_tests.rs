@@ -1,7 +1,7 @@
 //! #3778: Flatten Image, Merge Visible and Merge Down keep a CMYK document's ink values instead
 //! of round-tripping them through RGB.
 
-use photocraft_cms::synth::{CmykParams, cmyk_profile};
+use craft_cms::synth::{CmykParams, cmyk_profile};
 use photocraft_color::{ColorMode, PixelFormat, SampleType};
 use photocraft_doc::{Document, Layer, LayerContent, Size};
 use photocraft_geom::Rect;
@@ -28,7 +28,8 @@ fn ink(x: i32, y: i32) -> [f32; 4] {
 fn cmyk_doc() -> Document {
     let mut d = Document::new("cmyk", Size::new(W as u32, H as u32), ColorMode::Cmyk, SampleType::U16);
     let profile =
-        cmyk_profile(&CmykParams { description: "Flatten Test CMYK".into(), tvi: [0.26, 0.26, 0.26, 0.3], grid_a2b: 5, grid_b2a: 9, ..Default::default() });
+        cmyk_profile(&CmykParams { description: "Flatten Test CMYK".into(), tvi: [0.26, 0.26, 0.26, 0.3], grid_a2b: 5, grid_b2a: 9, ..Default::default() })
+            .unwrap();
     d.icc_profile = Some(profile.to_bytes());
     let mut bg = Surface::new(PixelFormat::new(ColorMode::Cmyk, SampleType::U16, false));
     for y in 0..H {

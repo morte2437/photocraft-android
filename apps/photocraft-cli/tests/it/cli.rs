@@ -1001,7 +1001,7 @@ fn metadata_none_leaves_out_the_document_xmp() {
     img.meta.dpi = Some((300.0, 300.0));
     img.meta.text = vec![("Comment".into(), "free-form-note".into())];
     // Display P3 rather than sRGB, so no export can pass for keeping it by writing its default.
-    let p3 = photocraft_cms::Builtin::DisplayP3.profile().to_bytes().to_vec();
+    let p3 = craft_cms::Builtin::DisplayP3.profile().to_bytes().to_vec();
     img.icc = Some(p3.clone());
     std::fs::write(&a, photocraft_codecs::encode(&img, photocraft_codecs::Format::Png, &Default::default()).unwrap()).unwrap();
     let ancestors = |p: &Path| String::from_utf8_lossy(&std::fs::read(p).unwrap()).contains("DocumentAncestors");

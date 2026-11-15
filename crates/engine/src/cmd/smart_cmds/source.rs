@@ -272,7 +272,7 @@ fn convert_source(src: &Document, fmt: PixelFormat, raster: impl FnOnce(PixelFor
     doc.layers = vec![Layer::new("source", LayerContent::Raster(raster(src.pixel_format())))];
     if gray {
         let gray_profile = crate::color_cmds::working_profile(ColorMode::Grayscale);
-        crate::color_cmds::convert_document(&mut doc, &gray_profile, photocraft_cms::Intent::RelativeColorimetric, true)?;
+        crate::color_cmds::convert_document(&mut doc, &gray_profile, craft_cms::Intent::RelativeColorimetric, true)?;
     }
     if linear {
         crate::image_cmds::change_depth(&mut doc, SampleType::F32);
@@ -310,7 +310,7 @@ pub(super) fn svg_source_image_in(bytes: &[u8], doc: &Document, scale: f64) -> R
     let profile = crate::color_cmds::document_profile(doc);
     // An exact built-in sRGB destination needs no CMS conversion. Keep the direct render
     // path (and its depth-specific cache) without approximating custom profile equality.
-    if doc.mode == ColorMode::Rgb && profile.to_bytes().as_ref() == photocraft_cms::Builtin::Srgb.profile().to_bytes().as_ref() {
+    if doc.mode == ColorMode::Rgb && profile.to_bytes().as_ref() == craft_cms::Builtin::Srgb.profile().to_bytes().as_ref() {
         return svg_source_image(bytes, fmt, scale);
     }
     let mut h = blake3::Hasher::new();
@@ -331,7 +331,7 @@ pub(super) fn svg_source_image_in(bytes: &[u8], doc: &Document, scale: f64) -> R
 /// Convert an sRGB SVG rendering into the document's profile and pixel format (relative
 /// colorimetric, black-point compensation), keeping its bounds.
 pub(super) fn convert_svg_source(source: SourceImage, doc: &Document) -> Result<SourceImage> {
-    use photocraft_cms::{Builtin, Intent, Transform};
+    use craft_cms::{Builtin, Intent, Transform};
     let fmt = doc.pixel_format();
     let profile = crate::color_cmds::document_profile(doc);
     let transform = Transform::new(Builtin::Srgb.profile(), &profile, Intent::RelativeColorimetric, true)

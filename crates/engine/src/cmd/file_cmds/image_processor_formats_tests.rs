@@ -59,7 +59,7 @@ fn one_run_reopens_three_independently_sized_formats() {
     assert_eq!(jpeg.mode, ColorMode::Rgb);
     assert!(jpeg.icc_profile.is_some());
     assert_ne!(jpeg.icc_profile, doc.icc_profile);
-    assert_eq!(crate::color_cmds::document_profile(&jpeg).description, photocraft_cms::Builtin::Srgb.profile().description);
+    assert_eq!(crate::color_cmds::document_profile(&jpeg).description, craft_cms::Builtin::Srgb.profile().description);
     for output in [psd, tiff] {
         assert_eq!(output.depth, doc.depth);
         assert_eq!(output.mode, doc.mode);

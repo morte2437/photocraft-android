@@ -110,8 +110,8 @@ fn flattens_layers_and_keeps_alpha_channels() {
     assert_eq!(d.channels.len(), 4);
     assert!(d.channels[3].spot.is_none(), "the saved selection stays an alpha channel");
     // The black fill on the upper layer is solid ink in all three plates.
-    for c in &d.channels[..3] {
-        assert!(c.surface.pixel(1, 1)[0] > 0.99);
+    for channel in d.channels.iter().take(3) {
+        assert!(channel.surface.pixel(1, 1)[0] > 0.99);
     }
     // Back to RGB: the alpha channel survives, the inks become colour channels.
     s.execute("image.mode.rgb", json!({})).unwrap();

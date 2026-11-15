@@ -2,7 +2,7 @@
 use std::sync::Arc;
 
 use crate::presets::clone_source::uses_slot;
-use photocraft_cms::{Transform, TransformOptions};
+use craft_cms::{Transform, TransformOptions};
 use photocraft_color::ColorMode;
 
 use super::sampling::{SampleLayers, composite_region, sample, sample_layers};
@@ -156,7 +156,7 @@ fn convert_region(mut region: Region, from: PixelFormat, to: PixelFormat, transf
         if let Some(transform) = transform {
             let colors = to.mode.color_channels();
             let mut converted = [0.0; 16];
-            transform.eval(src, &mut converted);
+            let _ = transform.eval(src, &mut converted);
             dst[..colors].copy_from_slice(&converted[..colors]);
             if to.alpha {
                 dst[colors] = if from.alpha { src.get(from.mode.color_channels()).copied().unwrap_or(1.0) } else { 1.0 };
@@ -247,5 +247,5 @@ fn color_transform(s: &Session, doc: &Document, which: SampleLayers, cmd: &str) 
         return Ok(None);
     }
     let opts = TransformOptions { intent: s.color.settings.intent(), bpc: s.color.settings.bpc, ..Default::default() };
-    photocraft_cms::transform::cached(&source, &destination, opts).map(Some).map_err(|e| bad(cmd, format!("cannot convert clone source colors: {e}")))
+    craft_cms::transform::cached(&source, &destination, opts).map(Some).map_err(|e| bad(cmd, format!("cannot convert clone source colors: {e}")))
 }

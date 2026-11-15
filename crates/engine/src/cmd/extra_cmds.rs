@@ -333,9 +333,14 @@ fn transform_preset(s: &mut Session, p: &Value, kind: &str) -> Result<Value> {
     let (b, mut params) = match crate::transform_cmds::lone_target(&d.doc, d.active_layer, p)? {
         Some(surf) => (crate::transform_cmds::target_frame(&d.doc, surf), json!({"target": p.get("target")})),
         None => {
-            let id = d.active_layer.ok_or(EngineError::Other("no active layer".into()))?;
-            let l = d.doc.layer(id).ok_or(EngineError::NoLayer(id))?;
-            (crate::transform_cmds::transform_frame(&d.doc, l), json!({"layer": id.0}))
+            let explicit = crate::commands::explicit_layer(s, p)?;
+            let ids = explicit.map_or_else(|| crate::transform_cmds::selection_targets(d), |id| vec![id]);
+            let bounds = crate::transform_cmds::transform_frame_of(&d.doc, &ids);
+            let params = match explicit {
+                Some(id) => json!({"layer": id.0}),
+                None => json!({"layers": ids.iter().map(|id| id.0).collect::<Vec<_>>()}),
+            };
+            (bounds, params)
         }
     };
     if b.is_empty() {

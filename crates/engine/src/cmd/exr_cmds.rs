@@ -190,8 +190,8 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("aov.exr");
         write_multipart(&path);
-        let linear = photocraft_cms::Builtin::LinearSrgb.profile().to_bytes();
-        let aces = photocraft_cms::Builtin::AcesCg.profile().to_bytes();
+        let linear = craft_cms::Builtin::LinearSrgb.profile().to_bytes();
+        let aces = craft_cms::Builtin::AcesCg.profile().to_bytes();
         for (on, want) in [(false, &linear), (true, &aces)] {
             let mut s = session();
             s.prefs.edit(|p| p.file_handling.exr_aces_cg = on);

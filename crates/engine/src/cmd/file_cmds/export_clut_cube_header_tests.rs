@@ -79,7 +79,7 @@ fn exported_text_parses_back_with_the_same_values() {
     for depth in [8, 32] {
         let mut s = session(depth);
         let text = cube(&mut s, 5);
-        let lut = photocraft_cms::lutfile::parse_cube(&text).unwrap();
+        let lut = craft_cms::lutfile::parse_cube(&text).unwrap();
         assert_eq!(lut.size, 5);
         assert_eq!(lut.title, "My Look");
         let written: Vec<f32> = values(&text).iter().map(|x| x.parse().unwrap()).collect();

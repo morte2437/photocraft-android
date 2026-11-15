@@ -342,7 +342,7 @@ fn deflated_zip_entries_are_readable() {
         let mut enc = flate2::write::DeflateEncoder::new(Vec::new(), flate2::Compression::default());
         enc.write_all(&data).unwrap();
         let comp = enc.finish().unwrap();
-        let crc = zip::crc32(&data);
+        let crc = crc32fast::hash(&data);
         let off = out.len() as u32;
         let name = e.name.as_bytes();
         out.extend_from_slice(&0x0403_4b50u32.to_le_bytes());

@@ -16,7 +16,7 @@
 //!   display unchanged: the canvas texture is clamped to 0–1, so there is nothing above white
 //!   to compress.
 
-use photocraft_cms::{Builtin, Intent, Lut3d, Transform};
+use craft_cms::{Builtin, Intent, Lut3d, Transform};
 use photocraft_color::SampleType;
 use photocraft_color::convert::{linear_to_srgb, srgb_to_linear};
 use photocraft_doc::Document;
@@ -157,7 +157,7 @@ pub fn display_lut_with(c: &ColorState, doc: &Document, size: usize, include_hdr
     if kind == ProofKind::Profile && hdr.is_none() {
         return Ok(None);
     }
-    let err = |e: photocraft_cms::CmsError| EngineError::Other(format!("colour management: {e}"));
+    let err = |e: craft_cms::CmsError| EngineError::Other(format!("colour management: {e}"));
     let src = c.canvas_display_for(doc, display)?.source.clone();
     let mon = c.monitor_for(display);
     let srgb = Builtin::Srgb.profile();
@@ -181,7 +181,8 @@ pub fn display_lut_with(c: &ColorState, doc: &Document, size: usize, include_hdr
             let print = Transform::new(&setup.profile, &mon, Intent::RelativeColorimetric, true).map_err(err)?;
             Box::new(move |v| {
                 let mut ink = [0.0f32; 16];
-                sep.eval(&v, &mut ink);
+                // RGB into a separation: never refused; were it, the plate shows no ink.
+                let _ = sep.eval(&v, &mut ink);
                 let shown = match kind {
                     ProofKind::Plate(p) => [0.0, 0.0, 0.0, ink[usize::from(p.min(3))]],
                     _ => [ink[0], ink[1], ink[2], 0.0],
@@ -205,27 +206,19 @@ pub fn display_lut_with(c: &ColorState, doc: &Document, size: usize, include_hdr
             })
         }
     };
-    let n = size.max(2);
-    let sc = (n - 1) as f32;
-    let mut data = vec![[0.0f32, 0.0, 0.0, 1.0]; n * n * n];
-    for b in 0..n {
-        for g in 0..n {
-            for r in 0..n {
-                let mut v = [r as f32 / sc, g as f32 / sc, b as f32 / sc];
-                if let Some(h) = hdr {
-                    v = v.map(|x| h.apply(x));
-                }
-                let o = base(v);
-                data[r + g * n + b * n * n] = [o[0], o[1], o[2], 1.0];
-            }
+    let lut = Lut3d::from_fn(size.max(2), |mut v| {
+        if let Some(h) = hdr {
+            v = v.map(|x| h.apply(x));
         }
-    }
-    Ok(Some(Lut3d { size: n, data }))
+        base(v)
+    });
+    lut.map(Some).map_err(err)
 }
 
 fn eval3(t: &Transform, v: &[f32]) -> [f32; 3] {
     let mut out = [0.0f32; 16];
-    t.eval(v, &mut out);
+    // Callers pass RGB to transforms built from RGB; a refusal leaves black.
+    let _ = t.eval(v, &mut out);
     if t.outputs() == 1 { [out[0]; 3] } else { [out[0], out[1], out[2]] }
 }
 
@@ -348,8 +341,8 @@ mod tests {
     }
 
     fn sample(lut: &Lut3d, idx: [usize; 3]) -> [f32; 3] {
-        let n = lut.size;
-        let v = lut.data[idx[0] + idx[1] * n + idx[2] * n * n];
+        let n = lut.size();
+        let v = lut.data()[idx[0] + idx[1] * n + idx[2] * n * n];
         [v[0], v[1], v[2]]
     }
 
@@ -390,7 +383,7 @@ mod tests {
                 let pv = s.color.proof(d.id);
                 assert_eq!(pv.setup.kind.id(), id.trim_start_matches("view.proofSetup."));
                 let lut = s.color.display_lut(&d, 5).unwrap();
-                assert_eq!(lut.data.len(), 125);
+                assert_eq!(lut.data().len(), 125);
                 let bytes = s.color.canvas_lut(&d, 5).unwrap().unwrap();
                 assert_eq!(bytes.len(), 125 * 4);
             }

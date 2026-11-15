@@ -1,5 +1,7 @@
 // ----------------------------------------------------------------------------- panel state
 
+use std::sync::LazyLock;
+
 /// The persisted [`egui::PanelState`] key for the panel named `salt` in this context's root UI.
 ///
 /// egui 0.37 derives a panel's id from its parent [`egui::Ui`]:
@@ -12,7 +14,7 @@ pub fn panel_state_id(ctx: &egui::Context, salt: impl egui::AsIdSalt) -> egui::I
 }
 
 /// The panels whose saved sizes moved to a parent-scoped key in 0.37.
-const PANEL_STATE_KEYS: &[&str] = &["dock", "title_bar", "options_bar", "status_bar", "toolbar", "rail", "shared-panel-dock"];
+const PANEL_STATE_KEYS: [&str; 7] = ["dock", "title_bar", "options_bar", "status_bar", "toolbar", "rail", "shared-panel-dock"];
 
 /// What the two keys held when this build last looked at a panel, so a later startup can tell
 /// which one a 0.36 rollback or a 0.37 session wrote last.
@@ -27,9 +29,11 @@ fn rect_key(state: egui::containers::panel::PanelState) -> [f32; 4] {
     [r.min.x, r.min.y, r.max.x, r.max.y]
 }
 
-fn stamp_id(name: &str) -> egui::Id {
-    egui::Id::unique(format!("photocraft-panel-state-stamp:{name}"))
-}
+/// The persisted stamp id of each [`PANEL_STATE_KEYS`] entry, in the same order. Built once because
+/// [`remember_panel_state`] reads the stamps every frame. The stamps are saved, so the ids must keep
+/// hashing this exact string: a tuple salt hashes differently and would lose them.
+static STAMP_IDS: LazyLock<[egui::Id; PANEL_STATE_KEYS.len()]> =
+    LazyLock::new(|| PANEL_STATE_KEYS.map(|name| egui::Id::unique(format!("photocraft-panel-state-stamp:{name}"))));
 
 /// Copy 0.36 `PanelState` entries to their 0.37 parent-scoped keys.
 ///
@@ -45,10 +49,9 @@ pub fn migrate_panel_state(ctx: &egui::Context) {
     if ctx.data(|d| d.get_temp::<bool>(done).unwrap_or(false)) {
         return;
     }
-    for name in PANEL_STATE_KEYS {
+    for (name, &id) in PANEL_STATE_KEYS.iter().zip(STAMP_IDS.iter()) {
         let old_id = egui::Id::unique(*name);
         let new_id = panel_state_id(ctx, *name);
-        let id = stamp_id(name);
         let old = PanelState::load(ctx, old_id);
         let new = PanelState::load(ctx, new_id);
         let stamp = ctx.data_mut(|d| d.get_persisted::<PanelStamp>(id));
@@ -84,13 +87,26 @@ pub fn migrate_panel_state(ctx: &egui::Context) {
 /// old-key values can be recognized. Cheap when nothing changed (no write).
 pub fn remember_panel_state(ctx: &egui::Context) {
     use egui::containers::panel::PanelState;
-    for name in PANEL_STATE_KEYS {
+    for (name, &id) in PANEL_STATE_KEYS.iter().zip(STAMP_IDS.iter()) {
         let Some(new) = PanelState::load(ctx, panel_state_id(ctx, *name)) else { continue };
-        let id = stamp_id(name);
         let Some(stamp) = ctx.data_mut(|d| d.get_persisted::<PanelStamp>(id)) else { continue };
         let new_key = rect_key(new);
         if new_key != stamp.new {
             ctx.data_mut(|d| d.insert_persisted(id, PanelStamp { old: stamp.old, new: new_key }));
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{PANEL_STATE_KEYS, STAMP_IDS};
+
+    /// The stamps are persisted: the cached ids must be the ones earlier builds saved them under.
+    #[test]
+    fn the_cached_stamp_ids_hash_like_the_saved_ones() {
+        for (name, id) in PANEL_STATE_KEYS.iter().zip(STAMP_IDS.iter()) {
+            assert_eq!(*id, egui::Id::unique(format!("photocraft-panel-state-stamp:{name}")), "{name}");
+        }
+        assert_eq!(STAMP_IDS[0], egui::Id::unique("photocraft-panel-state-stamp:dock".to_owned()));
     }
 }

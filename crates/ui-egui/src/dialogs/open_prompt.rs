@@ -177,9 +177,9 @@ fn show(app: &mut PhotocraftApp) {
 /// The Color Settings policy that answers this mode's files when Ask On Mismatch is off.
 fn policy_key(mode: ColorMode) -> Option<&'static str> {
     match photocraft_engine::color_cmds::mode_space(mode) {
-        photocraft_cms::ColorSpace::Rgb => Some("policyRgb"),
-        photocraft_cms::ColorSpace::Cmyk => Some("policyCmyk"),
-        photocraft_cms::ColorSpace::Gray => Some("policyGray"),
+        craft_cms::ColorSpace::Rgb => Some("policyRgb"),
+        craft_cms::ColorSpace::Cmyk => Some("policyCmyk"),
+        craft_cms::ColorSpace::Gray => Some("policyGray"),
         _ => None,
     }
 }

@@ -395,7 +395,7 @@ fn recorded_replace_color_clamps_shifts_and_plays_the_lab_box_at_every_depth() {
 /// Matching uses original Lab/CMYK channels and tagged RGB rather than display-converted samples.
 #[test]
 fn lab_matching_uses_native_channels_and_the_embedded_rgb_profile() {
-    use photocraft_cms::{Builtin, Transform, TransformOptions};
+    use craft_cms::{Builtin, Transform, TransformOptions};
     for depth in [8, 16, 32] {
         for (mode, profile) in [("rgb", Builtin::DisplayP3), ("gray", Builtin::SGray), ("cmyk", Builtin::CoatedCmyk), ("lab", Builtin::LabD50)] {
             let mut s = fixture(mode, depth);
@@ -412,7 +412,7 @@ fn lab_matching_uses_native_channels_and_the_embedded_rgb_profile() {
             // not the command's profile resolver or its new matching helper.
             let t = Transform::with_options(profile.profile(), Builtin::LabD50.profile(), TransformOptions::default()).unwrap();
             let mut lab = [[0.0, 0.0, 0.0, 1.0]; 4];
-            t.convert_f32(&before, format.channels(), lab.as_flattened_mut(), 4, true);
+            t.convert_f32(&before, format.channels(), lab.as_flattened_mut(), 4, true).unwrap();
             let center = [lab[1][0] as f64 * 100.0, lab[1][1] as f64 * 255.0 - 128.0, lab[1][2] as f64 * 255.0 - 128.0];
             let lo = center.map(|v| v - 0.2);
             let hi = center.map(|v| v + 0.2);

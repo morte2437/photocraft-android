@@ -221,18 +221,19 @@ impl ExportSettings {
 /// goes through Save As, so the original is never overwritten with less than the document has.
 pub(crate) fn saves_flat_in_place(doc: &Document, path: &str) -> bool {
     let Some(layer) = plain_raster(doc) else { return false };
-    let Some(format) = photocraft_engine::file_cmds::extension(path).and_then(|e| photocraft_codecs::from_extension(&e)) else {
+    let Some(format) = photocraft_engine::file_cmds::extension(path).and_then(|e| photocraft_formats::from_extension(&e)) else {
         return false;
     };
-    let caps = format.caps();
+    let Some(codec_format) = format.raster_codec() else { return false };
+    let caps = codec_format.caps();
     // Transparency is kept where the format's plan writes alpha for this document: DPX has no
     // gray + alpha, and float PNM (PFM) no alpha at all.
     let keeps_alpha = caps.alpha
-        && !(format == photocraft_codecs::Format::Dpx && doc.mode == photocraft_doc::ColorMode::Grayscale)
-        && !(format == photocraft_codecs::Format::Pnm && doc.depth == photocraft_color::SampleType::F32);
+        && !(format == photocraft_formats::Format::Dpx && doc.mode == photocraft_doc::ColorMode::Grayscale)
+        && !(format == photocraft_formats::Format::Pnm && doc.depth == photocraft_color::SampleType::F32);
     !photocraft_engine::file_cmds::saves_in_place(path)
         && doc.file_encoding.source_images.is_none()
-        && (!caps.lossy || format == photocraft_codecs::Format::Jpeg)
+        && (!caps.lossy || format == photocraft_formats::Format::Jpeg)
         && (doc.mode != photocraft_doc::ColorMode::Grayscale || caps.layouts.iter().any(|l| l.is_gray()))
         && caps.write
         && caps.depths.contains(&match doc.depth {

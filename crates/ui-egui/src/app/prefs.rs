@@ -1,4 +1,4 @@
-use super::{PhotocraftApp, dock, panel_docking, single_line_drag, text_field_menu, theme, tool_cursor, wheel_nav};
+use super::{PhotocraftApp, dock, field_wheel, panel_docking, single_line_drag, text_field_menu, theme, tool_cursor, wheel_nav};
 
 impl PhotocraftApp {
     /// Records a picked type family for the font menu's Recent group, capped by
@@ -54,6 +54,9 @@ impl PhotocraftApp {
         Self::install_type_reset_hooks(ctx);
         ctx.add_plugin(tool_cursor::CursorLifecycle);
         ctx.add_plugin(single_line_drag::SingleLineDrag::default());
+        // The wheel goes to a focused value field before the canvas or a panel sees it (#5473), in
+        // every window: a floated panel's window has input of its own (#11353).
+        ctx.add_plugin(field_wheel::FieldWheel);
         theme::install_fonts(ctx);
         egui_extras::install_image_loaders(ctx);
         theme::apply(ctx, kind);

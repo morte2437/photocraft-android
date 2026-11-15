@@ -781,10 +781,10 @@ pub(super) fn gallery_item(f: &SmartFilter) -> Result<Descriptor, String> {
         let params = e.get("params").filter(|v| v.is_object()).unwrap_or(e);
         if let Some(k) = params.as_object().and_then(|o| {
             o.keys().find(|k| {
-                !is_meta(k)
-                    && !["filter", "params", "visible"].contains(&k.as_str())
-                    && !g.settings.iter().any(|(_, ours)| ours == k)
-                    && !(key == "halftonePattern" && *k == "patternType")
+                !(is_meta(k)
+                    || ["filter", "params", "visible"].contains(&k.as_str())
+                    || g.settings.iter().any(|(_, ours)| ours == k)
+                    || key == "halftonePattern" && *k == "patternType")
             })
         }) {
             return Err(format!("gallery setting `{key}.{k}` has no PSD equivalent"));
