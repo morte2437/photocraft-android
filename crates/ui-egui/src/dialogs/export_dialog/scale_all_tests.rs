@@ -226,3 +226,19 @@ fn a_file_already_in_the_folder_stops_the_batch_before_any_write() {
     assert!(h.state().ui.status.contains("already exists"), "{}", h.state().ui.status);
     assert_eq!(std::fs::read(dir.path().join("harbor@0.5x.png")).unwrap(), b"keep me");
 }
+
+/// CodeRabbit on #15028: the browser build cannot write a folder of files, so several rows are refused
+/// with a message before any folder request; one row is fine there.
+#[test]
+fn several_rows_are_refused_in_the_browser_build_with_the_reason() {
+    assert!(batch_unsupported(2, true).is_some_and(|m| m.contains("browser")));
+    assert_eq!(batch_unsupported(1, true), None, "one size uses the save dialog");
+    assert_eq!(batch_unsupported(5, false), None, "the desktop build writes the folder");
+}
+
+/// CodeRabbit on #15039, for the same names here: a final sigma and a sigma are one file on Windows.
+#[test]
+fn names_that_fold_together_by_uppercase_are_one_file() {
+    assert!(batch_file_names("harbor", "png", &rows(&[("1x", "σ"), ("2x", "ς")])).is_err());
+    assert!(batch_file_names("harbor", "png", &rows(&[("1x", "σ"), ("2x", "s")])).is_ok());
+}

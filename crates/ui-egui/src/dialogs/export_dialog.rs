@@ -1188,13 +1188,19 @@ pub fn confirm(app: &mut PhotocraftApp, f: &Map<String, Value>) -> Result<Value,
     })
 }
 
+/// Why several Scale All rows cannot be exported here, if they cannot: the browser build writes no
+/// folder of files (a browser folder handle is not a path), so one size at a time is its limit.
+fn batch_unsupported(rows: usize, browser: bool) -> Option<&'static str> {
+    (browser && rows > 1).then_some("Exporting several sizes at once needs a folder, which the browser can't write to; export one size at a time")
+}
+
 /// The file names a batch writes, `<name><suffix>.<ext>` per row, or an error naming the first one two
-/// rows share (suffixes that sanitize alike, or differ only in case, count: a file system may fold them).
+/// rows share (suffixes that sanitize alike, or differ only in case, count: a file system may fold them, by upper-casing as Windows does, so `σ` and `ς` are one).
 /// Nothing is written then; replacing a file that already exists is unchanged.
 fn batch_file_names(stem: &str, ext: &str, rows: &[(String, String)]) -> Result<Vec<String>, String> {
     let names: Vec<String> = rows.iter().map(|(_, suffix)| format!("{stem}{}.{ext}", file_suffix(suffix))).collect();
     for (i, name) in names.iter().enumerate() {
-        if names[..i].iter().any(|other| other.to_lowercase() == name.to_lowercase()) {
+        if names[..i].iter().any(|other| other.to_uppercase() == name.to_uppercase()) {
             return Err(format!("Two sizes would write the same file, {name}; give each size its own suffix"));
         }
     }
@@ -1211,6 +1217,11 @@ fn confirm_sizes(
     stem: &str,
     rows: Vec<(String, String)>,
 ) -> Result<Value, String> {
+    // The browser build has no folder to write into: its file dialog answers a folder request with
+    // nothing, so a batch would silently do nothing. Say so before asking.
+    if let Some(why) = batch_unsupported(rows.len(), cfg!(target_arch = "wasm32")) {
+        return Err(why.into());
+    }
     let (f, stem) = (f.clone(), export_name(stem));
     let names = batch_file_names(&stem, &s_fmt(&f), &rows)?;
     app.ask_folder(move |app, dir| {
