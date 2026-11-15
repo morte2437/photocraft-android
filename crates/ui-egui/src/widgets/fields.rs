@@ -612,6 +612,9 @@ fn number_edit(
             .custom_parser(move |s| {
                 // Short events can accumulate: reject before either parser normalizes the text.
                 if s.chars().nth(NUMERIC_INPUT_LIMIT).is_some() {
+                    // Refused, so it is no number the field keeps: a caller holding an alert for
+                    // an earlier entry drops it instead of firing on blur for text like this.
+                    ctx.data_mut(|d| d.insert_temp(id.with("parses"), false));
                     return None;
                 }
                 // A zoom field takes `,` or `.` as its decimal point (`100,90` is `100.90`) and reads
@@ -695,6 +698,7 @@ fn number_edit(
 
 /// Whether the text last typed into the number field `id` (a [`value_field`]'s response id) reads
 /// as a number, an arithmetic entry included once it is complete: `None` before anything was typed.
+/// Text the field refuses for its length reads `false`, since the field keeps no number from it.
 pub fn typed_text_parses(ctx: &egui::Context, id: egui::Id) -> Option<bool> {
     ctx.data(|d| d.get_temp::<bool>(id.with("parses")))
 }

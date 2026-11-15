@@ -799,6 +799,61 @@ fn cam_amount_slider(ui: &mut egui::Ui, name: &str, value: &mut f32, lo: f32, hi
     });
 }
 
+/// Burn and Dodge's Exposure (#12669): whole numbers 1..100 with the reference's "Closest value
+/// inserted" alert, and the slider arrow. A typed value outside the range becomes the closest one
+/// and the caller opens the alert once the field is left; a scrub stops at the ends without one.
+/// The caption just before the field names it.
+fn exposure_popup(ui: &mut egui::Ui, value: &mut f32) -> (egui::Response, bool) {
+    *value = if value.is_finite() { value.round().clamp(1.0, 100.0) } else { 1.0 };
+    let draft_id = ui.make_persistent_id(egui::IdSalt::new("burn-exposure-typed")).with("typed");
+    let draft = ui.ctx().data(|d| d.get_temp::<(f32, f32)>(draft_id));
+    let mut typed = draft.filter(|(_, stored)| *stored == *value).map_or(*value, |(typed, _)| typed);
+    // Wide range so a typed 150 reaches here unclamped.
+    let r = crate::widgets::value_field(ui, &mut typed, -1.0e9..=1.0e9, "%", 58.0);
+    let out_id = r.id.with("out-of-range");
+    if r.gained_focus() {
+        ui.ctx().data_mut(|d| d.remove_temp::<bool>(out_id));
+    }
+    // A draft that is no longer a number holds no out-of-range value: an alert owed for an earlier
+    // 150 typed and then typed over with text would name a value the field does not keep. Typing a
+    // number again after that text owes the alert again, even when the draft never stopped holding
+    // the first 150, so the restored number is no change of its own: the eraser's tolerance field
+    // keeps the same flag for the same reason (#12268).
+    let no_number_id = r.id.with("no-number-typed");
+    if r.has_focus() {
+        match crate::widgets::typed_text_parses(ui.ctx(), r.id) {
+            Some(false) => ui.ctx().data_mut(|d| {
+                d.remove_temp::<bool>(out_id);
+                d.insert_temp(no_number_id, true);
+            }),
+            Some(true) if ui.ctx().data_mut(|d| d.remove_temp::<bool>(no_number_id)).unwrap_or(false) => {
+                let out = typed.is_finite() && !(1.0..=100.0).contains(&typed);
+                ui.ctx().data_mut(|d| d.insert_temp(out_id, out));
+            }
+            _ => {}
+        }
+    } else {
+        ui.ctx().data_mut(|d| d.remove_temp::<bool>(no_number_id));
+    }
+    if r.changed() && typed.is_finite() {
+        *value = typed.round().clamp(1.0, 100.0);
+        let typing = (r.has_focus() || r.lost_focus()) && ui.ctx().dragged_id().is_none();
+        let out = typing && !(1.0..=100.0).contains(&typed);
+        ui.ctx().data_mut(|d| d.insert_temp(out_id, out));
+        if typing && r.has_focus() {
+            ui.ctx().data_mut(|d| d.insert_temp(draft_id, (typed, *value)));
+        } else {
+            ui.ctx().data_mut(|d| d.remove_temp::<(f32, f32)>(draft_id));
+        }
+    }
+    if !r.has_focus() {
+        ui.ctx().data_mut(|d| d.remove_temp::<(f32, f32)>(draft_id));
+    }
+    cam_amount_slider(ui, tl!("Exposure"), value, 1.0, 100.0, "Exposure");
+    let alert = r.lost_focus() && ui.ctx().data_mut(|d| d.remove_temp::<bool>(out_id)).unwrap_or(false);
+    (r, alert)
+}
+
 /// Opens the alert with `message` (English, translated here) unless it is already up.
 fn open_alert_once(app: &mut PhotocraftApp, message: &str) {
     let message = tl!(message).to_owned();
@@ -1012,12 +1067,17 @@ pub fn options_bar(app: &mut PhotocraftApp, ui: &mut egui::Ui, tool: Tool) -> bo
                 let id = range.id;
                 tooltip(range, tl!("Painting Mode"), id);
             }
+            // Whole numbers 1..100 with the reference's "Closest value inserted" alert and a
+            // slider arrow (#12669). The Dodge tool shares this field.
             opt(ui, tl!("Exposure:"));
-            let exposure = crate::widgets::value_field(ui, &mut o.exposure, 1.0..=100.0, "%", 58.0);
+            let (exposure, out_of_range) = exposure_popup(ui, &mut o.exposure);
             let exposure_id = exposure.id;
             tooltip(exposure, tl!("Set exposure for stroke"), exposure_id);
             let (protect, protect_id) = protect_tones_checkbox(ui, &mut o.protect_tones);
             tooltip(protect, tl!("Minimizes clipping in shadows and highlights, and keeps colors from shifting hue"), protect_id);
+            if out_of_range {
+                crate::eraser_ui::open_range_alert(app);
+            }
         }
         Tool::Sponge => {
             opt(ui, tl!("Mode:"));
@@ -1246,3 +1306,7 @@ mod clone_stamp_no_source_alert_tests;
 #[cfg(test)]
 #[path = "remove_options_bar_labels_tests.rs"]
 mod remove_options_bar_labels_tests;
+
+#[cfg(test)]
+#[path = "../burn_exposure_field_tests.rs"]
+mod burn_exposure_field_tests;
