@@ -18,6 +18,10 @@ use crate::{EngineError, Result, Session};
 
 mod csh;
 
+#[cfg(test)]
+#[path = "custom_shape_layer_name_tests.rs"]
+mod custom_shape_layer_name_tests;
+
 /// Group listing Edit › Define Custom Shape results (`EditState::custom_shapes`).
 pub const CUSTOM_GROUP: &str = "Custom Shapes";
 
@@ -382,7 +386,14 @@ fn place(s: &mut Session, p: &Value) -> Result<Value> {
         }
     };
     let path = fit(&shape.path, rect, keep);
-    let mut q = json!({"kind": "path", "path": path_json(&path), "name": str_param(p, "name").unwrap_or(&shape.name)});
+    // Layers are numbered per shape (Heart 1, Heart 2, Star 1), as Rectangle N / Ellipse N are.
+    // A preset name already ending in a number is used as is: that case wasn't measured.
+    let name = match str_param(p, "name") {
+        Some(n) => n.to_string(),
+        None if shape.name.rsplit_once(' ').is_some_and(|(_, n)| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit())) => shape.name.clone(),
+        None => d.doc.next_layer_name(&shape.name),
+    };
+    let mut q = json!({"kind": "path", "path": path_json(&path), "name": name});
     for k in ["fill", "stroke", "addTo", "op"] {
         if let Some(v) = p.get(k) {
             q[k] = v.clone();
@@ -485,7 +496,7 @@ pub fn specs() -> Vec<CommandSpec> {
             label: "Place Custom Shape",
             menu: &[],
             shortcut: None,
-            params: r##"{"preset":name,"group":name?,"rect":[x,y,w,h]? (default: centred, half the canvas),"keepAspect":bool=true,"fill":…?=foreground,"stroke":…?,"name":str?,"addTo":layerId?,"op":"combine|subtract|intersect|exclude"?} → shape.info (Custom Shape tool / Shapes panel; fill and stroke as in shape.create)"##,
+            params: r##"{"preset":name,"group":name?,"rect":[x,y,w,h]? (default: centred, half the canvas),"keepAspect":bool=true,"fill":…?=foreground,"stroke":…?,"name":str? (default: the shape's name numbered, "Heart 1", "Heart 2"),"addTo":layerId?,"op":"combine|subtract|intersect|exclude"?} → shape.info (Custom Shape tool / Shapes panel; fill and stroke as in shape.create)"##,
             enabled: has_doc,
             run: place,
             journal: true,

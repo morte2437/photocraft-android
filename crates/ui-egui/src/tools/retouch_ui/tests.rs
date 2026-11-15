@@ -1103,7 +1103,7 @@ fn art_history_options_bar_defaults() {
     h.get_by_label("Area");
     h.get_by_label("Tolerance");
     assert!(h.query_all_by_label("Opacity").next().is_some(), "the options bar has an Opacity field");
-    assert_eq!(h.state().ui.tool_options.art_history_style, "tightMedium");
+    assert_eq!(h.state().ui.tool_options.art_history_style, "tightShort");
     assert_eq!(h.state().ui.tool_options.art_history_area, 50.0);
     assert_eq!(h.state().ui.tool_options.art_history_tolerance, 0.0);
 }

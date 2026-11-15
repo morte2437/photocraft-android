@@ -60,6 +60,7 @@ pub(super) struct SaveRetry {
 /// change retries sooner); the status bar reports the first failure and a notice a persistent
 /// one. Returns the seconds until the next retry while one is pending.
 pub(super) fn persist(app: &mut PhotocraftApp, now: f64) -> Option<f64> {
+    finish_written_action_shortcuts(app);
     let rev = app.session.prefs.rev();
     if rev == app.prefs_rt.saved_rev {
         return None;
@@ -72,11 +73,11 @@ pub(super) fn persist(app: &mut PhotocraftApp, now: f64) -> Option<f64> {
         }
     }
     let ours = app.session.prefs_value();
-    // A change that was undone (or set a value to what it already was) leaves nothing to write.
-    let written = if app.prefs_rt.saved_value.as_ref() == Some(&ours) { Ok(()) } else { write_prefs(app, &ours) };
-    match written {
-        Ok(()) => {
-            app.prefs_rt.saved_rev = rev;
+    match save_prepared_preferences(app, ours, true) {
+        Ok((ours, deferred)) => {
+            if !deferred {
+                app.prefs_rt.saved_rev = rev;
+            }
             app.prefs_rt.saved_value = Some(ours);
             let r = std::mem::take(&mut app.prefs_rt.save_retry);
             if r.failures > 0 {
@@ -108,6 +109,50 @@ pub(super) fn persist(app: &mut PhotocraftApp, now: f64) -> Option<f64> {
             Some(delay)
         }
     }
+}
+
+fn finish_written_action_shortcuts(app: &mut PhotocraftApp) {
+    if app.ui.actions.shortcut_writes_pending() && app.session.action_definitions_written() {
+        crate::actions::finish_deferred_shortcut_conflicts(app, true);
+    }
+}
+
+/// Hold Action shortcut changes whose definitions have not been written. Keep saving
+/// other preferences against the same three-way merge base.
+fn persistable_preferences(app: &PhotocraftApp, mut ours: Value) -> Result<(Value, bool), String> {
+    let browser_pending = app.services.actions_write_pending.as_ref().is_some_and(|pending| pending());
+    let native_pending = app.ui.actions.shortcut_writes_pending();
+    let is_held = |key: &str| (browser_pending && photocraft_engine::actions_cmds::is_action_key(key)) || app.ui.actions.shortcut_write_pending(key);
+    let base = app.prefs_rt.saved_value.as_ref();
+    let mut deferred = false;
+    for section in ["shortcuts", "alternateShortcuts"] {
+        let bindings = ours.get_mut(section).and_then(Value::as_object_mut).ok_or_else(|| format!("serialized preferences {section} must be an object"))?;
+        if !browser_pending && !native_pending {
+            continue;
+        }
+        let saved = base.and_then(|value| value.get(section)).and_then(Value::as_object);
+        bindings.retain(|key, _| {
+            let keep = !is_held(key) || saved.is_some_and(|map| map.contains_key(key));
+            deferred |= !keep;
+            keep
+        });
+        for (key, value) in saved.into_iter().flatten().filter(|(key, _)| is_held(key)) {
+            if bindings.get(key) != Some(value) {
+                deferred = true;
+                bindings.insert(key.clone(), value.clone());
+            }
+        }
+    }
+    Ok((ours, deferred))
+}
+
+fn save_prepared_preferences(app: &mut PhotocraftApp, ours: Value, skip_unchanged: bool) -> Result<(Value, bool), String> {
+    let (ours, deferred) = persistable_preferences(app, ours)?;
+    // A change that was undone (or set a value to what it already was) leaves nothing to write.
+    if !skip_unchanged || app.prefs_rt.saved_value.as_ref() != Some(&ours) {
+        write_prefs(app, &ours)?;
+    }
+    Ok((ours, deferred))
 }
 
 /// Write `ours` over the stored preferences, keeping what another instance (a second browser
@@ -183,10 +228,13 @@ pub(super) fn merge_changes(base: &Value, ours: &Value, theirs: &mut Value) {
 /// Write the preferences now, through the same merge as [`persist`], for recovery choices that
 /// need the result immediately. The pending revision stays unsaved when the write fails.
 pub(crate) fn save_preferences(app: &mut PhotocraftApp) -> Result<(), String> {
+    finish_written_action_shortcuts(app);
     let rev = app.session.prefs.rev();
     let ours = app.session.prefs_value();
-    write_prefs(app, &ours)?;
-    app.prefs_rt.saved_rev = rev;
+    let (ours, deferred) = save_prepared_preferences(app, ours, false)?;
+    if !deferred {
+        app.prefs_rt.saved_rev = rev;
+    }
     app.prefs_rt.saved_value = Some(ours);
     if let Some(id) = std::mem::take(&mut app.prefs_rt.save_retry).notice {
         app.ui.notices.retain(|n| n.id != id);
@@ -346,5 +394,27 @@ fn history_log(app: &mut PhotocraftApp) {
     }
     if !text.is_empty() {
         let _ = append(&hl.file_path, &text);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn malformed_shortcut_maps_are_not_written() {
+        let services = crate::Services {
+            save_prefs: Some(Box::new(|_| panic!("malformed preferences reached storage"))),
+            actions_write_pending: Some(Box::new(|| true)),
+            ..Default::default()
+        };
+        let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), services);
+        for skip_unchanged in [true, false] {
+            for malformed in [json!({"shortcuts": []}), json!({"shortcuts": {}, "alternateShortcuts": null})] {
+                let error = save_prepared_preferences(&mut app, malformed, skip_unchanged).unwrap_err();
+                assert!(error.starts_with("serialized preferences "), "{error}");
+            }
+        }
     }
 }

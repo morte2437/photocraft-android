@@ -122,11 +122,35 @@ fn move_anchors(s: &mut Session, p: &Value) -> Result<Value> {
         })
         .collect::<Result<_>>()?;
     let d = offset(CMD, p)?;
-    let label = step_name(CMD, p, "Drag Anchor Points", &["Drag Path", "Drag Anchor Point"])?;
-    if p.get("curvature").and_then(Value::as_bool).unwrap_or(false) {
-        return edit_path(s, CMD, p, label, |path| edit::move_anchors_curvature(path, &anchors, d));
+    let duplicate = match p.get("duplicate") {
+        None | Some(Value::Null) => false,
+        Some(Value::Bool(b)) => *b,
+        Some(_) => return Err(bad(CMD, "`duplicate` must be true or false")),
+    };
+    let sub = anchors.first().map(|a| a[0]).ok_or_else(|| bad(CMD, "`anchors` must list [subpath, knot] pairs"))?;
+    if duplicate && anchors.iter().any(|a| a[0] != sub) {
+        return Err(bad(CMD, "`duplicate` takes all the anchors of one subpath"));
     }
-    edit_path(s, CMD, p, label, |path| edit::move_anchors(path, &anchors, d))
+    let label = step_name(CMD, p, if duplicate { "Drag Path" } else { "Drag Anchor Points" }, &["Drag Path", "Drag Anchor Point"])?;
+    let curvature = p.get("curvature").and_then(Value::as_bool).unwrap_or(false);
+    edit_path(s, CMD, p, label, |path| {
+        let mut anchors = anchors;
+        if duplicate {
+            // Direct Selection's ⌥-drag (#13211): the copy, with the source's operation, goes last
+            // and moves; the source stays.
+            let copy = path.subpaths.get(sub).cloned().ok_or_else(|| format!("no subpath {sub} (the path has {})", path.subpaths.len()))?;
+            let mut knots: Vec<usize> = anchors.iter().map(|a| a[1]).collect();
+            knots.sort_unstable();
+            knots.dedup();
+            if !knots.iter().copied().eq(0..copy.knots.len()) {
+                return Err("`duplicate` takes all the anchors of one subpath".into());
+            }
+            path.subpaths.push(copy);
+            let last = path.subpaths.len() - 1;
+            anchors.iter_mut().for_each(|a| a[0] = last);
+        }
+        if curvature { edit::move_anchors_curvature(path, &anchors, d) } else { edit::move_anchors(path, &anchors, d) }
+    })
 }
 
 fn move_handle(s: &mut Session, p: &Value) -> Result<Value> {
@@ -298,7 +322,7 @@ pub fn specs() -> Vec<CommandSpec> {
         journal: true,
     };
     vec![
-        spec("path.moveAnchors", "Drag Anchor Points", r#""anchors":[[subpath,knot],…],"move":[dx,dy],"curvature":bool=false (anchors move with their handles; Direct Selection drag. curvature = the Curvature Pen's drag: every smooth knot of the touched subpaths gets its handles recomputed so the curve flows through the anchors),"stepName":"Drag Path"|"Drag Anchor Point"? (History step name; the Convert Point tool sends "Drag Path" when it drags a whole path, Direct Selection "Drag Anchor Point" when it drags one anchor; default "Drag Anchor Points"; any other value is refused)"#.into(), move_anchors),
+        spec("path.moveAnchors", "Drag Anchor Points", r#""anchors":[[subpath,knot],…],"move":[dx,dy],"curvature":bool=false (anchors move with their handles; Direct Selection drag. curvature = the Curvature Pen's drag: every smooth knot of the touched subpaths gets its handles recomputed so the curve flows through the anchors),"duplicate":bool=false (anchors = all of one subpath's; that subpath is copied, with its operation, as the path's last subpath, and the copy's anchors move instead; the source stays; Direct Selection's ⌥-drag on a segment),"stepName":"Drag Path"|"Drag Anchor Point"? (History step name; the Convert Point tool sends "Drag Path" when it drags a whole path, Direct Selection "Drag Anchor Point" when it drags one anchor; default "Drag Anchor Points", "Drag Path" with duplicate; any other value is refused)"#.into(), move_anchors),
         spec(
             "path.moveHandle",
             "Drag Control Point",
@@ -839,6 +863,47 @@ mod tests {
             assert!(s.execute(id, p.clone()).is_err(), "{id} {p}");
         }
         assert_eq!(s.active().unwrap().history.entries().len(), steps);
+        s.execute("path.set", json!({"path": two_squares()})).unwrap();
+        let (before, steps) = (work(&s), s.active().unwrap().history.entries().len());
+        for p in [
+            json!({"anchors": [[0, 0], [0, 1], [0, 2], [0, 3], [1, 0]], "move": [1, 1], "duplicate": true}),
+            json!({"anchors": [[2, 0], [2, 1], [2, 2], [2, 3]], "move": [1, 1], "duplicate": true}),
+            json!({"anchors": [[0, 0], [0, 1]], "move": [1, 1], "duplicate": true}),
+            json!({"anchors": [[0, 0], [0, 1], [0, 2], [0, 3]], "move": [1, 1], "duplicate": "yes"}),
+            json!({"anchors": [[0, 0], [0, 1], [0, 2], [0, 3]], "move": [1, 1], "duplicate": 1}),
+        ] {
+            assert!(s.execute("path.moveAnchors", p.clone()).is_err(), "{p}");
+        }
+        assert_eq!(work(&s), before, "the path is unchanged");
+        assert_eq!(s.active().unwrap().history.entries().len(), steps);
+    }
+
+    /// Two closed squares; the second subtracts.
+    fn two_squares() -> serde_json::Value {
+        json!({"subpaths": [
+            {"closed": true, "knots": [[10, 10], [60, 10], [60, 60], [10, 60]]},
+            {"closed": true, "op": "subtract", "knots": [[70, 10], [110, 10], [110, 50], [70, 50]]},
+        ]})
+    }
+
+    /// #13211: a moved copy of one subpath goes last with its operation, in one "Drag Path" step.
+    #[test]
+    fn duplicate_appends_a_moved_copy_of_the_subpath() {
+        let mut s = session();
+        s.execute("path.set", json!({"path": two_squares()})).unwrap();
+        let (before, steps) = (work(&s), s.active().unwrap().history.entries().len());
+        s.execute("path.moveAnchors", json!({"anchors": [[1, 0], [1, 1], [1, 2], [1, 3]], "move": [5, -3], "duplicate": true})).unwrap();
+        let after = work(&s);
+        assert_eq!(after.subpaths.len(), 3);
+        assert_eq!(after.subpaths[..2], before.subpaths[..], "the source stays");
+        let copy = &after.subpaths[2];
+        assert_eq!((copy.op, copy.closed), (PathOp::Subtract, true));
+        let anchors: Vec<[f64; 2]> = copy.knots.iter().map(|k| [k.anchor.x, k.anchor.y]).collect();
+        assert_eq!(anchors, vec![[75.0, 7.0], [115.0, 7.0], [115.0, 47.0], [75.0, 47.0]]);
+        assert_eq!(s.active().unwrap().history.entries().len(), steps + 1);
+        assert_eq!(s.active().unwrap().history.undo_label(), Some("Drag Path"));
+        assert!(s.undo());
+        assert_eq!(work(&s), before);
     }
 }
 

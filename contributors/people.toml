@@ -352,3 +352,6 @@ sync_github_name = true
 
 [people.slafebre]
 real_name = "Sven Lafebre"
+
+[people.kirubhakaran12]
+sync_github_name = true

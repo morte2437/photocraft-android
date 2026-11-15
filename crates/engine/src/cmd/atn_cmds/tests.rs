@@ -3,6 +3,31 @@ use craft_psd::atn::{AtnAction, AtnEvent, AtnFile, AtnItem};
 use craft_psd::descriptor::{Descriptor, Id, ReferenceItem, UnicodeString, Value as D};
 use serde_json::json;
 
+#[test]
+fn id_bound_atn_calls_require_distinct_imported_names() {
+    let prefix = "a".repeat(MAX_NAME_CHARS);
+    let id = "112233445566778899aabbccddeeff00";
+    let mut target = Action::new(format!("{prefix} target"), vec![]);
+    target.action_id = Some(id.into());
+    let decoy = Action::new(format!("{prefix} decoy"), vec![]);
+    let caller = Action::new(
+        "Caller",
+        vec![("actions.play".into(), json!({"actionId": id})), ("actions.conditional".into(), json!({"if": "always", "thenActionId": id}))],
+    );
+
+    let (bytes, skipped) = export("Set", &[&caller, &target], &[], false).unwrap();
+    assert!(skipped.is_empty());
+    let loaded = import(&bytes).unwrap();
+    assert_eq!(loaded.actions[1].name, prefix);
+    assert_eq!(loaded.actions[0].steps[0].1["action"], prefix);
+    assert_eq!(loaded.actions[0].steps[1].1["then"], prefix);
+
+    assert!(export("Set", &[&caller, &decoy, &target], &[], false).is_err());
+    let (bytes, skipped) = export("Set", &[&caller, &decoy, &target], &[], true).unwrap();
+    assert_eq!(skipped.iter().map(|step| step.id.as_str()).collect::<Vec<_>>(), ["actions.play", "actions.conditional"]);
+    assert!(import(&bytes).unwrap().actions[0].steps.is_empty());
+}
+
 /// A wire key has one mapper; distinct wire aliases may still name the same command.
 #[test]
 fn event_wire_keys_are_unique() {
@@ -879,6 +904,7 @@ fn every_mapped_command_exports_and_imports_back() {
         ("image.analysis.recordMeasurements", json!({})),
         ("image.analysis.setMeasurementScale", json!({"preset": "custom", "pixelLength": 120, "logicalLength": 2.5, "units": "mm"})),
         ("layer.videoLayers.insertBlankFrame", json!({})),
+        ("file.automate.conditionalModeChange", json!({"from": ["grayscale", "rgb"], "to": "cmyk"})),
         ("layer.videoLayers.duplicateFrame", json!({})),
         ("layer.videoLayers.deleteFrame", json!({})),
         ("file.automate.cropAndStraightenPhotos", json!({})),
@@ -7011,4 +7037,90 @@ fn adjustment_layer_name_must_round_trip() {
             assert_eq!(step.0, PHOTOSHOP_STEP, "{name:?}");
         }
     }
+}
+
+#[test]
+fn whole_library_conditional_scopes_roundtrip_without_borrowing_external_targets() {
+    let mut caller = Action::new(
+        "Caller",
+        vec![("actions.conditional".into(), json!({"if":"always", "then":"Target", "thenSet":"Original", "else":"Target", "elseSet":"Original"}))],
+    );
+    caller.set = Some("Original".into());
+    let mut target = Action::new("Target", vec![]);
+    target.set = Some("Original".into());
+
+    // Internal name-only branches remain resolvable through whole-library save and replacement.
+    let (original, _) = export("Original", &[&caller, &target], &[], false).unwrap();
+    let mut s = Session::new();
+    s.execute("actions.replace", json!({"data":b64(&original),"confirm":true})).unwrap();
+    let saved = s.execute("actions.save", json!({})).unwrap();
+    let bytes = photocraft_paint::tile::b64_decode(saved["data"].as_str().unwrap()).unwrap();
+    let imported = super::convert::import_sets(&bytes, None).unwrap().remove(0).0.imported;
+    assert_eq!(imported.actions[0].steps[0].1["thenSet"], DEFAULT_SET);
+    assert_eq!(imported.actions[0].steps[0].1["elseSet"], DEFAULT_SET);
+    s.execute("actions.replace", json!({"data":b64(&bytes),"confirm":true})).unwrap();
+    let params = &s.actions.list[0].steps[0].1;
+    assert!(params.get("thenActionId").is_none(), "included target must remain resolvable: {params}");
+    assert!(params.get("elseActionId").is_none(), "included target must remain resolvable: {params}");
+
+    // An external name-only ATN reference imports with an explicit unresolved guard. Strict save
+    // must reject that guard rather than borrow the included Target or omit the conditional.
+    caller.steps[0].1["elseSet"] = json!("Outside");
+    let (external, _) = export(DEFAULT_SET, &[&caller, &target], &[], false).unwrap();
+    let imported = super::convert::import_sets(&external, None).unwrap().remove(0).0.imported;
+    assert_eq!(imported.actions[0].steps[0].1["thenSet"], DEFAULT_SET);
+    assert_eq!(imported.actions[0].steps[0].1["elseSet"], "Outside");
+    s.execute("actions.replace", json!({"data":b64(&external),"confirm":true})).unwrap();
+    let params = &s.actions.list[0].steps[0].1;
+    assert_eq!(params["thenSet"], DEFAULT_SET);
+    assert_eq!(params["elseSet"], "Outside");
+    assert!(params.get("thenActionId").is_none(), "included target must remain resolvable: {params}");
+    assert_eq!(params.get("elseActionId"), Some(&Value::Null), "external unresolved scope cannot borrow an included target");
+    let error = s.execute("actions.save", json!({})).unwrap_err().to_string();
+    assert!(error.contains("`actions.conditional`"), "strict save must reject the unresolved conditional: {error}");
+}
+
+#[test]
+fn repeated_id_export_reuses_unique_targets_and_rejects_duplicate_ids() {
+    let id = "112233445566778899aabbccddeeff00";
+    let mut target = Action::new("Target", vec![]);
+    target.action_id = Some(id.into());
+    let caller = Action::new("Caller", (0..64).map(|_| ("actions.conditional".into(), json!({"if":"always","thenActionId":id,"thenSet":"Old"}))).collect());
+    let (bytes, skipped) = export("New", &[&caller, &target], &[], false).unwrap();
+    assert!(skipped.is_empty());
+    let imported = super::convert::import_sets(&bytes, None).unwrap().remove(0).0.imported;
+    assert_eq!(imported.actions[0].steps.len(), 64);
+    for (_, params) in &imported.actions[0].steps {
+        assert_eq!(params["then"], "Target");
+        assert_eq!(params["thenSet"], "New");
+    }
+    let mut duplicate = Action::new("Different", vec![]);
+    duplicate.action_id = Some(id.into());
+    assert!(export("New", &[&caller, &target, &duplicate], &[], false).is_err());
+    let (_, omitted) = export("New", &[&caller, &target, &duplicate], &[], true).unwrap();
+    assert_eq!(omitted.len(), 64);
+}
+
+#[test]
+fn loading_a_function_key_disables_displaced_occurrence_without_reviving_legacy() {
+    let mut s = Session::new();
+    let id = "112233445566778899aabbccddeeff00";
+    let mut original = Action::new("Existing", vec![]);
+    original.action_id = Some(id.into());
+    original.legacy_shortcut_owner = true;
+    s.actions.list.push(original);
+    let occurrence = crate::actions_cmds::occurrence_key(id);
+    s.edit_prefs(|prefs| {
+        prefs.shortcuts.insert("actions.play:Existing".into(), "F5".into());
+        prefs.shortcuts.insert(occurrence.clone(), "F6".into());
+        prefs.shortcuts.insert("edit.fill".into(), "F5".into());
+    });
+    let action = Action::new("Imported", vec![]);
+    let (bytes, _) = export("Imported Set", &[&action], &[("Imported".into(), "F6".into())], false).unwrap();
+    s.execute("actions.load", json!({"data":b64(&bytes)})).unwrap();
+    assert_eq!(s.prefs().shortcuts.get(&occurrence).map(String::as_str), Some(""));
+    assert_eq!(crate::actions_cmds::action_shortcut(&s, 0), Some(""));
+    assert_eq!(s.prefs().shortcuts.get("actions.play:Existing").map(String::as_str), Some("F5"));
+    assert_eq!(s.prefs().shortcuts.get("edit.fill").map(String::as_str), Some("F5"));
+    assert_eq!(s.prefs().shortcuts.get("actions.play:Imported").map(String::as_str), Some("F6"));
 }

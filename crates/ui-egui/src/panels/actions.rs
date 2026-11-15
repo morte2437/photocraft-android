@@ -4,6 +4,8 @@
 //! `play` / `list` / `get` / `delete` / `move` / `rename`), so the panel, the CLI and MCP share them. This module
 //! keeps only which row is selected and which rows are expanded.
 
+use std::collections::{BTreeMap, BTreeSet};
+
 use egui::{Align2, Color32, Rect, Sense, Stroke, pos2, vec2};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -14,6 +16,45 @@ use crate::PhotocraftApp;
 use crate::file_dialog::{FileDialogAnswer, FileDialogRequest};
 use crate::icons;
 use crate::theme::Tokens;
+
+pub(crate) mod library;
+
+pub(crate) fn library_selection_changed(app: &mut PhotocraftApp) {
+    let ui = &mut app.ui.actions;
+    ui.selected = None;
+    ui.selected_step = None;
+    ui.selected_set = None;
+    ui.selected_set_slot = None;
+    ui.slot_revision = app.session.actions.set_rows_revision;
+    ui.collapsed_set_slots.clear();
+    ui.expanded.clear();
+    ui.renaming = None;
+    ui.reveal_recording = None;
+}
+
+pub(crate) fn library_slots_changed(app: &mut PhotocraftApp) {
+    if app.ui.actions.selected_set_slot.take().is_some() {
+        app.ui.actions.selected_set = None;
+    }
+    app.ui.actions.slot_revision = app.session.actions.set_rows_revision;
+    app.ui.actions.collapsed_set_slots.clear();
+}
+
+/// Preserve selection and disclosure for the existing physical folders after inserting a row.
+pub(crate) fn library_slot_inserted(app: &mut PhotocraftApp, slot: usize) {
+    let revision = app.session.actions.set_rows_revision;
+    if app.ui.actions.slot_revision != revision.wrapping_sub(1) {
+        library_slots_changed(app);
+        return;
+    }
+    let ui = &mut app.ui.actions;
+    ui.slot_revision = revision;
+    for existing in ui.selected_set_slot.iter_mut().chain(&mut ui.collapsed_set_slots) {
+        if *existing >= slot {
+            *existing = existing.saturating_add(1);
+        }
+    }
+}
 
 /// Which row is selected and which rows are expanded. The action list itself is
 /// [`photocraft_engine::Session::actions`].
@@ -33,19 +74,46 @@ pub struct ActionsUi {
     #[serde(skip)]
     pub selected_set: Option<String>,
     #[serde(skip)]
+    selected_set_slot: Option<usize>,
+    #[serde(skip)]
+    slot_revision: u64,
+    #[serde(skip)]
+    collapsed_set_slots: Vec<usize>,
+    #[serde(skip)]
     reveal_recording: Option<(usize, usize)>,
     /// The action whose name is being edited in place (double-click on its name).
     #[serde(skip)]
     renaming: Option<RenameAction>,
+    #[serde(skip)]
+    batch_dialog_targets: std::collections::BTreeMap<u64, std::collections::BTreeMap<usize, ActionOccurrence>>,
+    #[serde(skip)]
+    deferred_shortcut_conflicts: Vec<DeferredShortcutConflicts>,
+    #[serde(skip)]
+    volatile_shortcut_keys: BTreeSet<String>,
+    #[serde(skip)]
+    preset_store_disconnected: bool,
 }
 
 impl ActionsUi {
+    pub(crate) fn set_preset_store_disconnected(&mut self, disconnected: bool) {
+        self.preset_store_disconnected = disconnected;
+    }
+
+    pub(crate) fn shortcut_write_pending(&self, key: &str) -> bool {
+        self.volatile_shortcut_keys.contains(key)
+    }
+
+    pub(crate) fn shortcut_writes_pending(&self) -> bool {
+        self.preset_store_disconnected || !self.volatile_shortcut_keys.is_empty()
+    }
+
     /// Select an action (and one of its steps): it replaces a selected set, so a later deselect
     /// (Delete, a removed row) doesn't bring back a set the user moved away from.
     fn select(&mut self, action: usize, step: Option<usize>) {
         self.selected = Some(action);
         self.selected_step = step;
         self.selected_set = None;
+        self.selected_set_slot = None;
     }
 }
 
@@ -54,6 +122,14 @@ struct RenameAction {
     index: usize,
     text: String,
     focused: bool,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct DeferredShortcutConflicts {
+    winner: String,
+    chord: String,
+    primary: Vec<String>,
+    alternate: Vec<(String, Vec<String>)>,
 }
 
 pub(crate) fn label_of(id: &str) -> String {
@@ -69,9 +145,93 @@ pub(crate) fn label_of(id: &str) -> String {
 /// The selected action, else the first action of the selected set (Batch and Create Droplet start
 /// on the panel's selection), else the first one.
 pub fn selected_action(app: &PhotocraftApp) -> Option<&Action> {
+    app.session.actions.list.get(selected_action_row(app)?)
+}
+
+pub(crate) fn selected_action_row(app: &PhotocraftApp) -> Option<usize> {
+    let len = app.session.actions.list.len();
+    app.ui.actions.selected.filter(|&row| row < len).or_else(|| selected_set_actions(app).first().copied()).or_else(|| (len > 0).then_some(0))
+}
+
+pub(crate) const BATCH_OCCURRENCE: &str = "__batchOccurrence";
+pub(crate) const BATCH_OCCURRENCES: &str = "__batchOccurrences";
+
+pub(crate) fn has_batch_dialog_binding(app: &PhotocraftApp, dialog: u64) -> bool {
+    app.ui.actions.batch_dialog_targets.contains_key(&dialog)
+}
+
+pub(crate) fn bind_batch_dialog(app: &mut PhotocraftApp, dialog: u64, row: usize) {
+    let mut groups = std::collections::BTreeMap::<_, Vec<_>>::new();
+    for (index, action) in app.session.actions.list.iter().enumerate() {
+        groups.entry((action.name.as_str(), action.set.as_deref())).or_default().push(index);
+    }
+    let mut rows = vec![row];
+    let mut choices = Vec::new();
+    for ((name, set), group) in groups.iter().filter(|(_, group)| group.len() > 1) {
+        for (position, &index) in group.iter().enumerate() {
+            if index != row {
+                rows.push(index);
+            }
+            choices.push(json!({"action": name, "set": set, "row": index, "label": format!("{} / {}", position + 1, group.len())}));
+        }
+    }
+    let captured = ActionOccurrence::capture_pending(&app.session, &rows).into_iter().map(|target| (target.row, target)).collect();
+    let dialogs = &app.ui.dialogs;
+    let targets = &mut app.ui.actions.batch_dialog_targets;
+    targets.retain(|id, _| dialogs.iter().any(|dialog| dialog.id == *id));
+    targets.insert(dialog, captured);
+
+    if let Some(d) = app.ui.dialog_mut(dialog) {
+        d.fields.insert(BATCH_OCCURRENCE.into(), json!(row));
+        d.fields.insert(BATCH_OCCURRENCES.into(), json!(choices));
+        if let Some(original) = d.fields.get_mut("__formOrig").and_then(Value::as_object_mut) {
+            original.insert(BATCH_OCCURRENCE.into(), json!(row));
+        }
+    }
+}
+
+pub(crate) fn cancel_batch_dialog(app: &mut PhotocraftApp, dialog: u64) {
+    app.ui.actions.batch_dialog_targets.remove(&dialog);
+}
+
+pub(crate) fn batch_dialog_params(app: &mut PhotocraftApp, dialog: u64, choice: Option<&Value>, params: &mut Value) -> Result<(), String> {
+    let targets = app.ui.actions.batch_dialog_targets.remove(&dialog);
+    let params = params.as_object_mut().ok_or("Batch parameters must be an object")?;
+    if params.get("actionId").is_some() {
+        return Ok(());
+    }
+    let Some(choice) = choice.filter(|choice| !choice.is_null()) else { return Ok(()) };
+    let target = choice
+        .as_u64()
+        .and_then(|row| usize::try_from(row).ok())
+        .and_then(|row| targets.as_ref()?.get(&row))
+        .ok_or("the selected action changed while Batch was open")?;
+    let set = params.get("set").filter(|v| !v.is_null());
+    if params.get("action").and_then(Value::as_str) != Some(target.action.name.as_str()) || set != target.action.set.as_ref().map(|name| json!(name)).as_ref() {
+        // An explicit edit still uses the existing named/set or actionId command API.
+        return Ok(());
+    }
+    let row = target.resolve(&app.session).ok_or("the selected action changed while Batch was open")?;
     let list = &app.session.actions.list;
-    let idx = app.ui.actions.selected.filter(|i| *i < list.len());
-    idx.and_then(|i| list.get(i)).or_else(|| selected_set_actions(app).first().and_then(|i| list.get(*i))).or_else(|| list.first())
+    let mut matches = list.iter().enumerate().filter(|(_, action)| action.name == target.action.name && (set.is_none() || action.set == target.action.set));
+    if matches.next().is_some_and(|(index, _)| index == row) && (app.session.actions.recording.is_none() || matches.next().is_none()) {
+        return Ok(());
+    }
+    let id = match actions_cmds::PlaybackTarget::from(&target.action).id {
+        None if app.session.actions.recording.is_some() => {
+            let id = actions_cmds::prepare_action_id(list, row).map_err(|error| error.to_string())?;
+            actions_cmds::commit_action_id(&mut app.session, row, id.clone()).map_err(|error| error.to_string())?;
+            Some(id)
+        }
+        id => id,
+    };
+    if let Some(id) = id {
+        params.insert("actionId".into(), json!(id));
+    } else {
+        params.insert("action".into(), json!(row));
+        params.remove("set");
+    }
+    Ok(())
 }
 
 /// The Set and Action dropdowns of the Batch and Create Droplet dialogs, as in the reference
@@ -96,22 +256,91 @@ fn selected_set(app: &PhotocraftApp) -> Option<&str> {
         return None;
     }
     let set = app.ui.actions.selected_set.as_deref()?;
+    if let Some(slot) = app.ui.actions.selected_set_slot {
+        return (app.ui.actions.slot_revision == app.session.actions.set_rows_revision
+            && app.session.actions.set_rows.get(slot).map(String::as_str) == Some(set))
+        .then_some(set);
+    }
     photocraft_engine::actions_edit_cmds::set_names(&app.session).iter().any(|n| n == set).then_some(set)
 }
 
 /// The actions of the selected set, in list order (empty when no set is selected, or it is empty).
 fn selected_set_actions(app: &PhotocraftApp) -> Vec<usize> {
     let Some(set) = selected_set(app) else { return Vec::new() };
-    app.session.actions.list.iter().enumerate().filter(|(_, a)| a.set.as_deref() == Some(set)).map(|(i, _)| i).collect()
+    app.session
+        .actions
+        .list
+        .iter()
+        .enumerate()
+        .filter(|(_, a)| a.set.as_deref() == Some(set) && a.set_slot == app.ui.actions.selected_set_slot)
+        .map(|(i, _)| i)
+        .collect()
 }
 
 /// What Play plays: the selected action; with a set folder selected, every action of that set in
 /// order, as Photoshop plays a selected set (nothing for an empty set); else the first action.
 fn playback_targets(app: &PhotocraftApp) -> Vec<usize> {
-    if selected_set(app).is_some() {
+    // A stale physical selection must not play the first unrelated action before repaint.
+    if app.ui.actions.selected_set_slot.is_some() || selected_set(app).is_some() {
         return selected_set_actions(app);
     }
     playback_selection(app).into_iter().collect()
+}
+
+/// Identity for a dialog or timer, held only while the UI can outlive a library edit.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct ActionOccurrence {
+    row: usize,
+    rev: u64,
+    unique_name: bool,
+    action: Action,
+}
+
+impl ActionOccurrence {
+    pub(crate) fn capture(s: &photocraft_engine::Session, row: usize) -> Option<Self> {
+        let action = s.actions.list.get(row)?.clone();
+        let unique_name = s.actions.list.iter().filter(|other| other.name == action.name).take(2).count() == 1;
+        Some(Self { row, rev: s.actions.rev, unique_name, action })
+    }
+
+    fn capture_pending(s: &photocraft_engine::Session, rows: &[usize]) -> Vec<Self> {
+        if rows.is_empty() {
+            return Vec::new();
+        }
+        let list = &s.actions.list;
+        let mut unique_names = std::collections::HashMap::new();
+        for action in list {
+            unique_names.entry(action.name.as_str()).and_modify(|unique| *unique = false).or_insert(true);
+        }
+        rows.iter()
+            .filter_map(|&row| {
+                let action = list.get(row)?.clone();
+                let unique_name = unique_names[action.name.as_str()];
+                Some(Self { row, rev: s.actions.rev, unique_name, action })
+            })
+            .collect()
+    }
+
+    fn identity_row(&self, s: &photocraft_engine::Session) -> Option<usize> {
+        let list = &s.actions.list;
+        if actions_cmds::PlaybackTarget::from(&self.action).id.is_some() {
+            return actions_cmds::playback_row(list, &self.action);
+        }
+        if self.rev == s.actions.rev && list.get(self.row) == Some(&self.action) {
+            return Some(self.row);
+        }
+        if self.unique_name {
+            let mut names = list.iter().enumerate().filter(|(_, action)| action.name == self.action.name);
+            let (row, _) = names.next()?;
+            return names.next().is_none().then_some(row);
+        }
+        None
+    }
+
+    pub(crate) fn resolve(&self, s: &photocraft_engine::Session) -> Option<usize> {
+        let row = self.identity_row(s)?;
+        (s.actions.list.get(row) == Some(&self.action)).then_some(row)
+    }
 }
 
 /// Play `targets` one after another, stopping at the first that fails or can't start. One that
@@ -134,10 +363,8 @@ fn play_targets(app: &mut PhotocraftApp, targets: &[usize], before: u64) -> Resu
         }
         last = Some(v);
         if let Some(dialog) = paused.filter(|_| !failed) {
-            // As they are now, not by index: the list can be reordered while the dialog is open
-            // (`actions.move`), and one deleted and made again under its name isn't the same action.
-            let list = &app.session.actions.list;
-            let rest: Vec<Action> = targets.get(n + 1..).unwrap_or_default().iter().filter_map(|i| list.get(*i).cloned()).collect();
+            // The list can be reordered while the dialog is open; retain each occurrence and its definition.
+            let rest = ActionOccurrence::capture_pending(&app.session, &targets[n + 1..]);
             let token = paused_token(app, &dialog);
             if let Some(entry) = token.and_then(|t| app.paused_playbacks.paused.get_mut(&t))
                 && name.as_deref() == Some(entry.outermost())
@@ -182,26 +409,123 @@ pub fn action_steps(action: &Action) -> Vec<Value> {
     action.enabled_steps().map(|(_, (id, p))| json!([id, p])).collect()
 }
 
-/// Named action bindings use the existing persisted shortcut overrides. Keeping the
-/// name in the key means selecting or deleting another row cannot retarget F6.
-pub(crate) const SHORTCUT_PREFIX: &str = actions_cmds::PLAY_SHORTCUT_PREFIX;
-
-pub(crate) fn shortcut_id(name: &str) -> String {
-    format!("{SHORTCUT_PREFIX}{name}")
+pub(crate) fn assign_shortcut(app: &mut PhotocraftApp, index: usize, shortcut: &str) -> Result<Value, String> {
+    let list = &app.session.actions.list;
+    let action_id = actions_cmds::prepare_action_id(list, index).map_err(|error| error.to_string())?;
+    let id = actions_cmds::occurrence_key(&action_id);
+    let legacy = format!("{}{}", actions_cmds::PLAY_SHORTCUT_PREFIX, list[index].name);
+    let prefs = app.session.prefs();
+    let previous = list[index].action_id.is_none().then(|| (prefs.shortcuts.clone(), prefs.alternate_shortcuts.clone()));
+    let pending = (app.services.preset_store.is_some() && app.session.preset_store.is_none())
+        || app.ui.actions.preset_store_disconnected
+        || app.ui.actions.shortcut_write_pending(&id);
+    let legacy_owner = !pending && actions_cmds::shortcut_row(list, &legacy) == Some(index);
+    // Retain the old key as a fallback if an asynchronous store never commits the ID.
+    // A live ID-based override shadows it, including an explicit "None" assignment.
+    let can_clear = |other: &str| {
+        actions_cmds::is_action_key(other)
+            && other != id.as_str()
+            && !(other.starts_with(actions_cmds::PLAY_SHORTCUT_PREFIX) && (pending || (legacy_owner && other == legacy.as_str())))
+    };
+    let mut set = serde_json::Map::new();
+    let mut alternates = serde_json::Map::new();
+    let mut deferred = None;
+    if let Some(key) = photocraft_engine::prefs::normalize_shortcut(shortcut) {
+        let pending_legacy = |other: &str| pending && other.starts_with(actions_cmds::PLAY_SHORTCUT_PREFIX);
+        let mut conflicts = DeferredShortcutConflicts { winner: id.clone(), chord: key.clone(), primary: Vec::new(), alternate: Vec::new() };
+        for (other, assigned) in &prefs.shortcuts {
+            if photocraft_engine::prefs::normalize_shortcut(assigned).as_ref() == Some(&key) {
+                if pending_legacy(other) {
+                    conflicts.primary.push(other.clone());
+                } else if can_clear(other) {
+                    set.insert(other.clone(), json!(""));
+                }
+            }
+        }
+        for (other, assigned) in &prefs.alternate_shortcuts {
+            if can_clear(other) || pending_legacy(other) {
+                let remaining: Vec<_> =
+                    assigned.iter().filter(|assigned| photocraft_engine::prefs::normalize_shortcut(assigned).as_ref() != Some(&key)).collect();
+                if remaining.len() != assigned.len() {
+                    if pending_legacy(other) {
+                        conflicts.alternate.push((other.clone(), assigned.clone()));
+                    } else {
+                        alternates.insert(other.clone(), json!(remaining));
+                    }
+                }
+            }
+        }
+        deferred = (!conflicts.primary.is_empty() || !conflicts.alternate.is_empty()).then_some(conflicts);
+    }
+    set.insert(id.clone(), json!(shortcut));
+    let volatile_keys = pending.then(|| set.keys().chain(alternates.keys()).cloned().collect::<Vec<_>>());
+    let result = app.run("edit.keyboardShortcuts", json!({"set": set, "alternates": alternates, "allowUnknown": true, "removeConflicts": false}))?;
+    if let Err(error) = actions_cmds::commit_action_id(&mut app.session, index, action_id) {
+        if let Some((shortcuts, alternate_shortcuts)) = previous {
+            app.session.edit_prefs(|prefs| {
+                prefs.shortcuts = shortcuts;
+                prefs.alternate_shortcuts = alternate_shortcuts;
+            });
+        }
+        let error = error.to_string();
+        app.ui.status = error.clone();
+        app.ui.status_error = true;
+        return Err(error);
+    }
+    if let Some(keys) = volatile_keys {
+        app.ui.actions.volatile_shortcut_keys.extend(keys);
+        let queued = &mut app.ui.actions.deferred_shortcut_conflicts;
+        queued.retain(|conflicts| conflicts.winner != id);
+        queued.extend(deferred);
+    }
+    Ok(result)
 }
 
-pub(crate) fn assign_shortcut(app: &mut PhotocraftApp, name: &str, shortcut: &str) -> Result<Value, String> {
-    let id = shortcut_id(name);
-    let mut set = serde_json::Map::new();
-    // A function key belongs to only one action. Ordinary menu bindings remain
-    // intact and become available again when the action binding is removed.
-    for (other, assigned) in &app.session.prefs().shortcuts {
-        if other.starts_with(SHORTCUT_PREFIX) && other != &id && assigned == shortcut && !shortcut.is_empty() {
-            set.insert(other.clone(), json!(""));
+/// Release pending shortcut writes and apply legacy conflicts only after the native definitions were written.
+pub(crate) fn finish_deferred_shortcut_conflicts(app: &mut PhotocraftApp, actions_written: bool) {
+    if !actions_written {
+        return;
+    }
+    app.ui.actions.preset_store_disconnected = false;
+    app.ui.actions.volatile_shortcut_keys.clear();
+    let deferred = std::mem::take(&mut app.ui.actions.deferred_shortcut_conflicts);
+    if deferred.is_empty() {
+        return;
+    }
+    let list = &app.session.actions.list;
+    let prefs = app.session.prefs();
+    let mut primary = BTreeSet::new();
+    let mut alternate = BTreeMap::new();
+    for pending in deferred {
+        let Some(winner) = actions_cmds::shortcut_row(list, &pending.winner) else { continue };
+        if prefs.shortcuts.get(&pending.winner) != Some(&pending.chord) {
+            continue;
+        }
+        let losing = |key: &str| actions_cmds::shortcut_row(list, key).is_some_and(|row| row != winner);
+        for key in pending.primary {
+            if losing(&key)
+                && prefs.shortcuts.get(&key).and_then(|assigned| photocraft_engine::prefs::normalize_shortcut(assigned)).as_ref() == Some(&pending.chord)
+            {
+                primary.insert(key);
+            }
+        }
+        for (key, original) in pending.alternate {
+            if losing(&key) && prefs.alternate_shortcuts.get(&key) == Some(&original) {
+                alternate
+                    .entry(key)
+                    .or_insert(original)
+                    .retain(|assigned| photocraft_engine::prefs::normalize_shortcut(assigned).as_ref() != Some(&pending.chord));
+            }
         }
     }
-    set.insert(id, json!(shortcut));
-    app.run("edit.keyboardShortcuts", json!({"set": set, "allowUnknown": true, "removeConflicts": false}))
+    if !primary.is_empty() || !alternate.is_empty() {
+        app.session.edit_prefs(|prefs| {
+            for key in primary {
+                prefs.shortcuts.insert(key, String::new());
+            }
+            prefs.alternate_shortcuts.extend(alternate);
+        });
+    }
 }
 
 /// Replay edits synchronously, with view steps handled by the shell in the same order.
@@ -274,11 +598,15 @@ fn end_at(c: Called, ran: &mut u64, failed: &mut Option<Value>, paused: &mut Opt
 /// A resumed playback goes on in the action this one called (`inner`, see [`play_owned`]) inside
 /// this one's playback frame, so its recursion checks still see this caller; the call was step
 /// `from - 1`. `None` when there is nothing to replay.
-fn replay_inner(app: &mut PhotocraftApp, caller: &str, from: usize, inner: &[(String, usize)]) -> Option<Called> {
-    let ((name, child_from), rest) = inner.split_first()?;
+fn resume_target(row: usize, from: usize) -> Value {
+    json!({"action": row, "from": from})
+}
+
+fn replay_inner(app: &mut PhotocraftApp, caller: &str, from: usize, inner: &[(usize, usize)]) -> Option<Called> {
+    let ((row, child_from), rest) = inner.split_first()?;
     let step = from.saturating_sub(1);
     let target = app.session.active().map(|d| d.doc.id);
-    Some(match play_owned(app, &json!({"action": name, "from": child_from}), None, rest) {
+    Some(match play_owned(app, &resume_target(*row, *child_from), None, rest) {
         Ok(value) => called(app, caller, step, "actions.play", &value, target),
         Err(error) => Called::Failed(json!({"step": step, "id": "actions.play", "error": error})),
     })
@@ -300,28 +628,26 @@ fn nested_call(id: &str) -> Option<Player> {
 /// and Stop messages. The result is the engine command's, with the branch's `paused` or `stopped`.
 /// Malformed params go to the engine command, which refuses them with its own error.
 fn conditional(app: &mut PhotocraftApp, p: &Value) -> Result<Value, String> {
-    let branch = |key: &str| match p.get(key) {
-        None | Some(Value::Null) => Some(None),
-        Some(Value::String(n)) => Some(Some(n.clone()).filter(|n| !n.trim().is_empty())),
-        Some(_) => None,
-    };
-    let (Some(condition), Some(then), Some(otherwise)) = (p.get("if").and_then(Value::as_str), branch("then"), branch("else")) else {
+    let (Some(condition), Ok(then), Ok(otherwise)) =
+        (p.get("if").and_then(Value::as_str), actions_cmds::conditional_branch(p, "then"), actions_cmds::conditional_branch(p, "else"))
+    else {
         return app.session.execute("actions.conditional", p.clone()).map_err(|e| e.to_string());
     };
     let Ok(holds) = photocraft_engine::actions_edit_cmds::evaluate(&app.session, condition) else {
         return app.session.execute("actions.conditional", p.clone()).map_err(|e| e.to_string());
     };
     let played = if holds { then } else { otherwise };
-    let mut out = json!({"if": condition, "holds": holds, "played": played});
-    if let Some(name) = played {
-        let r = play(app, &json!({"action": name}))?;
+    let mut out = json!({"if": condition, "holds": holds, "played": played.as_ref().and_then(|p| p.get("action"))});
+    if let Some(params) = played {
+        let r = play(app, &params)?;
         for key in ["failed", "paused", "stopped"] {
             if let Some(v) = r.get(key) {
                 out[key] = v.clone();
             }
         }
         out["ran"] = r.get("ran").cloned().unwrap_or(json!(0));
-        out["action"] = json!(name);
+        out["action"] = r["action"].clone();
+        out["played"] = r["action"].clone();
     }
     Ok(out)
 }
@@ -436,11 +762,11 @@ fn pause_for_dialog(app: &mut PhotocraftApp, action: &Action, step: usize, id: &
 /// back, with that named call journaled, only when the whole call ends. `inner` are the called
 /// actions a resumed playback replays first, outermost first, each `(action, from)`: the first is
 /// the one this action's step before `from` called ([`resume`]).
-fn play_owned(app: &mut PhotocraftApp, params: &Value, suspended: Option<Value>, inner: &[(String, usize)]) -> Result<Value, String> {
+fn play_owned(app: &mut PhotocraftApp, params: &Value, suspended: Option<SuspendedRecording>, inner: &[(usize, usize)]) -> Result<Value, String> {
     // An action automation wrote plays under automation's gate even when the user starts it (its
     // key, the panel, Button Mode); nested calls, a paused step's dialog and the steps' own
     // commands see that gate too.
-    let kept = actions_cmds::playback_plan(&app.session, params).ok().and_then(|(action, _)| actions_cmds::kept_gate(&app.session, &action));
+    let kept = actions_cmds::playback_plan_at(&app.session, params).ok().and_then(|(_, action, _)| actions_cmds::kept_gate(&app.session, &action));
     if kept.is_some() {
         app.session.authorize = kept;
     }
@@ -465,8 +791,8 @@ fn play_owned(app: &mut PhotocraftApp, params: &Value, suspended: Option<Value>,
 /// Play an action's steps in the shell (dialogs, shell saves and views), under whatever gate
 /// [`play_owned`] installed; pauses at a step whose dialog is toggled on. `inner` is as in
 /// [`play_owned`].
-fn play_steps(app: &mut PhotocraftApp, params: &Value, suspended: Option<Value>, inner: &[(String, usize)]) -> Result<Value, String> {
-    let (action, from) = match actions_cmds::playback_plan(&app.session, params) {
+fn play_steps(app: &mut PhotocraftApp, params: &Value, suspended: Option<SuspendedRecording>, inner: &[(usize, usize)]) -> Result<Value, String> {
+    let (row, mut action, from) = match actions_cmds::playback_plan_at(&app.session, params) {
         Ok(plan) => plan,
         Err(e) => {
             actions_cmds::finish_pending_history(&mut app.session);
@@ -474,20 +800,30 @@ fn play_steps(app: &mut PhotocraftApp, params: &Value, suspended: Option<Value>,
             return Err(e.to_string());
         }
     };
-    let recording = match actions_cmds::begin_playback_from(&mut app.session, &action, from) {
-        Ok(r) => r,
+    let recording = (|| -> photocraft_engine::Result<Option<String>> {
+        // An action or one of its callers can pause at a dialog while the library changes.
+        let owner_id = if let Some((_, index)) = app.session.actions.recording {
+            let id = actions_cmds::prepare_action_id(&app.session.actions.list, index)?;
+            actions_cmds::commit_action_id(&mut app.session, index, id.clone())?;
+            if index == row {
+                action.action_id = Some(id.clone());
+            }
+            Some(id)
+        } else {
+            None
+        };
+        let recording = actions_cmds::begin_playback_at_from(&mut app.session, row, &mut action, from)?;
+        Ok(recording.and(owner_id))
+    })();
+    let owner_id = match recording {
+        Ok(id) => id,
         Err(e) => {
             actions_cmds::finish_pending_history(&mut app.session);
             restore_recording(app, suspended.as_ref());
             return Err(e.to_string());
         }
     };
-    let owner = recording
-        .map(|(_, idx)| {
-            let into = app.session.actions.list.get(idx).map(|a| a.name.clone());
-            json!({"index": idx, "into": into, "action": action.name, "from": from})
-        })
-        .or(suspended);
+    let owner = owner_id.map(|action_id| SuspendedRecording { action_id, target: actions_cmds::recorded_target(&app.session, &action, from) }).or(suspended);
     let mut ran = 0u64;
     let interactive = playback::is_interactive(app);
     let (mut failed, mut paused, mut stopped) = (None, None, None);
@@ -614,15 +950,16 @@ fn play_steps(app: &mut PhotocraftApp, params: &Value, suspended: Option<Value>,
         // Paused for a dialog: the call goes on after it, so recording stays suspended.
         Some(dialog) if failed.is_none() => {
             let token = paused_token(app, &dialog);
+            let occurrence = ActionOccurrence::capture(&app.session, row);
             let entry = token.and_then(|t| app.paused_playbacks.paused.get_mut(&t));
-            match entry {
-                Some(p) => {
+            match (entry, occurrence) {
+                (Some(p), Some(occurrence)) => {
                     p.record = owner;
                     p.history = history;
-                    // Innermost first: each frame of the paused call adds the action it played.
-                    p.played.push(action.clone());
+                    // Innermost first: each frame adds the exact action occurrence it played.
+                    p.played.push(occurrence);
                 }
-                // No continuation to carry the recording: the call ends here.
+                // No valid continuation to carry the recording: the call ends here.
                 _ => {
                     drop(history);
                     restore_recording(app, owner.as_ref());
@@ -678,10 +1015,10 @@ pub(crate) fn run_view(app: &mut PhotocraftApp, id: &str, params: Value) -> Resu
 }
 
 /// The set New Action records into: the selected action's, else the selected set folder's.
-fn new_action_set(app: &PhotocraftApp) -> Option<String> {
+fn new_action_set(app: &PhotocraftApp) -> Option<Folder> {
     match app.ui.actions.selected.and_then(|i| app.session.actions.list.get(i)) {
-        Some(action) => action.set.clone(),
-        None => app.ui.actions.selected_set.clone().filter(|set| photocraft_engine::actions_edit_cmds::set_names(&app.session).contains(set)),
+        Some(action) => action.set.clone().map(|name| Folder { name, slot: action.set_slot }),
+        None => selected_set(app).map(|set| Folder { name: set.into(), slot: app.ui.actions.selected_set_slot }),
     }
 }
 
@@ -693,7 +1030,7 @@ fn begin_recording(app: &mut PhotocraftApp, append: bool) {
     // new action like New Action does, in the selected set.
     let params = match app.ui.actions.selected {
         Some(i) if append => json!({"action": i}),
-        _ => new_action_set(app).map_or(json!({}), |set| json!({"set": set})),
+        _ => new_action_set(app).map_or(json!({}), |set| json!({"set": set.name, "setSlot": set.slot})),
     };
     let Ok(v) = app.run("actions.record", params) else { return };
     let Some(i) = v.get("index").and_then(Value::as_u64).and_then(|n| usize::try_from(n).ok()) else { return };
@@ -705,6 +1042,9 @@ fn begin_recording(app: &mut PhotocraftApp, append: bool) {
     // Its set too, in case its folder is collapsed.
     if let Some(set) = app.session.actions.list.get(i).and_then(|a| a.set.as_ref()) {
         app.ui.actions.collapsed_sets.retain(|c| c != set);
+    }
+    if let Some(slot) = app.session.actions.list.get(i).and_then(|a| a.set_slot) {
+        app.ui.actions.collapsed_set_slots.retain(|&value| value != slot);
     }
 }
 
@@ -942,12 +1282,10 @@ fn load_dialog(app: &mut PhotocraftApp) -> Result<Value, String> {
 
 /// Save Actions…: the selected action's set (every action of it), else the selected set folder,
 /// or every action when none came from a set, as a `.atn` file Photoshop loads.
-fn save_dialog(app: &mut PhotocraftApp, set: Option<String>) -> Result<Value, String> {
-    let selected_set = app.ui.actions.selected.is_none().then(|| app.ui.actions.selected_set.clone()).flatten();
-    let selected_set = selected_set.filter(|set| photocraft_engine::actions_edit_cmds::set_names(&app.session).contains(set));
-    let set = set.or(selected_set).or_else(|| selected_action(app).and_then(|a| a.set.clone()));
+fn save_dialog(app: &mut PhotocraftApp, set: Option<Folder>) -> Result<Value, String> {
+    let set = set.or_else(|| new_action_set(app)).or_else(|| selected_action(app).and_then(|a| a.set.clone().map(|name| Folder { name, slot: a.set_slot })));
     let params = match &set {
-        Some(set) => json!({"set": set, "skipUnsupported": true}),
+        Some(set) => json!({"set": set.name, "setSlot": set.slot, "skipUnsupported": true}),
         None => json!({"skipUnsupported": true}),
     };
     let r = app.run("actions.save", params)?;
@@ -1024,6 +1362,7 @@ pub fn new_set_body(ui: &mut egui::Ui, fields: &mut serde_json::Map<String, Valu
 pub fn new_set_confirm(app: &mut PhotocraftApp, fields: &serde_json::Map<String, Value>) -> Result<Value, String> {
     let r = app.run("actions.newSet", json!({"name": fields.get("name").cloned().unwrap_or(Value::Null)}))?;
     app.ui.actions.selected_set = r["set"].as_str().map(str::to_string);
+    app.ui.actions.selected_set_slot = None;
     app.ui.actions.selected = None;
     app.ui.actions.selected_step = None;
     Ok(r)
@@ -1125,26 +1464,21 @@ pub fn stop_message_confirm(app: &mut PhotocraftApp, fields: &serde_json::Map<St
 /// The key a paused playback leaves in its dialog's fields: the token of its [`PausedPlayback`].
 pub const RESUME: &str = "__resumeAction";
 
+/// The exact recording owner and Play call held by a suspended playback.
+#[derive(Clone, Debug)]
+struct SuspendedRecording {
+    action_id: String,
+    target: Value,
+}
+
 /// Resume the recording a paused call suspended and journal that call, once.
-fn restore_recording(app: &mut PhotocraftApp, owner: Option<&Value>) {
+fn restore_recording(app: &mut PhotocraftApp, owner: Option<&SuspendedRecording>) {
     let Some(owner) = owner else { return };
-    let (Some(idx), Some(into), Some(name)) = (
-        owner.get("index").and_then(Value::as_u64).and_then(|n| usize::try_from(n).ok()),
-        owner.get("into").and_then(Value::as_str),
-        owner.get("action").and_then(Value::as_str),
-    ) else {
-        return;
-    };
-    let from = owner.get("from").and_then(Value::as_u64).and_then(|n| usize::try_from(n).ok()).unwrap_or(0);
-    // `suspended_guard` refuses what would move the recorded action, but another command may
-    // still replace the list: the call goes to the action of that name, never to whatever now
-    // sits at the old index, and is dropped if that action is gone.
-    let list = &app.session.actions.list;
-    let target = if list.get(idx).is_some_and(|a| a.name == into) { Some(idx) } else { list.iter().position(|a| a.name == into) };
-    if let Some(idx) = target
+    let key = actions_cmds::occurrence_key(&owner.action_id);
+    if let Some(idx) = actions_cmds::shortcut_row(&app.session.actions.list, &key)
         && app.session.actions.recording.is_none()
     {
-        actions_cmds::restore_recording(&mut app.session, idx, name, from);
+        actions_cmds::restore_recording(&mut app.session, idx, owner.target.clone());
     }
 }
 
@@ -1158,8 +1492,19 @@ fn suspended(app: &PhotocraftApp) -> bool {
 /// action could go away or change place). The engine checks these against `recording`, which
 /// is `None` then.
 pub(crate) fn suspended_guard(app: &PhotocraftApp, id: &str) -> Result<(), String> {
-    if matches!(id, "actions.record" | "actions.delete" | "actions.move" | "actions.duplicate" | "actions.recordAgain" | "actions.allowToolRecording")
-        && suspended(app)
+    if matches!(
+        id,
+        "actions.record"
+            | "actions.delete"
+            | "actions.move"
+            | "actions.duplicate"
+            | "actions.recordAgain"
+            | "actions.allowToolRecording"
+            | "actions.clearAll"
+            | "actions.reset"
+            | "actions.replace"
+            | "actions.undoLibrary"
+    ) && suspended(app)
     {
         return Err(tl!("Confirm or cancel the open action step dialog first").into());
     }
@@ -1213,17 +1558,16 @@ pub(crate) struct PausedPlayback {
     action: String,
     from: usize,
     gate: Option<Gate>,
-    /// The recording the paused call suspended: `{index, into, action, from}` (`into` is the
-    /// name of the action being recorded). A step dialog only closes through
+    /// The recording occurrence and Play call held while the step dialog is open.
+    /// A step dialog only closes through
     /// `dialogs::confirm` (OK, `↩`, automation) or `dialogs::cancel` (Cancel, Esc, the close
     /// box, automation), which end the call through `resume`, `abandoned` or `stopped`, so the
     /// recording comes back exactly once.
-    record: Option<Value>,
+    record: Option<SuspendedRecording>,
     history: Option<actions_cmds::ActionHistoryContinuation>,
     /// The actions still to play after this one, as they were when Play started a whole set.
-    /// Actions have no id, so the whole action stands in for one: an action deleted and made again
-    /// under the same name, or edited, while the dialog is open no longer matches.
-    then: Vec<Action>,
+    /// The whole action also guards against edits while the dialog is open.
+    then: Vec<ActionOccurrence>,
     /// The steps that Play ran before this pause (earlier actions of the set, and this one's
     /// steps before the dialog), so the final count covers the whole Play.
     ran: u64,
@@ -1246,9 +1590,8 @@ pub(crate) struct PausedPlayback {
     /// whose own step runs on confirm.
     timed: bool,
     /// The paused action and each of its callers as they were when it paused, innermost first.
-    /// The continuation goes on by name, so an action edited, deleted or replaced by a new one of
-    /// the same name meanwhile ends it there instead of playing the new action's tail ([`resume`]).
-    played: Vec<Action>,
+    /// The continuation checks these snapshots before resuming any remaining steps.
+    played: Vec<ActionOccurrence>,
     /// `gate` is the kept gate of an action automation wrote that the user played
     /// ([`actions_cmds::kept_gate`]), not the gate of the whole call: it still judges the dialog's
     /// own command ([`run_step_dialog`]), but [`resume`] lets each such action take it again as it
@@ -1480,13 +1823,10 @@ pub fn resume(app: &mut PhotocraftApp, fields: &serde_json::Map<String, Value>) 
     let service = if app.automation_input { app.services.automation_authorize } else { None };
     let remaining = !paused.then.is_empty()
         || !paused.callers.is_empty()
-        || app
-            .session
-            .actions
-            .list
-            .iter()
-            .find(|action| action.name == paused.action)
-            .is_some_and(|action| action.enabled_steps().any(|(i, _)| i >= paused.from));
+        || paused.played.first().is_some_and(|occurrence| {
+            let action = occurrence.identity_row(&app.session).and_then(|row| app.session.actions.list.get(row)).unwrap_or(&occurrence.action);
+            action.enabled_steps().any(|(i, _)| i >= paused.from)
+        });
     let gate =
         if remaining { continuation_gate(saved, service).and_then(|live| continuation_gate(paused.gate, live)) } else { Ok(saved.or(service).or(paused.gate)) };
     let gate = match gate {
@@ -1503,11 +1843,9 @@ pub fn resume(app: &mut PhotocraftApp, fields: &serde_json::Map<String, Value>) 
     // A kept gate belongs to the action automation wrote: it takes the gate again as it plays
     // ([`play_owned`]), while its callers and the rest of the set keep the gate they had.
     let gate = if paused.kept { service.or(saved) } else { gate };
-    // The rest plays by name: refuse it when an action of the paused call changed meanwhile, so a
-    // new action of the same name never plays from the old one's step. With nothing left to play,
-    // the call simply ends. (Another document coming to the front fails `history.resume` above.)
-    let list = &app.session.actions.list;
-    if remaining && paused.played.iter().any(|a| list.iter().find(|b| b.name == a.name) != Some(a)) {
+    // Every caller needs a captured occurrence before the two lists can be paired.
+    let rows: Option<Vec<usize>> = paused.played.iter().rev().map(|occurrence| occurrence.resolve(&app.session)).collect();
+    if paused.played.len() != paused.callers.len() + 1 || (remaining && rows.is_none()) {
         let error = "the action changed while it was paused";
         actions_cmds::finish_pending_history(&mut app.session);
         restore_recording(app, owner.as_ref());
@@ -1518,15 +1856,19 @@ pub fn resume(app: &mut PhotocraftApp, fields: &serde_json::Map<String, Value>) 
     }
     // The paused action goes on, then each action that called it, inside its callers' frames:
     // replay starts at the outermost, which replays the inner ones first.
-    let frames: Vec<(String, usize)> = paused.callers.iter().rev().cloned().chain(std::iter::once((paused.action.clone(), paused.from))).collect();
-    let Some(((outer, outer_from), inner)) = frames.split_first() else {
-        return Err("this dialog doesn't belong to a paused action".into());
-    };
-    let params = json!({"action": outer, "from": outer_from});
+    let positions = paused.callers.iter().rev().map(|(_, from)| *from).chain(std::iter::once(paused.from));
+    let frames: Vec<_> = rows.into_iter().flatten().zip(positions).collect();
     // A dialog's own step runs on its confirm; a paced wait's step already ran and was counted.
     let own = u64::from(!paused.timed);
     app.session.authorize = gate;
-    let mut played = play_owned(app, &params, owner, inner);
+    let mut played = if let Some(((outer, outer_from), inner)) = frames.split_first() {
+        play_owned(app, &resume_target(*outer, *outer_from), owner, inner)
+    } else {
+        // A completed dialog with no remaining work never replays a different action.
+        actions_cmds::finish_pending_history(&mut app.session);
+        restore_recording(app, owner.as_ref());
+        Ok(json!({"action": paused.outermost(), "ran": 0}))
+    };
     // Paused again at a later dialog of the same call: that dialog carries the rest of the set.
     if let Ok(v) = &played
         && let Some(dialog) = v.get("paused").and_then(waiting_dialog)
@@ -1553,8 +1895,7 @@ pub fn resume(app: &mut PhotocraftApp, fields: &serde_json::Map<String, Value>) 
         && v.get("paused").is_none()
         && v.get("stopped").is_none()
     {
-        let list = &app.session.actions.list;
-        let rest: Vec<usize> = paused.then.iter().map_while(|then| list.iter().position(|a| a == then)).collect();
+        let rest: Vec<usize> = paused.then.iter().map_while(|then| then.resolve(&app.session)).collect();
         match play_targets(app, &rest, ran) {
             Ok(Some(r)) => played = Ok(r),
             Ok(None) => {}
@@ -1589,6 +1930,7 @@ pub fn stopped(app: &mut PhotocraftApp, fields: &serde_json::Map<String, Value>)
 pub fn panel_menu(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
     let mut act: Option<&str> = None;
     let recording = app.session.actions.recording.is_some();
+    let library_idle = library::idle(app, "actions.reset").is_ok();
     let any = !app.session.actions.list.is_empty();
     let selected = app.ui.actions.selected.is_some_and(|i| i < app.session.actions.list.len());
     let can_delete = selected && (!recording || app.ui.actions.selected_step.is_some());
@@ -1641,8 +1983,17 @@ pub fn panel_menu(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
         act = Some("toolRecording");
     }
     ui.separator();
-    if ui.button(tl!("Load Actions…")).clicked() {
+    if ui.add_enabled(library_idle, egui::Button::new(tl!("Clear All Actions"))).clicked() {
+        act = Some("clearAll");
+    }
+    if ui.add_enabled(library_idle, egui::Button::new(tl!("Reset Actions…"))).clicked() {
+        act = Some("reset");
+    }
+    if ui.add_enabled(library_idle, egui::Button::new(tl!("Load Actions…"))).clicked() {
         act = Some("load");
+    }
+    if ui.add_enabled(library_idle, egui::Button::new(tl!("Replace Actions…"))).clicked() {
+        act = Some("replace");
     }
     // A selected set folder saves even when empty, as Photoshop saves an empty set.
     let set_selected = app.ui.actions.selected_set.as_ref().is_some_and(|set| photocraft_engine::actions_edit_cmds::set_names(&app.session).contains(set));
@@ -1683,6 +2034,9 @@ pub fn panel_menu(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
         ),
         "insertMenu" => menu_item::open(app),
         "load" => load_dialog(app),
+        "clearAll" => library::open(app, library::Kind::Clear),
+        "reset" => library::open(app, library::Kind::Reset),
+        "replace" => library::open(app, library::Kind::Replace),
         "newSet" => new_set_dialog(app),
         "stop" => insert_stop_dialog(app),
         "playbackOptions" => playback::open_dialog(app),
@@ -1703,7 +2057,7 @@ struct DragRow {
 }
 
 /// Drops use an insertion line, converted to the final index expected by actions.move.
-fn drag_row(ui: &egui::Ui, response: &egui::Response, row: DragRow, t: &Tokens) -> Option<(DragRow, usize)> {
+fn drag_row(ui: &egui::Ui, response: &egui::Response, row: DragRow, t: &Tokens) -> Option<(DragRow, usize, usize)> {
     response.dnd_set_drag_payload(row);
     let source = response.dnd_hover_payload::<DragRow>()?;
     if source.step.is_some() != row.step.is_some() || (source.step.is_some() && source.action != row.action) {
@@ -1716,10 +2070,12 @@ fn drag_row(ui: &egui::Ui, response: &egui::Response, row: DragRow, t: &Tokens) 
     let to = if from < slot { slot.saturating_sub(1) } else { slot };
     let y = if after { response.rect.bottom() } else { response.rect.top() };
     ui.painter().line_segment([pos2(response.rect.left() + 22.0, y), pos2(response.rect.right(), y)], Stroke::new(2.0, t.accent));
-    response.dnd_release_payload::<DragRow>().map(|source| (*source, to))
+    response.dnd_release_payload::<DragRow>().map(|source| (*source, to, row.action))
 }
 
-fn move_row(app: &mut PhotocraftApp, source: DragRow, to: usize) {
+fn move_row(app: &mut PhotocraftApp, source: DragRow, to: usize, target: usize) {
+    let Some(target) = app.session.actions.list.get(target) else { return };
+    let (set, slot) = (target.set.clone(), target.set_slot);
     let mut params = json!({"action": source.action, "to": to});
     if let Some(step) = source.step {
         params["step"] = json!(step);
@@ -1736,11 +2092,9 @@ fn move_row(app: &mut PhotocraftApp, source: DragRow, to: usize) {
             app.ui.actions.expanded.insert(to, expanded);
         }
         app.ui.actions.select(to, None);
-        // Dropped among another set's actions: the action joins that set (the row above wins).
-        let list = &app.session.actions.list;
-        let neighbour = to.checked_sub(1).and_then(|j| list.get(j)).or_else(|| list.get(to + 1)).and_then(|a| a.set.clone());
-        if list.get(to).is_some_and(|a| a.set != neighbour) {
-            let _ = app.run("actions.assignSet", json!({"action": to, "set": neighbour}));
+        // The displayed target owns the drop even when raw list positions interleave folders.
+        if app.session.actions.list.get(to).is_some_and(|a| a.set != set || a.set_slot != slot) {
+            let _ = app.run("actions.assignSet", json!({"action": to, "set": set, "setSlot": slot}));
         }
     }
 }
@@ -1748,10 +2102,10 @@ fn move_row(app: &mut PhotocraftApp, source: DragRow, to: usize) {
 /// Keep the selection and disclosure rows on the new copy after the engine edits the list.
 fn duplicate_selection(app: &mut PhotocraftApp) -> Result<Value, String> {
     if app.ui.actions.selected.is_none()
-        && let Some(set) = app.ui.actions.selected_set.clone()
+        && let Some(set) = selected_set(app).map(str::to_owned)
     {
         let count = app.session.actions.list.len();
-        let result = app.run("actions.duplicate", json!({"set": set}))?;
+        let result = app.run("actions.duplicate", json!({"set": set, "setSlot": app.ui.actions.selected_set_slot}))?;
         if let (Some(at), Some(added)) = (result["index"].as_u64(), result["actions"].as_u64())
             && let (Ok(at), Ok(added)) = (usize::try_from(at), usize::try_from(added))
             && at <= count
@@ -1760,6 +2114,7 @@ fn duplicate_selection(app: &mut PhotocraftApp) -> Result<Value, String> {
             app.ui.actions.expanded.splice(at..at, std::iter::repeat_n(false, added));
         }
         app.ui.actions.selected_set = result["set"].as_str().map(str::to_owned);
+        app.ui.actions.selected_set_slot = result["setSlot"].as_u64().and_then(|slot| usize::try_from(slot).ok());
         app.ui.actions.selected = None;
         app.ui.actions.selected_step = None;
         return Ok(result);
@@ -1904,23 +2259,53 @@ struct Row {
     disabled: std::collections::BTreeSet<usize>,
     dialogs: std::collections::BTreeSet<usize>,
     set: Option<String>,
+    set_slot: Option<usize>,
     color: String,
 }
 
-/// The panel's order: actions outside any set first, then each set folder (in order of first
-/// appearance) with its actions. Indices are into the engine's flat list.
-fn display_order(rows: &[Row]) -> Vec<usize> {
-    let mut order: Vec<usize> = rows.iter().enumerate().filter(|(_, r)| r.set.is_none()).map(|(i, _)| i).collect();
-    let mut sets: Vec<&str> = Vec::new();
-    for r in rows {
-        if let Some(set) = r.set.as_deref()
-            && !sets.contains(&set)
-        {
-            sets.push(set);
-        }
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+struct Folder {
+    name: String,
+    slot: Option<usize>,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum PanelRow {
+    Action(usize),
+    Set(Folder, usize),
+}
+
+/// Keep implicit folders in their established order and explicit occurrences in archive order.
+fn display_order(rows: &[Row], empty: &[String], explicit: &[String]) -> Vec<PanelRow> {
+    let mut order = Vec::new();
+    let mut folders = std::collections::HashMap::<Folder, Vec<usize>>::new();
+    let mut implicit = Vec::new();
+    for (index, row) in rows.iter().enumerate() {
+        let Some(name) = &row.set else {
+            order.push(PanelRow::Action(index));
+            continue;
+        };
+        let slot = row.set_slot.filter(|&slot| explicit.get(slot) == Some(name));
+        let folder = Folder { name: name.clone(), slot };
+        let entries = folders.entry(folder.clone()).or_insert_with(|| {
+            if slot.is_none() {
+                implicit.push(folder);
+            }
+            Vec::new()
+        });
+        entries.push(index);
     }
-    for set in sets {
-        order.extend(rows.iter().enumerate().filter(|(_, r)| r.set.as_deref() == Some(set)).map(|(i, _)| i));
+    for name in empty {
+        let folder = Folder { name: name.clone(), slot: None };
+        folders.entry(folder.clone()).or_insert_with(|| {
+            implicit.push(folder);
+            Vec::new()
+        });
+    }
+    for folder in implicit.into_iter().chain(explicit.iter().enumerate().map(|(slot, name)| Folder { name: name.clone(), slot: Some(slot) })) {
+        let entries = folders.remove(&folder).unwrap_or_default();
+        order.push(PanelRow::Set(folder, entries.len()));
+        order.extend(entries.into_iter().map(PanelRow::Action));
     }
     order
 }
@@ -1974,46 +2359,29 @@ fn draw_set_header(ui: &mut egui::Ui, set: &str, count: u64, collapsed: bool, se
     SetHeaderResult { toggled, picked, save }
 }
 
-/// The sets New Set made that hold no action yet: empty folder rows after the rest. Returns the
-/// set whose row was clicked (whether it toggles, whether it selects) and the set whose Save Set…
-/// was chosen.
-fn draw_empty_sets(app: &PhotocraftApp, ui: &mut egui::Ui, rows: &[Row], t: &Tokens) -> (Option<(String, bool, bool)>, Option<String>) {
-    let (mut clicked, mut save) = (None, None);
-    for set in app.session.actions.sets.iter().filter(|set| !rows.iter().any(|r| r.set.as_ref() == Some(*set))) {
-        let selected = app.ui.actions.selected.is_none() && app.ui.actions.selected_set.as_ref() == Some(set);
-        let collapsed = app.ui.actions.collapsed_sets.contains(set);
-        let result = draw_set_header(ui, set, 0, collapsed, selected, t);
-        if result.toggled || result.picked {
-            clicked = Some((set.clone(), result.toggled, result.picked));
-        }
-        if result.save {
-            save = Some(set.clone());
-        }
-    }
-    (clicked, save)
-}
-
-fn action_context_menu(app: &mut PhotocraftApp, response: &egui::Response, index: usize, name: &str, swatch: &str) {
+fn action_context_menu(app: &mut PhotocraftApp, response: &egui::Response, index: usize, swatch: &str) {
     egui::Popup::context_menu(response).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside).show(|ui| {
         ui.label(tl!("Keyboard Shortcuts"));
-        let current = app.session.prefs().shortcuts.get(&shortcut_id(name)).cloned().unwrap_or_default();
-        // Photoshop's Action Options: a function key, with Shift and Command (#7646).
-        let (key, mut shift, mut command) = photocraft_engine::atn_cmds::parse_function_key(&current).unwrap_or((0, false, false));
-        for number in std::iter::once(0).chain(1..=12) {
-            let label = if number == 0 { tl!("None").to_string() } else { format!("F{number}") };
-            if ui.selectable_label(key == number, label).clicked() {
-                let chosen = if number == 0 { String::new() } else { photocraft_engine::atn_cmds::function_key_name(number, shift, command) };
-                let _ = assign_shortcut(app, name, &chosen);
-                ui.close();
+        {
+            let current = actions_cmds::action_shortcut(&app.session, index).unwrap_or_default();
+            // Photoshop's Action Options: a function key, with Shift and Command (#7646).
+            let (key, mut shift, mut command) = photocraft_engine::atn_cmds::parse_function_key(current).unwrap_or((0, false, false));
+            for number in std::iter::once(0).chain(1..=12) {
+                let label = if number == 0 { tl!("None").to_string() } else { format!("F{number}") };
+                if ui.selectable_label(key == number, label).clicked() {
+                    let chosen = if number == 0 { String::new() } else { photocraft_engine::atn_cmds::function_key_name(number, shift, command) };
+                    let _ = assign_shortcut(app, index, &chosen);
+                    ui.close();
+                }
             }
+            ui.add_enabled_ui(key > 0, |ui| {
+                let command_label = if cfg!(target_os = "macos") { tl!("Command") } else { tl!("Ctrl") };
+                let toggled = ui.checkbox(&mut shift, tl!("Shift")).changed() | ui.checkbox(&mut command, command_label).changed();
+                if toggled {
+                    let _ = assign_shortcut(app, index, &photocraft_engine::atn_cmds::function_key_name(key, shift, command));
+                }
+            });
         }
-        ui.add_enabled_ui(key > 0, |ui| {
-            let command_label = if cfg!(target_os = "macos") { tl!("Command") } else { tl!("Ctrl") };
-            let toggled = ui.checkbox(&mut shift, tl!("Shift")).changed() | ui.checkbox(&mut command, command_label).changed();
-            if toggled {
-                let _ = assign_shortcut(app, name, &photocraft_engine::atn_cmds::function_key_name(key, shift, command));
-            }
-        });
         ui.separator();
         ui.menu_button(tl!("Color"), |ui| {
             for (id, label) in [
@@ -2036,8 +2404,12 @@ fn action_context_menu(app: &mut PhotocraftApp, response: &egui::Response, index
 }
 
 pub fn panel(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
+    if app.ui.actions.slot_revision != app.session.actions.set_rows_revision {
+        library_slots_changed(app);
+    }
     let t = Tokens::get(ui.ctx());
     let recording = app.session.actions.recording;
+    let shortcuts: Vec<_> = actions_cmds::action_shortcuts(&app.session).into_iter().map(|key| key.map(str::to_owned)).collect();
     let rows: Vec<Row> = app
         .session
         .actions
@@ -2050,6 +2422,7 @@ pub fn panel(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
             disabled: a.disabled.clone(),
             dialogs: a.dialogs.clone(),
             set: a.set.clone(),
+            set_slot: a.set_slot,
             color: a.color.clone(),
         })
         .collect();
@@ -2071,8 +2444,8 @@ pub fn panel(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
     let mut renamed = None;
     let mut toggled = None;
     let mut dialog_toggled = None;
-    let mut set_toggled: Option<(String, bool, bool)> = None;
-    let mut save_set: Option<String> = None;
+    let mut set_toggled: Option<(Folder, bool, bool)> = None;
+    let mut save_set: Option<Folder> = None;
     let max_h = (ui.available_height() - 38.0).max(0.0);
     let mut play_idx: Option<Vec<usize>> = None;
     let mut moved = None;
@@ -2090,26 +2463,29 @@ pub fn panel(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
             ui.label(egui::RichText::new(tl!("Record ● a sequence of edits, then play ▶ it on any document.")).color(t.text_faint).size(11.5));
         }
         scroll_actions_during_drag(ui);
-        let mut shown_set: Option<&str> = None;
-        for i in display_order(&rows) {
-            let Row { name, steps, disabled, dialogs, set, color: swatch } = &rows[i];
-            // A set folder row before the first of its actions; collapsed folders hide them.
-            if let Some(set) = set.as_deref()
-                && shown_set != Some(set)
-            {
-                shown_set = Some(set);
-                let collapsed = app.ui.actions.collapsed_sets.iter().any(|c| c == set);
-                let count = rows.iter().filter(|r| r.set.as_deref() == Some(set)).count() as u64;
-                let selected = app.ui.actions.selected.is_none() && app.ui.actions.selected_set.as_deref() == Some(set);
-                let result = draw_set_header(ui, set, count, collapsed, selected, &t);
-                if result.toggled || result.picked {
-                    set_toggled = Some((set.to_string(), result.toggled, result.picked));
+        let mut collapsed = false;
+        for row in display_order(&rows, &app.session.actions.sets, &app.session.actions.set_rows) {
+            let i = match row {
+                PanelRow::Action(index) => index,
+                PanelRow::Set(folder, count) => {
+                    collapsed = folder
+                        .slot
+                        .map_or_else(|| app.ui.actions.collapsed_sets.contains(&folder.name), |slot| app.ui.actions.collapsed_set_slots.contains(&slot));
+                    let selected = app.ui.actions.selected.is_none()
+                        && app.ui.actions.selected_set.as_ref() == Some(&folder.name)
+                        && app.ui.actions.selected_set_slot == folder.slot;
+                    let result = ui.push_id(&folder, |ui| draw_set_header(ui, &folder.name, count as u64, collapsed, selected, &t)).inner;
+                    if result.toggled || result.picked {
+                        set_toggled = Some((folder.clone(), result.toggled, result.picked));
+                    }
+                    if result.save {
+                        save_set = Some(folder);
+                    }
+                    continue;
                 }
-                if result.save {
-                    save_set = Some(set.to_string());
-                }
-            }
-            if set.as_deref().is_some_and(|set| app.ui.actions.collapsed_sets.iter().any(|c| c == set)) {
+            };
+            let Row { name, steps, disabled, dialogs, set, color: swatch, .. } = &rows[i];
+            if set.is_some() && collapsed {
                 continue;
             }
             let indent = if set.is_some() { 14.0 } else { 0.0 };
@@ -2159,11 +2535,10 @@ pub fn panel(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
                 ui.painter().text(
                     pos2(rect.right() - 8.0, rect.center().y),
                     Align2::RIGHT_CENTER,
-                    app.session
-                        .prefs()
-                        .shortcuts
-                        .get(&shortcut_id(name))
-                        .filter(|s| !s.is_empty())
+                    shortcuts
+                        .get(i)
+                        .and_then(Option::as_deref)
+                        .filter(|key| !key.is_empty())
                         .map_or_else(|| step_count(nsteps, disabled.len()), |key| format!("{key} · {}", step_count(nsteps, disabled.len()))),
                     egui::FontId::proportional(11.0),
                     t.text_faint,
@@ -2187,7 +2562,7 @@ pub fn panel(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
             }
             // Clicks inside stay open, so Shift and Command can both be ticked; every item that
             // finishes closes the menu itself.
-            action_context_menu(app, &resp, i, name, swatch);
+            action_context_menu(app, &resp, i, swatch);
             if resp.double_clicked() && !button_mode {
                 // Photoshop renames in place when the name itself is double-clicked.
                 if resp.interact_pointer_pos().is_some_and(|p| name_rect.expand2(vec2(4.0, 13.0)).contains(p)) {
@@ -2204,9 +2579,6 @@ pub fn panel(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
                 dialog_toggled = dialog_toggled.or(events.dialog_toggled);
             }
         }
-        let (empty_toggled, empty_save) = draw_empty_sets(app, ui, &rows, &t);
-        set_toggled = set_toggled.take().or(empty_toggled);
-        save_set = save_set.take().or(empty_save);
     });
     if let Some((action, step)) = toggled {
         let _ = app.run("actions.toggle", json!({"action": action, "step": step}));
@@ -2219,15 +2591,22 @@ pub fn panel(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
         if pick {
             app.ui.actions.selected = None;
             app.ui.actions.selected_step = None;
-            app.ui.actions.selected_set = Some(set.clone());
+            app.ui.actions.selected_set = Some(set.name.clone());
+            app.ui.actions.selected_set_slot = set.slot;
+            app.ui.actions.slot_revision = app.session.actions.set_rows_revision;
         }
         // The disclosure triangle collapses or expands the set and leaves the selection alone.
         if toggle {
-            match app.ui.actions.collapsed_sets.iter().position(|c| *c == set) {
-                Some(i) => {
-                    app.ui.actions.collapsed_sets.remove(i);
+            if let Some(slot) = set.slot {
+                if let Some(index) = app.ui.actions.collapsed_set_slots.iter().position(|&value| value == slot) {
+                    app.ui.actions.collapsed_set_slots.remove(index);
+                } else {
+                    app.ui.actions.collapsed_set_slots.push(slot);
                 }
-                None => app.ui.actions.collapsed_sets.push(set),
+            } else if let Some(index) = app.ui.actions.collapsed_sets.iter().position(|name| *name == set.name) {
+                app.ui.actions.collapsed_sets.remove(index);
+            } else {
+                app.ui.actions.collapsed_sets.push(set.name);
             }
         }
     }
@@ -2241,8 +2620,8 @@ pub fn panel(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
     if let Some((index, name)) = renamed {
         rename_action(app, index, name);
     }
-    if let Some((source, to)) = moved {
-        move_row(app, source, to);
+    if let Some((source, to, target)) = moved {
+        move_row(app, source, to, target);
     }
     ui.add_space(4.0);
     ui.horizontal(|ui| {
@@ -2351,7 +2730,7 @@ struct StepRowsContext<'a> {
 
 #[derive(Default)]
 struct StepRowEvents {
-    moved: Option<(DragRow, usize)>,
+    moved: Option<(DragRow, usize, usize)>,
     toggled: Option<(usize, usize)>,
     dialog_toggled: Option<(usize, usize)>,
 }

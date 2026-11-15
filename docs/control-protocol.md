@@ -208,7 +208,7 @@ store expose and persist the same setting; scripts keep using canonical command 
 | `type.hitTest` | `{"layer":id?,"x":px,"y":px}`: character under a document point. No `layer` picks the topmost visible type layer there. Result `{"layer","index","line","inside"}` |
 | `type.caret` | `{"layer":id?,"index":char}`: caret segment in document pixels, `{"index","line","segment":[[x,y],[x,y]]}` (rotated and vertical type included) |
 | `type.navigate` | `{"layer":id?,"index":char,"move":"wordPrev\|wordNext\|linePrev\|lineNext\|lineStart\|lineEnd\|start\|end","x":px?}`: neighbouring caret. `x` keeps the column across line moves. Result `{"index"}` |
-| `actions.list` | `{}` → `{actions:[{name, steps}], recording}` (the name being recorded, or null) |
+| `actions.list` | `{}` → `{actions:[{name, steps, set, setSlot?}], sets, setRows?, recording, toolRecording}`. `sets` lists distinct captions, while `setRows` lists physical folders in order, including empty folders and repeated captions. |
 | `actions.get` | `{"action": name or index}` → `{name, steps:[[id, params], …], disabled:[step, …]}`. `steps` is the shape `file.automate.batch` and droplets take; `disabled` lists the 0-based steps playback skips |
 | `actions.record` | `{"name":"Red"}` starts a new action (default name `Action N`). `{"action": name or index}` appends to one that exists |
 | `actions.stop` | `{}` → `{action, steps}`. Copies replayable journal entries since `actions.record` (queries and action-editing commands omitted). For portable playback, an active `layer` id is dropped only when it is the sole selected layer and does not supply source content (`layer.new.frame`, `select.loadSelection`, `type.createSelection`, `edit.checkSpelling`; a Check Spelling step keeps only `allLayers`, as the reference application's step does). Otherwise, including when several layers are selected, it is recorded by its unique name; `layer.select` records `{"name":"Layer","occurrence":0}`. Type tool keystrokes on a new layer fold into its `type.create` step; edits on an existing text layer retain separate replacements so styled text between edited spans survives replay. For commands other than `layer.select`, ambiguous layer names keep the id and require a unique name for portable playback |
@@ -238,14 +238,15 @@ Select an action and press Record to append steps; the plus button starts a new 
 A final `["view.fitOnScreen", {}]` step fits the resized document when the canvas is laid out.
 Headless playback reports unsupported view commands as failed steps.
 
-In the desktop Actions panel, right-click an action to assign a function key (F1–F12),
-or choose None to remove it. The binding follows the action name, regardless of the selected
-row, and is saved in preferences. For example, the existing `edit.keyboardShortcuts` command
-accepts `{"set":{"actions.play:My action":"F6"},"allowUnknown":true,"removeConflicts":false}`.
-A named action takes precedence over the ordinary menu shortcut while it exists and is bound;
-removing its binding or deleting it restores that menu shortcut. The panel moves a key away
-from another action when assigning it. Action playback still checks each nested command's
-automation permissions.
+In the desktop Actions panel, right-click an action occurrence to assign a function key (F1–F12),
+or choose None to remove it. The panel stores the binding by stable occurrence ID (`actions.playById:<id>`),
+so duplicate names can have independent shortcuts. The name-based `actions.play:<name>` form remains
+supported for legacy bindings; for an action with both keys, its valid occurrence binding takes
+precedence. For example, `edit.keyboardShortcuts` accepts
+`{"set":{"actions.play:My action":"F6"},"allowUnknown":true,"removeConflicts":false}`
+for a legacy name-based binding. Removing the applicable binding or deleting the action restores
+the ordinary menu shortcut. The panel moves a key away from another action when assigning it.
+Action playback still checks each nested command's automation permissions.
 
 UI-level commands (`view.zoomIn`, `window.theme.pro`, `edit.search`, …) are also accepted by `engine.execute` and `ui.menu.invoke`.
 
@@ -381,9 +382,10 @@ group, `ui.dialog.set {"choice":"replace"}` then `ui.dialog.confirm` replaces, a
 `ui.dialog.cancel` imports nothing.
 
 Named New Document presets also persist with preferences (`presets.documents`) on desktop and
-web. File › New › Save Preset… saves the current form; the Saved tab selects a configuration or
-deletes it. Selection only fills the form: Create still runs `file.new`, and the document name
-is independent of the preset name. Settings include pixel width/height, resolution in ppi,
+web. In File › New, the save icon right of Name (Save Document Preset, proposing the next free
+`Saved N`) saves the current form; the Saved tab selects a configuration or deletes it.
+Selection only fills the form: Create still runs `file.new`, and the document name is
+independent of the preset name. Settings include pixel width/height, resolution in ppi,
 mode, depth, background, and display `unit` (`px`, `in`, `cm`, `mm`, `pt`, `pica`) and
 `resolutionUnit` (`in`, `cm`). The defaults match File › New. Background Color captures the
 toolbox colour as `backgroundColor: [r,g,b]` (0..1), so reusing it does not follow later toolbox
@@ -789,7 +791,12 @@ the named call again if desired.
 Actions sit in **set folders** (`set` on `actions.list` / `actions.get`, filled by Load Actions,
 written by Save Actions, changed with `actions.assignSet`): the panel shows loose actions first,
 then each set as a collapsible folder (`ui.actions.collapsedSets`); dropping an action among
-another set's rows moves it into that set. Each step has Photoshop's two toggles: the check
+another set's rows moves it into that set. When recording a new action or assigning it to a folder,
+pass the caption and its zero-based `setSlot` from `setRows` to select a particular occurrence.
+Omitting `setSlot` infers a physical folder only if the caption identifies one occurrence and no
+legacy group shares it. Explicit null keeps name-only assignment. For Duplicate, a numeric
+`setSlot` selects one physical folder, null selects the implicit group, and omission selects by
+caption. Each step has Photoshop's two toggles: the check
 (`actions.toggle`, skipped when off) and the **dialog** toggle (`actions.dialog`). Playing a
 step with its dialog on opens that command's dialog seeded with the recorded values and pauses:
 the play result carries `paused: {step, id, dialog}`, OK runs the dialog's values and continues

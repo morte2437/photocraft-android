@@ -524,6 +524,7 @@ fn a_click_on_the_frame_or_a_handle_never_snaps_it() {
 #[test]
 fn edit_undo_steps_the_crop_box_not_the_document() {
     let mut app = app(SampleType::U8);
+    app.run("actions.reset", json!({"confirm":true,"mode":"append"})).unwrap();
     app.ui.crop_rect = Some([40.0, 30.0, 100.0, 70.0]);
     app.crop.default_frame = false;
     let before = app.ui.crop_rect.unwrap();
@@ -531,7 +532,8 @@ fn edit_undo_steps_the_crop_box_not_the_document() {
     drag(&mut app, &[[70.0, 50.0], [90.0, 50.0]], NONE); // move the frame right 20
     let moved = app.ui.crop_rect.unwrap();
     assert!((moved[0] - 60.0).abs() < 1e-3, "{moved:?}");
-    app.run("edit.undo", json!({})).unwrap();
+    crate::menus::invoke(&mut app, &egui::Context::default(), "edit.undo", json!({})).unwrap();
+    assert_eq!(app.session.actions.set_rows.len(), 1, "the library edit remains available");
     assert_eq!(app.ui.crop_rect, Some(before), "undo restores the box");
     assert_eq!(app.session.active().unwrap().history.past_len(), doc_steps, "the document is untouched");
     app.run("edit.redo", json!({})).unwrap();

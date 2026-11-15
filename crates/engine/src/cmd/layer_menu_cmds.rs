@@ -723,9 +723,12 @@ fn global_light(s: &mut Session, p: &Value) -> Result<Value> {
         Some(v) if v.is_finite() && v.abs() <= f64::from(f32::MAX) => Ok(v as f32),
         Some(_) => Err(bad("layer.layerStyle.globalLight", format!("{key} must be a finite number"))),
     };
-    let angle = f32_param("angle", cur.angle)?;
+    let raw_angle = f32_param("angle", cur.angle)?;
     let altitude = f32_param("altitude", cur.altitude)?.clamp(0.0, 90.0);
-    let angle = (angle + 180.0).rem_euclid(360.0) - 180.0;
+    let mut angle = (raw_angle + 180.0).rem_euclid(360.0) - 180.0;
+    if angle == -180.0 && raw_angle > 0.0 {
+        angle = 180.0;
+    }
     s.edit("Global Light", |doc, _| {
         doc.global_light.angle = angle;
         doc.global_light.altitude = altitude;
@@ -932,6 +935,16 @@ fn content_options(s: &mut Session, _: &Value) -> Result<Value> {
 
 /// The layer rendered alone (visible, its blend mode ignored) and trimmed to its pixels, as a
 /// one-layer document — what Export As does for a layer.
+/// The error [`layer_document`] gives for a layer with nothing on the canvas: an empty pixel
+/// layer, an adjustment layer, a layer entirely off the canvas.
+const EMPTY_LAYER: &str = "the layer is empty";
+
+/// Whether `e` is [`layer_document`]'s error for a layer with nothing on the canvas, which a
+/// several-layer export skips (#14806), rather than a real failure.
+pub fn is_empty_layer(e: &EngineError) -> bool {
+    matches!(e, EngineError::Other(msg) if msg == EMPTY_LAYER)
+}
+
 pub fn layer_document(doc: &Document, id: LayerId) -> Result<Document> {
     let l = doc.layer(id).ok_or(EngineError::NoLayer(id))?;
     let mut alone = l.clone();
@@ -952,7 +965,7 @@ pub fn layer_document(doc: &Document, id: LayerId) -> Result<Document> {
         }
     }
     if b.is_empty() {
-        return Err(other("the layer is empty"));
+        return Err(other(EMPTY_LAYER));
     }
     let fmt = doc.pixel_format();
     let mut out = Document::new(l.name.clone(), photocraft_doc::Size::new(b.width(), b.height()), doc.mode, doc.depth);
@@ -1070,7 +1083,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "layer.layerStyle.globalLight",
             "Global Light…",
             ["Layer", "Layer Style"],
-            r##"{"angle":-180..180=120,"altitude":0..90=30}"##,
+            r##"{"angle":-360..360=120,"altitude":0..90=30}"##,
             has_doc,
             global_light
         ),

@@ -51,7 +51,7 @@ const MAX_TEMPLATE_BYTES: usize = 2 * MAX_MAP_PIXELS + (1 << 20);
 const FITS: [(&[u8], &str); 2] = [(b"StrF", "stretch"), (b"Tile", "tile")];
 const UNDEFINED: [(&[u8], &str); 2] = [(b"RptE", "repeat"), (b"WrpA", "wrap")];
 
-use craft_psd::displace_map::{EmbeddedMap, parse_map};
+use craft_psd_displace::displace_map::{EmbeddedMap, parse_map};
 
 fn fltr_map(item: &Descriptor) -> Option<EmbeddedMap<'_>> {
     match get_desc(item, "Fltr")?.get(MAP_KEY)? {
@@ -198,7 +198,7 @@ pub fn embed_map(params: &J, map: &Image) -> Option<J> {
     let vertical = if map.ch >= 3 { 1 } else { 0 };
     let byte = |v: f32| (v.clamp(0.0, 1.0) * 255.0).round() as u8;
     let pixels = || map.data.chunks_exact(map.ch).take(n);
-    let planes = craft_psd::displace_map::write_map_iter(
+    let planes = craft_psd_displace::displace_map::write_map_iter(
         usize::try_from(w).ok()?,
         usize::try_from(h).ok()?,
         pixels().map(|px| px.first().map_or(0, |v| byte(*v))),

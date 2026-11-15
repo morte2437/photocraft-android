@@ -227,20 +227,30 @@ impl LensMap {
     }
 }
 
-/// Smallest scale (percent) at which the corrected image covers the whole frame (Auto Scale).
+/// Smallest scale (percent) at which every output pixel samples fully inside the frame (Auto Scale).
 pub fn auto_scale(lc: &LensCorrection, frame: Rect) -> f64 {
+    // Under 2 px a side no pixel centre can sample half a pixel inside, so no scale would do.
+    if frame.width() < 2 || frame.height() < 2 {
+        return lc.scale;
+    }
     let covers = |scale: f64| {
         let m = LensMap::new(&LensCorrection { scale, ..lc.clone() }, frame);
-        let (x0, y0, x1, y1) = (frame.x0 as f64, frame.y0 as f64, frame.x1 as f64, frame.y1 as f64);
-        (0..=40).all(|i| {
-            let t = i as f64 / 40.0;
-            [(x0 + t * (x1 - x0), y0), (x0 + t * (x1 - x0), y1), (x0, y0 + t * (y1 - y0)), (x1, y0 + t * (y1 - y0))]
-                .iter()
-                .all(|&(x, y)| m.sample(x, y).is_some_and(|s| s.p[0] >= x0 - 0.5 && s.p[0] <= x1 + 0.5 && s.p[1] >= y0 - 0.5 && s.p[1] <= y1 + 0.5))
+        // Every border pixel centre must sample at least half a pixel inside the frame: `remap`'s
+        // 1 px soft edge mixes the Edge fill into anything closer (#13992). Each one is checked,
+        // since rotation or perspective with distortion can put the extreme between sparse
+        // points.
+        let (x0, y0, x1, y1) = (frame.x0 as f64 + 0.5, frame.y0 as f64 + 0.5, frame.x1 as f64 - 0.5, frame.y1 as f64 - 0.5);
+        let inside = |x: f64, y: f64| m.sample(x, y).is_some_and(|s| (x0..=x1).contains(&s.p[0]) && (y0..=y1).contains(&s.p[1]));
+        (0..frame.width()).all(|i| {
+            let x = x0 + i as f64;
+            inside(x, y0) && inside(x, y1)
+        }) && (0..frame.height()).all(|j| {
+            let y = y0 + j as f64;
+            inside(x0, y) && inside(x1, y)
         })
     };
     if covers(lc.scale) {
-        // Shrink while it still covers (never below the user's 100 % baseline when it covers).
+        // Already covered at the user's scale: Auto Scale only enlarges.
         return lc.scale;
     }
     let (mut lo, mut hi) = (lc.scale, lc.scale);
@@ -571,3 +581,7 @@ mod tests {
 
 #[cfg(test)]
 mod shared_sample_tests;
+
+#[cfg(test)]
+#[path = "lens_auto_scale_tests.rs"]
+mod lens_auto_scale_tests;
