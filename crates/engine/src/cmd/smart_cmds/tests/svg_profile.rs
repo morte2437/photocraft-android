@@ -1,5 +1,5 @@
 use super::*;
-use photocraft_cms::Builtin;
+use craft_cms::Builtin;
 
 const SVG: &[u8] = br##"<svg xmlns="http://www.w3.org/2000/svg" width="8" height="8"><rect width="8" height="8" fill="#808080"/></svg>"##;
 

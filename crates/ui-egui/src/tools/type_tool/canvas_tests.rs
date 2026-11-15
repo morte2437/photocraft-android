@@ -1905,7 +1905,10 @@ fn variable_font_axes_become_sliders_with_the_drawn_value() {
 /// Families the host serves are in the font menu before they are fetched.
 #[test]
 fn the_font_menu_lists_served_families() {
-    photocraft_text::served::add_families(["Served Menu Test Serif".to_string()]);
+    {
+        let _catalog = crate::served_fonts::changing_catalog();
+        photocraft_text::served::add_families(["Served Menu Test Serif".to_string()]);
+    }
     assert!(super::families().iter().any(|f| f == "Served Menu Test Serif"));
 }
 
@@ -2186,6 +2189,7 @@ mod multi_layer_formatting {
 
     #[test]
     fn options_font_family_preserves_peer_faces_and_batches_layer_flags() {
+        let _catalog = crate::served_fonts::steady_catalog();
         let (app, ids) = fixture();
         let before = ids.map(|id| style(&app, id, 0));
         let mut h = controls(app, false);
@@ -2284,6 +2288,7 @@ mod multi_layer_formatting {
     /// Here both happen on every pass.
     #[test]
     fn the_font_menu_settles_while_other_engines_register_fonts() {
+        let _catalog = crate::served_fonts::changing_catalog();
         let (app, _) = fixture();
         let mut pass = 0u32;
         let mut h = Harness::builder().with_size(vec2(1100.0, 800.0)).build_ui_state(
@@ -2310,6 +2315,7 @@ mod multi_layer_formatting {
     /// layers selected, sets them and is kept for new type, as the options bar's menu does.
     #[test]
     fn a_style_picked_in_the_character_sections_font_menu_is_kept_for_new_type() {
+        let _catalog = crate::served_fonts::steady_catalog();
         let (app, ids) = fixture();
         // The first style row under the family (so it is in view), other than the defaults'.
         let pick = super::super::styles("Inter").into_iter().find(|s| s != "Regular" && s != "Bold Italic").expect("Inter has several styles");

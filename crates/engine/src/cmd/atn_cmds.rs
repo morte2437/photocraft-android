@@ -214,3 +214,6 @@ mod recorded_tools_tests;
 
 #[cfg(test)]
 mod artboard_section_tests;
+
+#[cfg(test)]
+mod fade_step_tests;

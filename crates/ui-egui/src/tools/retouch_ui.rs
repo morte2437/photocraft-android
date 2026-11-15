@@ -1115,7 +1115,8 @@ pub fn options_bar(app: &mut PhotocraftApp, ui: &mut egui::Ui, tool: Tool) -> bo
                     let entries = st.history.entries();
                     let name =
                         if idx < entries.len() { entries.get(idx).cloned() } else { st.history.redo_labels().nth(idx - entries.len()).map(str::to_string) }?;
-                    if idx == 0 && name == "Open" {
+                    // The opening state is "Open" for a file and "New" for a new document (#14029).
+                    if idx == 0 && matches!(name.as_str(), "Open" | "New") {
                         Some(tl!("Paints from the document's opening state").to_string())
                     } else {
                         Some(crate::i18n::fmt(tl!("Source: {name}"), &[("name", &name)]))

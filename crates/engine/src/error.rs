@@ -144,6 +144,19 @@ pub(crate) fn io_open_error(name: &str, error: photocraft_io::IoError) -> Engine
     }
 }
 
+/// [`io_open_error`] for Open As: `name` is the real file name and `as_ext` the format asked for,
+/// so a file that cannot be read as it says so instead of naming a made-up `<stem>.<as>` file.
+pub(crate) fn io_open_as_error(name: &str, as_ext: &str, error: photocraft_io::IoError) -> EngineError {
+    match io_open_error(name, error) {
+        EngineError::Other(message) => {
+            let detail = message.strip_prefix(&format!("{name}: ")).unwrap_or(&message);
+            let format = as_ext.trim_start_matches('.').to_ascii_uppercase();
+            EngineError::Other(format!("\"{name}\" could not be opened as {format}: {detail}"))
+        }
+        other => other,
+    }
+}
+
 impl From<photocraft_raster::AllocationError> for EngineError {
     fn from(error: photocraft_raster::AllocationError) -> Self {
         Self::Other(format!("not enough memory for this operation ({error}); the document was not changed"))

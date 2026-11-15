@@ -19,6 +19,9 @@ fn directory_cleanup_preserves_unrelated_zst_files() {
     let mut writer = PcraftWriter::new();
     writer.save_dir(&empty_doc(), &bundle, &SaveOptions::default()).unwrap();
 
+    // An empty document writes no objects, so a save creates neither folder.
+    std::fs::create_dir_all(bundle.join("tiles")).unwrap();
+    std::fs::create_dir_all(bundle.join("blobs")).unwrap();
     let unrelated = bundle.join("tiles/personal-notes.zst");
     let orphan = bundle.join("blobs").join(format!("{}.zst", "b".repeat(64)));
     std::fs::write(&unrelated, b"unrelated file").unwrap();
@@ -58,12 +61,21 @@ mod permissions {
         }
     }
 
+    /// An empty document's save makes none of the object and preview folders; these tests
+    /// restrict or fill them, so they make them first.
+    fn make_dirs(bundle: &Path) {
+        for dir in ["tiles", "blobs", "composite"] {
+            std::fs::create_dir_all(bundle.join(dir)).unwrap();
+        }
+    }
+
     #[test]
     fn directory_save_without_previews_does_not_require_composite_read_permission() {
         let root = temp_dir("composite-search-only");
         let bundle = root.join("project.pcraft");
         let mut writer = PcraftWriter::new();
         writer.save_dir(&empty_doc(), &bundle, &SaveOptions::default()).unwrap();
+        make_dirs(&bundle);
         let restricted = RestoreMode::set(&bundle.join("composite"), 0o300);
         let mut changed = empty_doc();
         changed.name = "saved without previews".into();
@@ -81,6 +93,7 @@ mod permissions {
         let link = root.join("linked.pcraft");
         let mut writer = PcraftWriter::new();
         writer.save_dir(&empty_doc(), &bundle, &SaveOptions::default()).unwrap();
+        make_dirs(&bundle);
         symlink(&bundle, &link).unwrap();
         std::fs::write(bundle.join("thumb.png"), b"stale thumbnail").unwrap();
         std::fs::write(bundle.join("composite/preview.png"), b"stale composite").unwrap();
@@ -108,6 +121,7 @@ mod permissions {
         let bundle = root.join("project.pcraft");
         let mut writer = PcraftWriter::new();
         writer.save_dir(&empty_doc(), &bundle, &SaveOptions::default()).unwrap();
+        make_dirs(&bundle);
         let restricted = RestoreMode::set(&bundle.join("composite"), 0o300);
         let mut changed = empty_doc();
         changed.name = "saved with preview".into();
@@ -127,6 +141,7 @@ mod permissions {
         let mut writer = PcraftWriter::new();
         let original = empty_doc();
         writer.save_dir(&original, &bundle, &SaveOptions::default()).unwrap();
+        make_dirs(&bundle);
         let preview = bundle.join("composite/preview.png");
         std::fs::write(&preview, b"stale composite").unwrap();
         let restricted = RestoreMode::set(&bundle.join("composite"), 0o500);
@@ -156,6 +171,7 @@ mod permissions {
         let bundle = root.join("project.pcraft");
         let mut writer = PcraftWriter::new();
         writer.save_dir(&empty_doc(), &bundle, &SaveOptions::default()).unwrap();
+        make_dirs(&bundle);
         let orphan = bundle.join("tiles").join(format!("{}.zst", "d".repeat(64)));
         std::fs::write(&orphan, b"unreferenced object").unwrap();
         let restricted = RestoreMode::set(&bundle.join("tiles"), 0o500);

@@ -195,16 +195,7 @@ impl Default for LoadOptions {
 ///
 /// Bundles written here place the manifest first; re-zipped bundles may reorder entries.
 pub fn is_pcraft(bytes: &[u8]) -> bool {
-    if !bytes.starts_with(b"PK\x03\x04") {
-        return false;
-    }
-    if bytes.len() >= 30 {
-        let name_len = u16::from_le_bytes([bytes[26], bytes[27]]) as usize;
-        if bytes.get(30..30 + name_len) == Some(b"manifest.json") {
-            return true;
-        }
-    }
-    zip::ZipReader::new(bytes).is_ok_and(|archive| archive.find("manifest.json").is_some())
+    craft_pcraft_bundle::is_pcraft_zip(bytes)
 }
 
 /// Save to an in-memory ZIP bundle (one-shot; use [`PcraftWriter`] for
@@ -244,7 +235,8 @@ pub fn load_bytes_source(src: &dyn ByteSource, opts: &LoadOptions) -> Result<Doc
 
 pub fn load_path_with(path: &Path, opts: &LoadOptions) -> Result<Document> {
     if path.is_dir() {
-        store::load(&store::DirSource { root: path.to_path_buf() }, opts)
+        let source = store::DirSource::new(path, opts)?;
+        store::load(&source, opts)
     } else {
         let bytes = read::read_file(path)?;
         load_from_bytes_with(&bytes, opts)

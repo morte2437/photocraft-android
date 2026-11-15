@@ -242,6 +242,19 @@ fn dist(a: [f64; 2], b: [f64; 2]) -> f64 {
     (a[0] - b[0]).hypot(a[1] - b[1])
 }
 
+/// Is `p` within the grab radius `tol` of one of `r`'s end points?
+fn near_end(r: Ruler, p: [f64; 2], tol: f64) -> bool {
+    dist(p, r.start) <= tol || dist(p, r.end) <= tol
+}
+
+/// Is the pointer at document point `p` over the ruler's end points? The very hit test a press
+/// makes its decision with ([`near_end`], `dist` with [`tolerance`]), so the Ruler tool's ⌥ pointer
+/// shows exactly where an ⌥-drag starts the protractor arm (#12037).
+pub(crate) fn ruler_end_at(app: &PhotocraftApp, p: [f64; 2]) -> bool {
+    let tol = tolerance(app);
+    app.session.active().is_some_and(|d| d.doc.measurement.ruler.is_some_and(|r| near_end(r, p, tol)))
+}
+
 /// Shift constrains to 45° steps around `from`, as the reference does (#11985): on a diagonal step
 /// both legs take the smaller of |dx| and |dy| (signs kept), on a 0° or 90° step the dominant
 /// component stays and the other becomes 0, so the ruler never gets longer than the pointer's legs.
@@ -309,7 +322,7 @@ pub fn pointer(app: &mut PhotocraftApp, ev: ToolEvent, mods: egui::Modifiers) ->
             let near = |q: [f64; 2]| dist(p, q) <= tol;
             match cur {
                 // ⌥-drag from an end point starts the protractor arm at that vertex.
-                Some(mut r) if mods.alt && (near(r.start) || near(r.end)) => {
+                Some(mut r) if mods.alt && near_end(r, p, tol) => {
                     if near(r.end) && !near(r.start) {
                         std::mem::swap(&mut r.start, &mut r.end);
                     }
@@ -693,20 +706,45 @@ pub fn options_bar(app: &mut PhotocraftApp, ui: &mut egui::Ui, tool: Tool) -> bo
             // the colon (main's captions), so the colon follows the translation.
             let caption = |ui: &mut egui::Ui, text: &str| crate::panels::opt_label(ui, &format!("{text}:"));
             // Each caption names its field (the scrub link), so a screen reader reads what is shown.
+            // A value typed past the range becomes the closest one, and leaving the field opens the
+            // reference's alert (#11768).
+            let (marker_name, label_name) = (format!("{}:", tl!("Marker Size")), format!("{}:", tl!("Label Size")));
             caption(ui, tl!("Marker Size"));
-            let a = crate::widgets::value_field_whole(ui, &mut ms, 1.0..=10.0, "", 40.0);
+            // Read before the fields: they consume the arrow keys and the wheel they step with.
+            let stepped =
+                ui.input(|i| i.key_pressed(egui::Key::ArrowUp) || i.key_pressed(egui::Key::ArrowDown)) || crate::field_wheel::focused_field_wheeled(ui.ctx());
+            let (marker_slot, label_slot) =
+                (ui.make_persistent_id(egui::IdSalt::new("count-marker-size")), ui.make_persistent_id(egui::IdSalt::new("count-label-size")));
+            drop_decimal_points(ui, marker_slot);
+            let (a, marker_out) = crate::widgets::value_field_whole_alerting(ui, &marker_name, &mut ms, 1.0..=10.0, "", 40.0);
+            ui.data_mut(|d| d.insert_temp(marker_slot, a.id));
             caption(ui, tl!("Label Size"));
-            let b = crate::widgets::value_field_whole(ui, &mut ls, 8.0..=72.0, "", 44.0);
-            // One undo step per scrub (of a field or its caption), as the Gradient tool's Opacity.
-            let drag = |r: &egui::Response| {
-                let key = r.id.with("count-size-drag");
-                if r.drag_started() {
+            drop_decimal_points(ui, label_slot);
+            let (b, label_out) = crate::widgets::value_field_whole_alerting(ui, &label_name, &mut ls, 8.0..=72.0, "", 44.0);
+            ui.data_mut(|d| d.insert_temp(label_slot, b.id));
+            // One undo step per scrub (of a field or its caption), as the Gradient tool's Opacity,
+            // and per typed entry (each keystroke applies while typing). An arrow or wheel step is
+            // a step of its own, as before.
+            let edit = |r: &egui::Response| {
+                let key = r.id.with("count-size-edit");
+                if r.drag_started() || r.gained_focus() {
                     let n = ui.ctx().cumulative_pass_nr();
                     ui.data_mut(|d| d.insert_temp(key, n));
                 }
-                if r.changed() && r.dragged() { ui.data(|d| d.get_temp::<u64>(key)).map(|n| format!("count-size:{}:{n}", key.value())) } else { None }
+                let typed = (r.has_focus() || r.lost_focus()) && !stepped;
+                if r.changed() && (r.dragged() || typed) {
+                    ui.data(|d| d.get_temp::<u64>(key)).map(|n| format!("count-size:{}:{n}", key.value()))
+                } else {
+                    None
+                }
             };
-            let coalesce = drag(&a).or(drag(&b));
+            let coalesce = edit(&a).or(edit(&b));
+            if marker_out {
+                open_alert_once(app, MARKER_SIZE_RANGE_ALERT);
+            }
+            if label_out {
+                open_alert_once(app, LABEL_SIZE_RANGE_ALERT);
+            }
             if (a.changed() || b.changed()) && group.is_some() {
                 let mut p = count_size_params(ms, ls);
                 if let Some(k) = coalesce {
@@ -763,6 +801,36 @@ pub fn options_bar(app: &mut PhotocraftApp, ui: &mut egui::Ui, tool: Tool) -> bo
 }
 
 // ------------------------------------------------------------------ panels and dialogs
+
+/// The reference's alerts for a Marker Size or Label Size typed out of range (#11768).
+pub(crate) const MARKER_SIZE_RANGE_ALERT: &str = "An integer between 1 and 10 is required. Closest value inserted.";
+pub(crate) const LABEL_SIZE_RANGE_ALERT: &str = "An integer between 8 and 72 is required. Closest value inserted.";
+
+/// Opens the alert with `message` (English, translated here) unless it is already up.
+fn open_alert_once(app: &mut PhotocraftApp, message: &str) {
+    let message = tl!(message).to_owned();
+    let shown = app.ui.dialogs.iter().any(|d| d.kind == DialogKind::Error && d.fields.get("message").and_then(|m| m.as_str()) == Some(message.as_str()));
+    if !shown {
+        app.ui.open_dialog(DialogKind::Error, json!({ "message": message }).as_object().cloned().unwrap_or_default());
+    }
+}
+
+/// The Count tool's size fields take digits only, as the reference's do (#11768): a `.` or `,`
+/// typed, pasted or committed by an IME into the field whose id was saved under `slot` last frame
+/// is dropped, so "2.6" reads as 26. An IME commit left empty stays: it ends the composition.
+fn drop_decimal_points(ui: &mut egui::Ui, slot: egui::Id) {
+    let focused = ui.data(|d| d.get_temp::<egui::Id>(slot)).is_some_and(|id| ui.memory(|m| m.has_focus(id)));
+    if focused {
+        ui.input_mut(|i| {
+            for e in &mut i.events {
+                if let egui::Event::Text(t) | egui::Event::Paste(t) | egui::Event::Ime(egui::ImeEvent::Commit(t)) = e {
+                    t.retain(|c| c != '.' && c != ',');
+                }
+            }
+            i.events.retain(|e| !matches!(e, egui::Event::Text(t) | egui::Event::Paste(t) if t.is_empty()));
+        });
+    }
+}
 
 /// `count.setGroup` params for the options bar's Marker Size and Label Size fields, sent as JSON
 /// integers (the fields edit `f32`s; `8.0` is a float on the wire).
@@ -1308,3 +1376,7 @@ mod analysis_ruler_escape_tests;
 #[cfg(test)]
 #[path = "count_options_bar_tests.rs"]
 mod count_options_bar_tests;
+
+#[cfg(test)]
+#[path = "count_size_alert_tests.rs"]
+mod count_size_alert_tests;

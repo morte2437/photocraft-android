@@ -109,7 +109,7 @@ impl Look {
 #[derive(Clone, Default)]
 pub struct Screen {
     pub encode_srgb: bool,
-    pub transform: Option<std::sync::Arc<photocraft_cms::Transform>>,
+    pub transform: Option<std::sync::Arc<craft_cms::Transform>>,
 }
 
 impl Screen {
@@ -139,7 +139,8 @@ impl Screen {
             }
         }
         if let Some(t) = &self.transform {
-            t.apply(px.as_flattened_mut(), 4);
+            // The display transform is RGB → RGB; were it refused, the pixels stay unconverted.
+            let _ = t.apply(px.as_flattened_mut(), 4);
         }
     }
 }

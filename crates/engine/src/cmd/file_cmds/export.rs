@@ -203,7 +203,7 @@ fn bake_cube_layers(size: usize, title: &str, layers: &[&Layer], depth: photocra
 /// Backwards-compatible helper for exporting all visible top-level adjustments.
 pub fn bake_cube(doc: &Document, size: usize, title: &str) -> String {
     let layers: Vec<&Layer> = doc.layers.iter().filter(|l| l.visible && matches!(l.content, LayerContent::Adjustment(_))).collect();
-    bake_cube_layers(size.clamp(2, photocraft_cms::lutfile::MAX_SIZE), title, &layers, doc.depth)
+    bake_cube_layers(size.clamp(2, craft_cms::lutfile::MAX_SIZE), title, &layers, doc.depth)
 }
 
 /// Export either the whole visible stack (backward-compatible default), the Layers panel's
@@ -215,8 +215,8 @@ pub(super) fn color_lookup_tables(s: &mut Session, p: &Value) -> Result<Value> {
         None | Some(Value::Null) => 33,
         Some(v) => v.as_u64().ok_or_else(|| EngineError::BadParams { cmd: CMD.into(), msg: "size must be an integer".into() })?,
     };
-    if !(2..=photocraft_cms::lutfile::MAX_SIZE as u64).contains(&size) {
-        return Err(EngineError::BadParams { cmd: CMD.into(), msg: format!("size must be 2..={}", photocraft_cms::lutfile::MAX_SIZE) });
+    if !(2..=craft_cms::lutfile::MAX_SIZE as u64).contains(&size) {
+        return Err(EngineError::BadParams { cmd: CMD.into(), msg: format!("size must be 2..={}", craft_cms::lutfile::MAX_SIZE) });
     }
     let scope = match p.get("scope") {
         None | Some(Value::Null) => "all",

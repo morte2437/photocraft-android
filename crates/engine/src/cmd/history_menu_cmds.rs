@@ -145,9 +145,9 @@ mod tests {
         while s.is_enabled("history.stepBackward") {
             s.execute("history.stepBackward", json!({})).unwrap();
         }
-        assert_eq!(entries(&s), ["Open"]);
+        assert_eq!(entries(&s), ["New"]);
         assert!(s.execute("history.stepBackward", json!({})).is_err());
-        assert_eq!(entries(&s), ["Open"], "a refused step changes nothing");
+        assert_eq!(entries(&s), ["New"], "a refused step changes nothing");
     }
 
     #[test]
@@ -241,7 +241,7 @@ mod tests {
             for p in [json!({}), json!(null), json!([1]), json!({"state": -1}), json!("x")] {
                 assert!(s.execute(id, p.clone()).is_err(), "{id} {p}");
             }
-            assert_eq!(entries(&s), ["Open"]);
+            assert_eq!(entries(&s), ["New"]);
         }
     }
 }

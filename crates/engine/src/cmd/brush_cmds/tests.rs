@@ -1225,13 +1225,14 @@ fn strokes_convert_through_the_documents_cmyk_profile() {
     // A synthetic uncoated-like profile: heavier dot gain than the built-in coated CMYK (whose
     // params are the defaults here), so painted ink differs from the default conversion. The
     // compositors and composite exports enter the document's space; the stroke must too (#583).
-    let profile = photocraft_cms::synth::cmyk_profile(&photocraft_cms::synth::CmykParams {
+    let profile = craft_cms::synth::cmyk_profile(&craft_cms::synth::CmykParams {
         description: "Stroke Test Uncoated".into(),
         tvi: [0.26, 0.26, 0.26, 0.3],
         grid_a2b: 5,
         grid_b2a: 9,
         ..Default::default()
     })
+    .unwrap()
     .to_bytes();
     let cmyk_session = |tagged: bool| {
         let mut s = Session::new();

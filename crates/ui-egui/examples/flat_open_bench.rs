@@ -259,7 +259,7 @@ fn run_case(case: &Case, dir: &Path, quick: bool, reps: usize, cpu: bool) -> Res
     let peak_process_after_import = photocraft_testkit::perf::process_peak_rss_bytes();
 
     // Pass 2: the phases of the import on their own.
-    let format = photocraft_codecs::detect(&bytes).ok_or("unknown format")?;
+    let format = photocraft_formats::detect(&name, &bytes).and_then(photocraft_formats::Format::raster_codec).ok_or("unknown format")?;
     let keep = DecodeOptions { keep_orientation: true, ..Default::default() };
     for _ in 0..reps {
         let t = Instant::now();

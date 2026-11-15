@@ -1,7 +1,7 @@
 //! Original synthetic reader fixtures. No private document bytes or artwork are used.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-use photocraft_affinity::synth::{self, F, Method, tag};
+use craft_affinity::synth::{self, F, Method, tag};
 
 #[derive(Clone, Copy)]
 pub enum Marker {

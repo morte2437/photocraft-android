@@ -22,7 +22,7 @@ fn hue_tracks_run_between_the_neighbouring_bands() {
 #[test]
 fn preview_texture_uses_linear_document_display_encoding() {
     let mut doc = photocraft_doc::Document::new("test", photocraft_geom::Size::new(1, 1), photocraft_doc::ColorMode::Rgb, photocraft_doc::SampleType::F32);
-    doc.icc_profile = Some(photocraft_cms::Builtin::LinearSrgb.profile().to_bytes());
+    doc.icc_profile = Some(craft_cms::Builtin::LinearSrgb.profile().to_bytes());
     let mut color = photocraft_engine::color_cmds::ColorState::default();
     color.settings.monitor_profile = "srgb".into();
     let display = color.canvas_display(&doc).unwrap();
@@ -1030,7 +1030,7 @@ fn camera_raw_defaults_apply_when_a_raw_opens() {
     let st = app.session.active().unwrap();
     assert_eq!(st.doc.depth, photocraft_color::SampleType::U8, "Bit depth 8");
     assert_eq!(st.doc.resolution_dpi, 240.0, "Resolution");
-    let profile = st.doc.icc_profile.as_deref().and_then(|p| photocraft_cms::Profile::parse(p).ok()).map(|p| p.description).unwrap_or_default();
+    let profile = st.doc.icc_profile.as_deref().and_then(|p| craft_cms::Profile::parse(p).ok()).map(|p| p.description).unwrap_or_default();
     assert!(profile.to_lowercase().contains("srgb"), "Color space: {profile}");
     let layer = st.doc.layer(st.active_layer.unwrap()).unwrap();
     assert!(matches!(layer.content, photocraft_doc::LayerContent::Smart(_)), "Open as Smart Object");
@@ -1270,7 +1270,7 @@ fn open_with_settings(app: &mut PhotocraftApp, ctx: &egui::Context, dng: &[u8], 
 
 fn profile_name(app: &PhotocraftApp) -> String {
     let st = app.session.active().unwrap();
-    st.doc.icc_profile.as_deref().and_then(|p| photocraft_cms::Profile::parse(p).ok()).map(|p| p.description).unwrap_or_default()
+    st.doc.icc_profile.as_deref().and_then(|p| craft_cms::Profile::parse(p).ok()).map(|p| p.description).unwrap_or_default()
 }
 
 /// Camera Raw renders in its own space and converts to the workflow space last, so Open gives

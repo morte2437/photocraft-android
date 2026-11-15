@@ -1,6 +1,6 @@
 //! Recorded Replace Color samples are a Lab box, not a single RGB colour.
+use craft_cms::{Builtin, TransformOptions};
 use photocraft_algo::{selection, tone};
-use photocraft_cms::{Builtin, TransformOptions};
 use photocraft_doc::{PixelFormat, SampleType};
 use photocraft_geom::{Rect, TileCoord};
 use photocraft_raster::Surface;
@@ -107,7 +107,7 @@ pub(super) fn apply(s: &mut Session, p: &Value) -> Result<Option<Value>> {
     if format.mode != st.doc.mode {
         return Err(bad(CMD, "pixel layout does not match the document profile"));
     }
-    let transform = photocraft_cms::cached(&crate::color_cmds::document_profile(&st.doc), Builtin::LabD50.profile(), TransformOptions::default())
+    let transform = craft_cms::cached(&crate::color_cmds::document_profile(&st.doc), Builtin::LabD50.profile(), TransformOptions::default())
         .map_err(|e| bad(CMD, format!("Lab colour transform: {e}")))?;
     if transform.inputs() != format.mode.color_channels() || transform.outputs() != 3 || format.channels() != transform.inputs() + usize::from(format.alpha) {
         return Err(bad(CMD, "unsupported Lab colour-transform layout"));
@@ -132,7 +132,7 @@ pub(super) fn apply(s: &mut Session, p: &Value) -> Result<Option<Value>> {
         let bounds = edit_bounds(extent, selected.as_ref());
         let mut default = surface.default_pixel();
         let mut default_lab = [[0.0, 0.0, 0.0, 1.0]];
-        transform.convert_f32(&default, format.channels(), default_lab.as_flattened_mut(), 4, true);
+        transform.convert_f32(&default, format.channels(), default_lab.as_flattened_mut(), 4, true).map_err(crate::color_cmds::cms_err)?;
         let default_selected = selected.as_ref().map_or(1.0, |mask| mask.default_pixel()[0]);
         let default_changes = replace_sample(&format, &mut default, &default_lab[0], &range, fuzz, [h, sat, l], default_selected);
         let tiles = work_tiles(surface, selected.as_ref(), bounds, default_changes)?;
@@ -144,7 +144,7 @@ pub(super) fn apply(s: &mut Session, p: &Value) -> Result<Option<Value>> {
             }
             let mut raw = crate::allocation::read_region(surface, rect, "Replace Color")?;
             let mut lab = crate::allocation::filled(raw.len() / format.channels(), [0.0, 0.0, 0.0, 1.0], "Replace Color")?;
-            transform.convert_f32(&raw, format.channels(), lab.as_flattened_mut(), 4, true);
+            transform.convert_f32(&raw, format.channels(), lab.as_flattened_mut(), 4, true).map_err(crate::color_cmds::cms_err)?;
             let width = rect.width() as usize;
             let mut selection_row = crate::allocation::filled(width, 1.0, "Replace Color")?;
             let mut changed = false;

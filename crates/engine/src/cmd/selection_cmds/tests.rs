@@ -240,7 +240,7 @@ fn magic_wand_contiguous_and_modes() {
 fn color_range_prepared_query_matches_the_command_at_all_depths() {
     use photocraft_doc::{Color, ColorMode, SampleType, Size};
     for depth in [SampleType::U8, SampleType::U16, SampleType::F32] {
-        for profile in [None, Some(photocraft_cms::Builtin::DisplayP3.profile().to_bytes())] {
+        for profile in [None, Some(craft_cms::Builtin::DisplayP3.profile().to_bytes())] {
             let mut doc = Document::with_background("samples", Size::new(24, 12), ColorMode::Rgb, depth, Color::WHITE);
             doc.icc_profile = profile;
             let layer = doc.layers[0].surface_mut().unwrap();

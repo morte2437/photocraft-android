@@ -31,6 +31,8 @@ fn text_layer(app: &mut PhotocraftApp, orientation: &str) -> LayerId {
 }
 
 pub(super) fn bar(app: PhotocraftApp) -> Harness<'static, PhotocraftApp> {
+    // Load the fonts first: if they finish mid-test the bar swaps "Loading fonts…" for its menus and a click is lost (#13408).
+    let _ = photocraft_text::shared();
     let mut h = Harness::builder().with_size(egui::vec2(1200.0, 60.0)).build_ui_state(
         |ui, app: &mut PhotocraftApp| {
             ui.horizontal(|ui| super::options_bar(app, ui));

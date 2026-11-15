@@ -46,31 +46,15 @@
 
 mod cameras;
 mod color;
-mod cr2;
-mod cr3;
 mod demosaic;
 mod develop;
-mod dng;
 mod error;
-mod hasselblad;
-mod jxl;
-mod ljpeg;
 mod look;
-mod nefc;
 mod opcodes;
-mod orf;
 mod par;
-mod preview;
-mod raf;
-mod rafc;
-mod rw2;
 mod saturation;
 mod sensor;
-mod sony;
-mod sony_metadata;
-mod sraw;
-mod tiff;
-mod tiffep;
+mod shared;
 mod tone;
 
 #[cfg(feature = "testgen")]
@@ -82,11 +66,12 @@ pub use crate::develop::{DevelopOptions, Developed, RawInfo, WhiteBalance, devel
 pub use crate::error::RawError;
 pub use crate::look::{CameraLook, LookRejected, PROXY_EDGE, Reference, ToneCurve, fit_look};
 pub use crate::opcodes::{GainMap, MapPolynomial};
-pub use crate::preview::{DecodedPreview, Preview, PreviewColorSpace, embedded_jxl_preview, embedded_preview, embedded_preview_color_space, embedded_previews};
 pub use crate::sensor::{BlackLevels, Cfa, Rect, Sensor};
 pub use crate::tone::{Tone, retone};
-
-use crate::tiff::{Tiff, tag};
+pub use craft_raw::{
+    DecodedPreview, PreviewColorSpace, embedded_jpeg_preview, embedded_jpeg_preview_covering, embedded_preview, embedded_preview_color_space,
+    embedded_preview_covering,
+};
 
 /// Name of the output colour space of [`develop`].
 pub const OUTPUT_SPACE: &str = "ProPhoto RGB (ROMM primaries, D50, gamma 1.8)";
@@ -94,12 +79,7 @@ pub const OUTPUT_SPACE: &str = "ProPhoto RGB (ROMM primaries, D50, gamma 1.8)";
 /// The raw container's orientation, when recorded (CR3 metadata or TIFF IFD0).
 /// Useful for camera JPEGs that carry no orientation of their own.
 pub fn orientation(bytes: &[u8]) -> Option<u16> {
-    if bytes.get(4..12) == Some(b"ftypcrx ") {
-        return cr3::orientation(bytes);
-    }
-    let tiff = Tiff::new(bytes)?;
-    let ifd = tiff.ifd_at(tiff.first_ifd, 0)?;
-    tiff.tag_uint(&ifd, tag::ORIENTATION).filter(|o| (1..=8).contains(o)).map(|o| o as u16)
+    craft_raw::orientation(bytes)
 }
 
 /// Camera raw container families.
@@ -188,101 +168,44 @@ impl Limits {
     }
 }
 
-const PHOTOMETRIC_CFA: u32 = 32803;
-const PHOTOMETRIC_LINEAR_RAW: u32 = 34892;
-
-fn make_format(make: Option<&str>) -> RawFormat {
-    let m = make.unwrap_or("").to_ascii_uppercase();
-    if m.starts_with("NIKON") {
-        RawFormat::Nef
-    } else if m.starts_with("SONY") {
-        RawFormat::Arw
-    } else if m.starts_with("PENTAX") || m.starts_with("RICOH") {
-        RawFormat::Pef
-    } else if m.starts_with("OLYMPUS") || m.starts_with("OM DIGITAL") {
-        RawFormat::Orf
-    } else if m.starts_with("HASSELBLAD") {
-        RawFormat::Fff
-    } else {
-        RawFormat::TiffEp
-    }
-}
-
 /// Recognises a camera raw file from its bytes (cheap: header and IFDs only).
 pub fn identify(bytes: &[u8]) -> Option<RawFormat> {
-    if bytes.get(4..12) == Some(b"ftypcrx ") {
-        return Some(RawFormat::Cr3);
-    }
-    if bytes.starts_with(raf::MAGIC) {
-        return Some(RawFormat::Raf);
-    }
-    let t = Tiff::new(bytes)?;
-    match bytes.get(0..4) {
-        Some(b"IIRO" | b"IIRS" | b"MMOR") => return Some(RawFormat::Orf),
-        Some(b"IIU\0") => return Some(RawFormat::Rw2),
-        _ => {}
-    }
-    if bytes.get(8..11) == Some(b"CR\x02") {
-        return Some(RawFormat::Cr2);
-    }
-    let ifds = t.all_ifds();
-    if ifds.iter().any(|i| i.has(tag::DNG_VERSION)) {
-        return Some(RawFormat::Dng);
-    }
-    if ifds.iter().any(|i| matches!(t.tag_uint(i, tag::PHOTOMETRIC), Some(PHOTOMETRIC_CFA | PHOTOMETRIC_LINEAR_RAW))) {
-        let make = ifds.iter().find_map(|i| t.tag_ascii(i, tag::MAKE));
-        return Some(make_format(make.as_deref()));
-    }
-    if tiffep::is_sony_non_cfa(&t, &ifds) {
-        return Some(RawFormat::Arw);
-    }
-    None
+    craft_raw::probe(bytes).map(crate::shared::format)
 }
 
 /// `true` if `bytes` look like a camera raw file.
 pub fn is_raw(bytes: &[u8]) -> bool {
-    identify(bytes).is_some()
+    craft_raw::probe(bytes).is_some()
 }
 
 /// Reads the undeveloped sensor data and metadata.
 pub fn decode(bytes: &[u8], limits: &Limits) -> Result<Sensor, RawError> {
-    let format = identify(bytes).ok_or(RawError::NotRaw)?;
-    match format {
-        RawFormat::Cr3 => Err(RawError::unsupported("Canon CR3 (ISO BMFF / CRX) is not decoded yet")),
-        RawFormat::Raf => raf::decode(bytes, limits),
-        _ => {
-            let t = Tiff::new(bytes).ok_or(RawError::NotRaw)?;
-            match format {
-                RawFormat::Dng => dng::decode(&t, limits).map(lift_clipped),
-                RawFormat::Cr2 => cr2::decode(&t, limits),
-                RawFormat::Rw2 => rw2::decode(&t, limits),
-                RawFormat::Orf => orf::decode(&t, limits),
-                RawFormat::Fff => hasselblad::decode(&t, limits),
-                f => tiffep::decode(&t, f, limits),
-            }
-        }
+    let max_samples = usize::try_from(limits.max_pixels.saturating_mul(3).min(limits.max_alloc / 4)).unwrap_or(usize::MAX);
+    let mut shared_limits = craft_raw::Limits::default();
+    shared_limits.max_samples = max_samples;
+    let info = craft_raw::probe_info_with(bytes, &shared_limits).map_err(shared_error)?;
+    if info.width > limits.max_width as usize || info.height > limits.max_height as usize {
+        return Err(RawError::LimitExceeded(format!("dimensions {}×{} exceed {}×{}", info.width, info.height, limits.max_width, limits.max_height)));
     }
+    let image = craft_raw::decode_with(bytes, &shared_limits).map_err(shared_error)?;
+    Ok(crate::shared::adapt(image))
 }
 
-/// DNG writers can state a white level the sensor never reaches; samples stuck at the real saturation
-/// point are raised to it so they clip together (see `saturation.rs`).
-fn lift_clipped(mut s: Sensor) -> Sensor {
-    s.lift_clipped_samples();
-    s
+/// Decode a DNG JPEG XL preview under the app's existing allocation limits.
+pub fn embedded_jxl_preview(bytes: &[u8], limits: &Limits) -> Option<DecodedPreview> {
+    let mut shared = craft_raw::Limits::default();
+    shared.max_samples = usize::try_from(limits.max_pixels.saturating_mul(3).min(limits.max_alloc / 2)).unwrap_or(usize::MAX);
+    craft_raw::embedded_jxl_preview(bytes, &shared)
 }
 
-/// Decodes a lossless JPEG (T.81 process 14) stream into `(width, height,
-/// components, samples)`; at most `max_samples` samples are allocated.
-/// Exposed for fuzzing and tools.
-#[doc(hidden)]
-pub fn decode_lossless_jpeg(bytes: &[u8], max_samples: usize) -> Result<(usize, usize, usize, Vec<u16>), RawError> {
-    ljpeg::decode(bytes, max_samples).map(|(f, v)| (f.width, f.height, f.components, v))
-}
-
-/// Lists the TIFF structure of a raw file (debugging aid).
-#[doc(hidden)]
-pub fn dump_structure(bytes: &[u8]) -> String {
-    tiff::dump(bytes)
+fn shared_error(error: craft_raw::RawError) -> RawError {
+    match error {
+        craft_raw::RawError::NotRaw => RawError::NotRaw,
+        craft_raw::RawError::Unsupported(message) => RawError::Unsupported(message),
+        craft_raw::RawError::Corrupt(message) => RawError::Malformed(message),
+        craft_raw::RawError::Limit(message) => RawError::LimitExceeded(message.to_string()),
+        craft_raw::RawError::Tiff(error) => RawError::Malformed(error.to_string()),
+    }
 }
 
 /// Decodes and develops a raw file.

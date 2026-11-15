@@ -173,6 +173,16 @@ pub fn command(app: &mut PhotocraftApp, p: &Value) -> Result<Value, String> {
     Ok(json!({"rotation": v.rotation}))
 }
 
+/// Rotate the active camera by one 15-degree step in screen space (#4911).
+/// Keep an existing off-grid angle; this is a relative step, not Shift-drag snapping.
+pub fn step(app: &mut PhotocraftApp, clockwise: bool, p: &Value) -> Result<Value, String> {
+    if !p.as_object().is_some_and(|o| o.is_empty()) {
+        return Err("rotation step expects an empty params object".into());
+    }
+    let delta = screen_delta(if clockwise { SNAP_DEG } else { -SNAP_DEG }, app.ui.view.flip_horizontal);
+    command(app, &json!({"delta": delta}))
+}
+
 /// `view.resetView`: angle 0, zoom and centre unchanged.
 pub fn reset(app: &mut PhotocraftApp) -> Result<Value, String> {
     let i = app.session.active_index().ok_or("no document open")?;

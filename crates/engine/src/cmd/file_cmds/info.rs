@@ -99,6 +99,66 @@ fn find_attr<'a>(xmp: &'a str, prop: &str) -> Option<(usize, usize, &'a str)> {
     Some((i, v1 + 1, &xmp[v0..v1]))
 }
 
+/// The packet's `xmpRights:Marked` value, as an element or an attribute.
+fn rights_marked(xmp: &str) -> Option<&str> {
+    find_element(xmp, "xmpRights:Marked").map(|(_, _, v)| v.trim()).or_else(|| marked_attr(xmp).map(|(_, _, v)| v))
+}
+
+/// Attribute form `xmpRights:Marked="…"` with either quote, any XML whitespace before the name
+/// and around the `=`, as XMP writers lay attributes out on their own lines. Only names inside a
+/// tag count, not text in another attribute's value, element text, a comment or CDATA. Returns
+/// (start, end, value) with the whitespace before the name in the span, as [`find_attr`] does, so
+/// a rewrite removes every form it reads.
+fn marked_attr(xmp: &str) -> Option<(usize, usize, &str)> {
+    // The tab title asks every frame, and packets can be megabytes: walk only when the name is there.
+    if !xmp.contains("xmpRights:Marked") {
+        return None;
+    }
+    let b = xmp.as_bytes();
+    let (mut i, mut in_tag, mut quote) = (0, false, None);
+    while let Some(&c) = b.get(i) {
+        match (in_tag, quote) {
+            (_, Some(q)) => quote = (c != q).then_some(q),
+            (false, None) if c == b'<' => {
+                let rest = &xmp[i..];
+                let skip = [("<!--", "-->"), ("<![CDATA[", "]]>")].into_iter().find(|(open, _)| rest.starts_with(open));
+                match skip {
+                    Some((_, close)) => i += rest.find(close).map_or(rest.len(), |e| e + close.len()) - 1,
+                    None => in_tag = true,
+                }
+            }
+            (false, None) => {}
+            (true, None) => match c {
+                b'>' => in_tag = false,
+                b'"' | b'\'' => quote = Some(c),
+                _ if c.is_ascii_whitespace() => {
+                    if let Some((end, v)) = marked_value(xmp, i + 1) {
+                        return Some((i, end, v));
+                    }
+                }
+                _ => {}
+            },
+        }
+        i += 1;
+    }
+    None
+}
+
+/// `xmpRights:Marked = "value"` starting at byte `at`: (end after the closing quote, value).
+fn marked_value(xmp: &str, at: usize) -> Option<(usize, &str)> {
+    let rest = xmp.get(at..)?.strip_prefix("xmpRights:Marked")?.trim_start().strip_prefix('=')?.trim_start();
+    let quote = rest.chars().next().filter(|&c| c == '"' || c == '\'')?;
+    let v0 = xmp.len() - rest.len() + 1;
+    let v1 = xmp[v0..].find(quote)? + v0;
+    Some((v1 + 1, &xmp[v0..v1]))
+}
+
+/// Whether File Info's Copyright Status reads Copyrighted (`xmpRights:Marked` is `True`): the
+/// document's tab and window title then start with "© " (#13821).
+pub fn copyright_marked(xmp: Option<&str>) -> bool {
+    xmp.and_then(rights_marked) == Some("True")
+}
+
 /// File Info fields read from an XMP packet.
 pub fn read_file_info(xmp: Option<&str>) -> Value {
     let mut m = serde_json::Map::new();
@@ -117,11 +177,9 @@ pub fn read_file_info(xmp: Option<&str>) -> Value {
         };
         m.insert(key.into(), v);
     }
-    let marked =
-        find_element(x, "xmpRights:Marked").map(|(_, _, v)| v.trim().to_string()).or_else(|| find_attr(x, "xmpRights:Marked").map(|(_, _, v)| v.to_string()));
     m.insert(
         "copyrightStatus".into(),
-        json!(match marked.as_deref() {
+        json!(match rights_marked(x) {
             Some("True") => "copyrighted",
             Some("False") => "publicDomain",
             _ => "unknown",
@@ -271,7 +329,10 @@ pub fn write_file_info(xmp: Option<&str>, info: &Value) -> String {
         while let Some((a, b, _)) = find_element(&x, prop) {
             x.replace_range(a..b, "");
         }
-        while let Some((a, b, _)) = find_attr(&x, prop) {
+        // Marked is removed in every attribute form it is read in, and only from tags (#13821).
+        loop {
+            let attr = if prop == "xmpRights:Marked" { marked_attr(&x) } else { find_attr(&x, prop) };
+            let Some((a, b, _)) = attr else { break };
             x.replace_range(a..b, "");
         }
     }

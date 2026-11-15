@@ -7,9 +7,9 @@
 //! inks (`Document::duotone`), which display and flat export render through. Like Photoshop the
 //! conversions flatten (Indexed, Bitmap) and require a grayscale source (Bitmap, Duotone).
 
+use craft_cms::{ColorSpace, TransformOptions};
 use photocraft_algo::quantize::{self, BitmapMethod, Dither, Forced, HalftoneShape, PaletteKind};
 use photocraft_algo::transform::{Homography, Interp};
-use photocraft_cms::{ColorSpace, TransformOptions};
 use photocraft_color::{ColorMode, PixelFormat, SampleType};
 use photocraft_doc::adjust::CurvePoint;
 use photocraft_doc::{ColorTable, Document, Duotone, DuotoneInk, Layer, LayerContent, LayerId, Size};
@@ -280,10 +280,10 @@ fn working_matte_color(s: &Session, doc: &Document, color: [f32; 4]) -> Result<[
     };
     let source = s.color.working(ColorMode::Rgb);
     let options = TransformOptions { intent: s.color.settings.intent(), bpc: s.color.settings.bpc, ..Default::default() };
-    let transform = photocraft_cms::transform::cached(&source, &destination, options)
+    let transform = craft_cms::transform::cached(&source, &destination, options)
         .map_err(|e| bad("image.mode.indexedColor", format!("cannot convert matte colour: {e}")))?;
     let mut output = [0.0; 16];
-    transform.eval(&color[..3], &mut output);
+    transform.eval(&color[..3], &mut output).map_err(|e| bad("image.mode.indexedColor", format!("cannot convert matte colour: {e}")))?;
     let matte = if destination.color_space == ColorSpace::Gray { [output[0]; 3] } else { [output[0], output[1], output[2]] };
     if matte.iter().any(|v| !v.is_finite()) {
         return Err(bad("image.mode.indexedColor", "cannot convert matte colour to finite document samples"));
