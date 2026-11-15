@@ -767,6 +767,7 @@ fn preference_uses_ambient_filesystem(path: &str) -> bool {
 fn command_uses_ambient_path(id: &str, params: &Value) -> bool {
     match id {
         "actions.load"
+        | "actions.replace"
         | "brush.presets.importAbr"
         | "brush.presets.importImage"
         | "gradient.presets.importGrd"

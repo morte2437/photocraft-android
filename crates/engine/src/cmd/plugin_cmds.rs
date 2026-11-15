@@ -161,30 +161,9 @@ pub(crate) fn apply_to_surface(command: &str, params: &Value, surf: &Surface, se
 const MAX_DATA_CHARS: usize = (32 << 20) / 3 * 4 + 4;
 
 fn b64_decode(s: &str) -> Option<Vec<u8>> {
-    let val = |c: u8| -> Option<u32> {
-        Some(u32::from(match c {
-            b'A'..=b'Z' => c - b'A',
-            b'a'..=b'z' => c - b'a' + 26,
-            b'0'..=b'9' => c - b'0' + 52,
-            b'+' | b'-' => 62,
-            b'/' | b'_' => 63,
-            _ => return None,
-        }))
-    };
-    let clean: Vec<u8> = s.bytes().filter(|c| !c.is_ascii_whitespace() && *c != b'=').collect();
-    if clean.len() % 4 == 1 {
-        return None;
-    }
-    let mut out = Vec::with_capacity(clean.len() / 4 * 3 + 2);
-    for chunk in clean.chunks(4) {
-        let mut n = 0u32;
-        for (i, &c) in chunk.iter().enumerate() {
-            n |= val(c)? << (18 - 6 * i);
-        }
-        let bytes = [(n >> 16) as u8, (n >> 8) as u8, n as u8];
-        out.extend_from_slice(bytes.get(..chunk.len() - 1)?);
-    }
-    Some(out)
+    // plugin.install historically accepts both alphabet variants, including mixed input.
+    // Keep that input policy while the library validates padding and decodes the bytes.
+    photocraft_paint::tile::b64_decode(&s.replace('-', "+").replace('_', "/"))
 }
 
 fn install(_s: &mut Session, p: &Value) -> Result<Value> {

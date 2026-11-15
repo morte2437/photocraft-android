@@ -1485,10 +1485,15 @@ fn package(s: &mut Session, p: &Value) -> Result<Value> {
                             .any(|entry| entry.file_name().to_string_lossy().to_lowercase() == n.to_lowercase())
                 };
                 let mut fname = base.clone();
-                let mut k = copied.len();
+                // A clash is `<stem>_<n>.<ext>` (`<name>_<n>` without an extension), n = 1, 2, ...
+                let (clash_stem, clash_ext) = match std::path::Path::new(&base).extension().and_then(|e| e.to_str()) {
+                    Some(e) if base.len() > e.len() + 1 => (&base[..base.len() - e.len() - 1], format!(".{e}")),
+                    _ => (base.as_str(), String::new()),
+                };
+                let mut n = 1usize;
                 while taken(&fname) {
-                    fname = format!("{k}-{base}");
-                    k += 1;
+                    fname = format!("{clash_stem}_{n}{clash_ext}");
+                    n += 1;
                 }
                 let t = join(&links_dir, &fname);
                 // A path that is not followed is packaged as missing, like a file that is gone.
@@ -1711,3 +1716,7 @@ mod paths_export_document_bounds_tests;
 #[cfg(test)]
 #[path = "print_cmds/paths_export_path_blocks_tests.rs"]
 mod paths_export_path_blocks_tests;
+
+#[cfg(test)]
+#[path = "print_cmds/package_clash_name_tests.rs"]
+mod package_clash_name_tests;

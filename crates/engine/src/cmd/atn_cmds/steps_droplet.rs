@@ -65,7 +65,7 @@ fn read(d: &Descriptor) -> Option<Map<String, Value>> {
 /// folder and Override Action "Save As" on. Any other setting refuses the step.
 pub(super) fn droplet_to(_: &str, p: &Value) -> Option<Descriptor> {
     let allowed = ["path", "action", "set", "output", "overrideOpen"];
-    if p.as_object()?.iter().any(|(k, v)| !v.is_null() && !allowed.contains(&k.as_str())) {
+    if p.get("actionId").is_some() || p.as_object()?.iter().any(|(k, v)| !v.is_null() && !allowed.contains(&k.as_str())) {
         return None;
     }
     let path = jstr(p, "path").filter(|s| !s.is_empty())?;

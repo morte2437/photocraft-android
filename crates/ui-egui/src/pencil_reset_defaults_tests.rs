@@ -150,5 +150,5 @@ fn brush_and_other_painting_tools_keep_their_reset_tips() {
     pick(&mut a, Tool::Eraser);
     let e = a.run("brush.get", json!({})).unwrap();
     let eraser_tip = ["size", "hardness", "spacing"].map(|k| (e[k].as_f64().unwrap() * 1e4).round() / 1e4);
-    assert_eq!(eraser_tip, [20.0, 1.0, 0.1]);
+    assert_eq!(eraser_tip, [13.0, 1.0, 0.25], "the Eraser's own reset tip (#11936)");
 }

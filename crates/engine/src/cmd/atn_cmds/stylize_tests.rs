@@ -130,7 +130,7 @@ fn fixtures() -> Vec<Fixture> {
 }
 
 /// Load an actual action file through the command boundary, including flag and name handling.
-fn load_items(items: Vec<AtnItem>) -> Session {
+pub(super) fn load_items(items: Vec<AtnItem>) -> Session {
     let file = AtnFile {
         name: UnicodeString::new_nul("Group D"),
         actions: vec![AtnAction { name: UnicodeString::new_nul("A"), items, ..Default::default() }],
@@ -143,7 +143,7 @@ fn load_items(items: Vec<AtnItem>) -> Session {
 }
 
 /// Save through the real command and parse its bytes so descriptor order and types stay visible.
-fn saved_items(s: &mut Session) -> Vec<AtnItem> {
+pub(super) fn saved_items(s: &mut Session) -> Vec<AtnItem> {
     let result = s.execute("actions.save", json!({"action":"A"})).unwrap();
     assert_eq!(result["skipped"], json!([]));
     let bytes = photocraft_paint::tile::b64_decode(result["data"].as_str().unwrap()).unwrap();

@@ -106,10 +106,16 @@ fn insert_menu_item_chooser_cancels_or_records_descriptor_free_filter_event() {
     h.state_mut().session.actions.list[0].steps.push(("select.all".into(), json!({})));
     let paused = h.state_mut().run("actions.play", json!({"action":"A"})).unwrap();
     let dialog = paused["paused"]["dialog"].as_u64().unwrap();
-    h.state_mut().ui.dialog_mut(dialog).unwrap().fields.insert("radius".into(), json!(2));
-    dialogs::confirm(h.state_mut(), dialog).unwrap();
-    assert_eq!(photocraft_compose::flatten(&h.state().session.active().unwrap().doc).into_px(), expected);
-    assert!(h.state().session.active().unwrap().doc.selection.is_some(), "confirmation resumes the following step");
+    let app = h.state_mut();
+    let actions = app.session.actions.list.clone();
+    assert!(app.run("actions.clearAll", json!({"confirm":true})).is_err());
+    assert_eq!(app.session.actions.list, actions);
+    app.ui.dialog_mut(dialog).unwrap().fields.insert("radius".into(), json!(2));
+    dialogs::confirm(app, dialog).unwrap();
+    assert_eq!(photocraft_compose::flatten(&app.session.active().unwrap().doc).into_px(), expected);
+    assert!(app.session.active().unwrap().doc.selection.is_some(), "confirmation resumes the following step");
+    app.run("actions.clearAll", json!({"confirm":true})).unwrap();
+    assert!(app.session.actions.list.is_empty());
 }
 
 /// The control protocol distinguishes direct playback from a menu click, even with a step gate.
