@@ -80,11 +80,122 @@ fn seed_remembered(app: &PhotocraftApp, f: &mut Map<String, Value>) {
         };
         f.insert(key.into(), v);
     }
+    if let Some(rows) = saved.get("scaleAll").filter(|v| valid_scale_rows(v)) {
+        f.insert("scaleAll".into(), rows.clone());
+    }
+}
+
+/// Scale All's sizes, in the menu's order.
+const SCALE_SIZES: [&str; 11] = ["0.1x", "0.25x", "0.3x", "0.33x", "0.5x", "0.75x", "1x", "1.25x", "1.5x", "2x", "3x"];
+/// The sizes + adds, as measured: the first one no row has yet (0.3x is never added).
+const SCALE_ADD_ORDER: [&str; 9] = ["0.5x", "0.75x", "0.25x", "2x", "0.33x", "1.5x", "0.1x", "3x", "1.25x"];
+/// Scale All's row limit, as measured.
+const MAX_SCALE_ROWS: usize = 10;
+/// Rows shown before the list scrolls, as measured.
+const SCALE_ROWS_SHOWN: f32 = 7.0;
+
+/// Whether `v` is a Scale All row list: 1..=10 rows of a listed size and a suffix.
+fn valid_scale_rows(v: &Value) -> bool {
+    v.as_array().is_some_and(|rows| {
+        (1..=MAX_SCALE_ROWS).contains(&rows.len())
+            && rows.iter().all(|r| {
+                r.get("size").and_then(Value::as_str).is_some_and(|s| SCALE_SIZES.contains(&s))
+                    && r.get("suffix").and_then(Value::as_str).is_some_and(|s| s.chars().count() <= 64)
+            })
+    })
+}
+
+/// The dialog's Scale All rows as (size, suffix); one 1x row with no suffix by default.
+fn scale_rows(f: &Map<String, Value>) -> Vec<(String, String)> {
+    let row = |r: &Value| (r["size"].as_str().unwrap_or("1x").to_string(), r["suffix"].as_str().unwrap_or_default().to_string());
+    match f.get("scaleAll").filter(|v| valid_scale_rows(v)).and_then(Value::as_array) {
+        Some(rows) => rows.iter().map(row).collect(),
+        None => vec![("1x".into(), String::new())],
+    }
+}
+
+fn scale_rows_value(rows: &[(String, String)]) -> Value {
+    Value::Array(rows.iter().map(|(size, suffix)| json!({"size": size, "suffix": suffix})).collect())
+}
+
+/// The row + adds: the next unused size with an `@<size>` suffix, none at the limit.
+fn next_scale_row(rows: &[(String, String)]) -> Option<(String, String)> {
+    if rows.len() >= MAX_SCALE_ROWS {
+        return None;
+    }
+    SCALE_ADD_ORDER.iter().find(|s| !rows.iter().any(|(size, _)| size == *s)).map(|s| ((*s).to_string(), format!("@{s}")))
+}
+
+fn scale_factor(size: &str) -> f64 {
+    size.strip_suffix('x').and_then(|v| v.parse().ok()).filter(|v: &f64| v.is_finite() && *v > 0.0).unwrap_or(1.0)
+}
+
+/// The dialog settings `f` with the export size multiplied by `factor` (a Scale All row).
+fn scaled_fields(f: &Map<String, Value>, factor: f64) -> Map<String, Value> {
+    let mut out = f.clone();
+    if (factor - 1.0).abs() > f64::EPSILON {
+        out.insert("scale".into(), json!(n(f, "scale", 100.0) * factor));
+        for key in ["width", "height"] {
+            if let Some(v) = f.get(key).and_then(Value::as_f64) {
+                out.insert(key.into(), json!((v * factor).round().max(1.0)));
+            }
+        }
+    }
+    out
+}
+
+/// A row's suffix as part of a file name: characters a file name can't hold become `_`.
+fn file_suffix(suffix: &str) -> String {
+    suffix.chars().map(|c| if c.is_control() || "<>:\"/\\|?*".contains(c) { '_' } else { c }).collect()
+}
+
+/// Export As › Scale All: one row per output size, each a Size and a Suffix, with + to add the
+/// next size and a trash button per row (greyed while one row is left).
+fn scale_all_fields(ui: &mut egui::Ui, f: &mut Map<String, Value>) {
+    let t = Tokens::get(ui.ctx());
+    let mut rows = scale_rows(f);
+    ui.horizontal(|ui| {
+        ui.label(egui::RichText::new(tl!("Scale All")).font(crate::theme::semibold(12.0)).color(t.text));
+        if crate::icons::button(ui, "plus", 20.0, false, tl!("Add a size")).clicked()
+            && let Some(row) = next_scale_row(&rows)
+        {
+            rows.push(row);
+        }
+    });
+    let sizes: Vec<(String, &str)> = SCALE_SIZES.iter().map(|s| ((*s).to_string(), *s)).collect();
+    let single = rows.len() == 1;
+    let mut remove = None;
+    let row_height = ui.spacing().interact_size.y + ui.spacing().item_spacing.y;
+    egui::ScrollArea::vertical().id_salt("export-scale-all").max_height(row_height * SCALE_ROWS_SHOWN).show(ui, |ui| {
+        for (i, (size, suffix)) in rows.iter_mut().enumerate() {
+            ui.horizontal(|ui| {
+                let n = (i + 1).to_string();
+                let name = crate::i18n::fmt(tl!("Size {n}"), &[("n", &n)]);
+                crate::widgets::dropdown_literal(ui, &format!("export-scale-size-{i}"), &name, size, &sizes, 70.0);
+                let name = crate::i18n::fmt(tl!("Suffix {n}"), &[("n", &n)]);
+                // At most the accepted length (`valid_scale_rows`): a longer one would discard the whole list.
+                ui.add(egui::TextEdit::singleline(suffix).desired_width(110.0).char_limit(64).hint_text(tl!("Suffix"))).accessible_name(&name);
+                let name = crate::i18n::fmt(tl!("Remove size {n}"), &[("n", &n)]);
+                if ui.add_enabled_ui(!single, |ui| crate::icons::button(ui, "trash", 20.0, false, &name)).inner.clicked() {
+                    remove = Some(i);
+                }
+            });
+        }
+    });
+    if let Some(i) = remove {
+        rows.remove(i);
+    }
+    f.insert("scaleAll".into(), scale_rows_value(&rows));
+    ui.add_space(8.0);
 }
 
 /// Record the settings for the next Export As (see [`seed_remembered`]).
 fn remember(app: &mut PhotocraftApp, f: &Map<String, Value>) {
-    let saved = settings_of(f);
+    let mut saved = settings_of(f);
+    // Scale All's rows are remembered but not recorded with an action's single destination.
+    if let Some(rows) = f.get("scaleAll").filter(|v| valid_scale_rows(v)) {
+        saved.insert("scaleAll".into(), rows.clone());
+    }
     app.session.prefs.edit(|p| {
         p.dialogs.insert(COMMAND.into(), Value::Object(saved));
     });
@@ -965,6 +1076,7 @@ pub fn body(app: &mut PhotocraftApp, ui: &mut egui::Ui, f: &mut Map<String, Valu
         // Left: settings.
         ui.vertical(|ui| {
             ui.set_width(248.0);
+            scale_all_fields(ui, f);
             ui.label(egui::RichText::new(tl!("File Settings")).font(crate::theme::semibold(12.0)).color(t.text));
             ui.horizontal(|ui| {
                 ui.label(egui::RichText::new(tl!("Format")).color(t.text_dim));
@@ -1111,8 +1223,12 @@ pub fn confirm(app: &mut PhotocraftApp, f: &Map<String, Value>) -> Result<Value,
     // `a_b_c__`. Unlike the multi-layer export's `export_name`, boundary spaces and dots stay.
     let stem = if f.get("__layer").and_then(Value::as_u64).is_some() { layer_export_name(&stem) } else { stem };
     let ext = s_fmt(f);
+    let rows = scale_rows(f);
+    if rows.len() > 1 {
+        return confirm_sizes(app, f, doc, source_profile, &stem, rows);
+    }
     let suggested = format!("{stem}.{ext}");
-    let f = f.clone();
+    let f = scaled_fields(f, scale_factor(&rows[0].0));
     app.pick_export(&suggested, move |app, path| {
         let r = write_export(app, &doc, &f, &path, &source_profile)?;
         // An action being recorded keeps a whole-document export with its destination and
@@ -1125,6 +1241,66 @@ pub fn confirm(app: &mut PhotocraftApp, f: &Map<String, Value>) -> Result<Value,
             app.session.journal.push((COMMAND.into(), step));
         }
         Ok(r)
+    })
+}
+
+/// Why several Scale All rows cannot be exported here, if they cannot: the browser build writes no
+/// folder of files (a browser folder handle is not a path), so one size at a time is its limit.
+fn batch_unsupported(rows: usize, browser: bool) -> Option<&'static str> {
+    (browser && rows > 1).then_some("Exporting several sizes at once needs a folder, which the browser can't write to; export one size at a time")
+}
+
+/// The file names a batch writes, `<name><suffix>.<ext>` per row, or an error naming the first one two
+/// rows share (suffixes that sanitize alike, or differ only in case, count: a file system may fold them, by upper-casing as Windows does, so `σ` and `ς` are one).
+/// Nothing is written then; replacing a file that already exists is unchanged.
+fn batch_file_names(stem: &str, ext: &str, rows: &[(String, String)]) -> Result<Vec<String>, String> {
+    let names: Vec<String> = rows.iter().map(|(_, suffix)| format!("{stem}{}.{ext}", file_suffix(suffix))).collect();
+    for (i, name) in names.iter().enumerate() {
+        if names[..i].iter().any(|other| other.to_uppercase() == name.to_uppercase() || other.to_lowercase() == name.to_lowercase()) {
+            return Err(format!("Two sizes would write the same file, {name}; give each size its own suffix"));
+        }
+    }
+    Ok(names)
+}
+
+/// [`confirm`] with several Scale All rows: a folder choice, then `<name><suffix>.<ext>` there for
+/// each row, at the row's size.
+fn confirm_sizes(
+    app: &mut PhotocraftApp,
+    f: &Map<String, Value>,
+    doc: Arc<Document>,
+    source_profile: Arc<Profile>,
+    stem: &str,
+    rows: Vec<(String, String)>,
+) -> Result<Value, String> {
+    // The browser build has no folder to write into: its file dialog answers a folder request with
+    // nothing, so a batch would silently do nothing. Say so before asking.
+    if let Some(why) = batch_unsupported(rows.len(), cfg!(target_arch = "wasm32")) {
+        return Err(why.into());
+    }
+    let (f, stem) = (f.clone(), export_name(stem));
+    let names = batch_file_names(&stem, &s_fmt(&f), &rows)?;
+    app.ask_folder(move |app, dir| {
+        // Only a folder was chosen, so nothing already there is replaced without asking: any entry at
+        // a target path (a file, or a link the writer would follow) stops the whole batch before the
+        // first write.
+        #[cfg(not(target_arch = "wasm32"))]
+        for name in &names {
+            let path = std::path::Path::new(&dir).join(name);
+            if let Ok(meta) = path.symlink_metadata() {
+                let what = if meta.file_type().is_symlink() { "is a link" } else { "already exists" };
+                return Err(format!("{} {what}; nothing was written. Choose another folder or change the suffix", path.display()));
+            }
+        }
+        let mut exported = Vec::new();
+        for ((size, _), name) in rows.iter().zip(&names) {
+            let path = std::path::Path::new(&dir).join(name).to_string_lossy().into_owned();
+            exported.push(write_export(app, &doc, &scaled_fields(&f, scale_factor(size)), &path, &source_profile)?);
+        }
+        let template = "Exported {n} files";
+        app.ui.status = crate::i18n::fmt(tl!(template), &[("n", &exported.len().to_string())]);
+        app.ui.status_error = false;
+        Ok(json!({"exported": exported}))
     })
 }
 
@@ -1346,3 +1522,6 @@ mod batch_name_tests {
         std::fs::remove_file(&planted).unwrap();
     }
 }
+
+#[cfg(test)]
+mod scale_all_tests;
