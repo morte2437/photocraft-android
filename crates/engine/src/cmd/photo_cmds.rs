@@ -967,7 +967,8 @@ fn photomerge(s: &mut Session, p: &Value) -> Result<Value> {
                 let check_cancel = || ctx.check();
                 let opt = BlendOptions { seamless: true, gains: true, geometry: geo, budget: Some(remaining_band_budget) };
                 let b = seam_blend(warped, canvas, &order, opt, Some(&check_cancel))?;
-                for (k, (px, mask)) in b.layers.into_iter().enumerate() {
+                // `children[0]` is the bottom layer, and the first source goes on top.
+                for (k, (px, mask)) in b.layers.into_iter().enumerate().rev() {
                     let mut l = Layer::new(srcs[placed[k]].name.clone(), LayerContent::Raster(px));
                     let mut m = LayerMask::hide_all();
                     m.surface = mask;
@@ -982,7 +983,7 @@ fn photomerge(s: &mut Session, p: &Value) -> Result<Value> {
                     doc.layers.push(Layer::new("Content-Aware Fill", LayerContent::Raster(filled)));
                 }
             } else {
-                for (k, px) in warped.into_iter().enumerate() {
+                for (k, px) in warped.into_iter().enumerate().rev() {
                     doc.layers.push(Layer::new(srcs[placed[k]].name.clone(), LayerContent::Raster(px)));
                 }
             }
@@ -1407,5 +1408,7 @@ pub fn specs() -> Vec<CommandSpec> {
     ]
 }
 
+#[cfg(test)]
+mod photomerge_layer_order_tests;
 #[cfg(test)]
 mod tests;
