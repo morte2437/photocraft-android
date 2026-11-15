@@ -74,7 +74,7 @@ fn points(p: &Value) -> Result<Vec<[f32; 2]>> {
 
 fn style_of(p: &Value) -> Result<Style> {
     match p.get("style") {
-        None | Some(Value::Null) => Ok(Style::TightMedium),
+        None | Some(Value::Null) => Ok(Style::TightShort),
         Some(v) => {
             let Some(s) = v.as_str() else {
                 return Err(err("unknown Art History style"));
