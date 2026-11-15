@@ -22,6 +22,8 @@ fn app() -> PhotocraftApp {
 
 /// `draw` in a row, once the app's fonts are set up (the first pass has none).
 fn harness(draw: fn(&mut PhotocraftApp, &mut egui::Ui)) -> Harness<'static, PhotocraftApp> {
+    // Load the fonts first: if they finish mid-test the bar swaps "Loading fonts…" for its menus and a click is lost (#13408).
+    let _ = photocraft_text::shared();
     let mut h = Harness::builder().with_size(vec2(1400.0, 600.0)).build_ui_state(
         move |ui, app| {
             if ui.ctx().fonts(|f| f.families().contains(&egui::FontFamily::Name("medium".into()))) {

@@ -12,6 +12,9 @@ use crate::GPU_LOCK;
 
 fn test_gpu() -> Option<(NativeContext, Compositor, std::sync::MutexGuard<'static, ()>)> {
     let lock = GPU_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    // `NativeContext::request` makes and drops an instance of its own; the kept one keeps the
+    // Vulkan loader from being torn down when it goes.
+    let _kept = crate::instance();
     let ctx = match NativeContext::request(&NativeContextOptions::default()) {
         Ok(c) => c,
         Err(e) => {
