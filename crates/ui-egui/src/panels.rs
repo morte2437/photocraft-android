@@ -2026,6 +2026,7 @@ mod layer_click_type_commit_tests {
     #[test]
     #[ignore = "offscreen visual evidence for #5584"]
     fn layer_click_synthetic_visual_evidence() {
+        let _gpu = photocraft_testkit::gpu_lock();
         let (h, text, _) = harness(theme::ThemeKind::ProMedium);
         let mut app = h.into_state();
         app.ui.tool = Tool::Type;

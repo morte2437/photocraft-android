@@ -24,7 +24,7 @@ pub struct ZipReader<'a> {
     by_name: HashMap<String, usize>,
 }
 
-fn map_read_error(error: craft_zip::Error) -> FormatError {
+pub(crate) fn map_read_error(error: craft_zip::Error) -> FormatError {
     match error {
         craft_zip::Error::TooManyEntries { .. }
         | craft_zip::Error::TooManyEndRecords(_)

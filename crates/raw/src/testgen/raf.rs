@@ -154,22 +154,28 @@ impl RafSpec {
                 }
                 out
             }
-            RafPacking::Words14 => {
-                let (mut logical, mut acc, mut n) = (Vec::new(), 0u64, 0u32);
-                for &v in &self.data {
-                    acc = (acc << 14) | u64::from(v & 0x3FFF);
-                    n += 14;
-                    while n >= 8 {
-                        logical.push((acc >> (n - 8)) as u8);
-                        n -= 8;
+            // Rows of 14-bit samples, most significant bit first, in little-endian 32-bit words: each row
+            // starts on a word boundary (the stride is the raw IFD's 0xF005).
+            RafPacking::Words14 => self
+                .data
+                .chunks(self.width.max(1))
+                .flat_map(|row| {
+                    let (mut logical, mut acc, mut n) = (Vec::new(), 0u64, 0u32);
+                    for &v in row {
+                        acc = (acc << 14) | u64::from(v & 0x3FFF);
+                        n += 14;
+                        while n >= 8 {
+                            logical.push((acc >> (n - 8)) as u8);
+                            n -= 8;
+                        }
                     }
-                }
-                if n > 0 {
-                    logical.push((acc << (8 - n)) as u8);
-                }
-                logical.resize(logical.len().next_multiple_of(4), 0);
-                logical.chunks(4).flat_map(|w| w.iter().rev().copied().collect::<Vec<u8>>()).collect()
-            }
+                    if n > 0 {
+                        logical.push((acc << (8 - n)) as u8);
+                    }
+                    logical.resize(logical.len().next_multiple_of(4), 0);
+                    logical.chunks(4).flat_map(|w| w.iter().rev().copied().collect::<Vec<u8>>()).collect::<Vec<u8>>()
+                })
+                .collect(),
             RafPacking::Compressed { lossy } => {
                 assert!(self.width == 780 && self.height.is_multiple_of(6) && self.data.iter().all(|&v| v == 0), "see RafPacking::Compressed");
                 let quantizers: Vec<u8> = (0..self.height / 6).map(|g| [2, 0, 5][g % 3]).collect();
@@ -194,6 +200,7 @@ impl RafSpec {
             (0xF00A, self.black.clone()),
         ]
         .into_iter()
+        .chain(matches!(self.packing, RafPacking::Words14).then(|| (0xF005, vec![(self.width * 14).div_ceil(32) as u32])))
         .chain(self.wb_grb.map(|w| (0xF00E, w.to_vec())))
         .collect();
         let mut out = if le { b"II*\0".to_vec() } else { b"MM\0*".to_vec() };
