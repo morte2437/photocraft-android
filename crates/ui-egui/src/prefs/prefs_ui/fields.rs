@@ -311,6 +311,9 @@ fn prefs_body(ui: &mut egui::Ui, f: &mut Map<String, Value>, system: Option<egui
             });
         });
     });
+    if let Some(index) = ui.ctx().data_mut(|data| data.remove_temp::<usize>(egui::Id::unique("prefs-scratch-browse"))) {
+        f.insert("__scratchBrowse".into(), json!(index));
+    }
     f.insert("section".into(), json!(section));
     f.insert("__search".into(), json!(search));
     f.insert("values".into(), values);
@@ -594,12 +597,15 @@ fn field_rows(ui: &mut egui::Ui, section: &str, obj: &mut Map<String, Value>, ke
                 ui.label(RichText::new(tl!("Scratch disks")).color(t.text_dim));
                 let mut items = items.clone();
                 ui.vertical(|ui| {
-                    for d in &mut items {
+                    for (index, d) in items.iter_mut().enumerate() {
                         ui.horizontal(|ui| {
                             let mut on = d.get("enabled").and_then(Value::as_bool).unwrap_or(false);
                             let mut path = d.get("path").and_then(Value::as_str).unwrap_or("").to_string();
                             crate::widgets::checkbox(ui, &mut on, tl!("Enabled"));
                             ui.add(egui::TextEdit::singleline(&mut path).desired_width(240.0)).accessible_name(tl!("Path"));
+                            if path.trim() != "(system temp)" && ui.small_button(tl!("Browse…")).clicked() {
+                                ui.ctx().data_mut(|data| data.insert_temp(egui::Id::unique("prefs-scratch-browse"), index));
+                            }
                             *d = json!({"enabled": on, "path": path});
                         });
                     }

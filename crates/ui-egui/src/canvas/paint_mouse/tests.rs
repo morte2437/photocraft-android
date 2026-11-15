@@ -550,10 +550,10 @@ fn the_brush_is_a_per_tool_option_that_presets_keep() {
     app.session.tools.brush.smoothing.pulled_string = true;
     app.run("tools.setBrush", json!({"preset": preset})).unwrap();
     assert_eq!((amount(&app), app.session.tools.brush.smoothing.pulled_string), (0.42, true));
-    // The Eraser has its own (10 % at first); switching back restores the Brush's.
+    // The Eraser has its own (0 % at first, #11936); switching back restores the Brush's.
     app.ui.tool = Tool::Eraser;
     sync_tool_brush(&mut app);
-    assert_eq!(amount(&app), 0.1);
+    assert_eq!(amount(&app), 0.0);
     app.session.tools.brush.smoothing.amount = 0.0;
     app.ui.tool = Tool::Brush;
     sync_tool_brush(&mut app);
@@ -611,19 +611,19 @@ fn each_tool_keeps_its_own_brush() {
 
     // A tool seen for the first time starts from the brush the old tool left (Photoshop's
     // 10 % smoothing), so nothing is lost by switching.
-    app.ui.tool = Tool::Eraser;
+    app.ui.tool = Tool::Blur;
     sync_tool_brush(&mut app);
     assert_eq!(size(&brush(&app)), 40.0, "a new tool inherits the current brush");
 
-    // The Eraser edits its own size; the Brush keeps 40 px.
+    // The Blur tool edits its own size; the Brush keeps 40 px.
     app.run("tools.setBrush", json!({"brush": {"size": 8, "hardness": 1.0}})).unwrap();
     app.ui.tool = Tool::Brush;
     sync_tool_brush(&mut app);
     assert_eq!(size(&brush(&app)), 40.0, "the Brush keeps its own size");
     assert_eq!(hardness(&brush(&app)), 0.2, "and its hardness");
-    app.ui.tool = Tool::Eraser;
+    app.ui.tool = Tool::Blur;
     sync_tool_brush(&mut app);
-    assert_eq!(size(&brush(&app)), 8.0, "the Eraser keeps its own size");
+    assert_eq!(size(&brush(&app)), 8.0, "the Blur tool keeps its own size");
     assert_eq!(hardness(&brush(&app)), 1.0, "and its hardness");
 
     // Mode, opacity, flow and the dynamics sections are per tool too.

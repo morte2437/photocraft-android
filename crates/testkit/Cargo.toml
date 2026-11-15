@@ -15,3 +15,7 @@ serde_json = { workspace = true }
 # on Linux read /proc/self/statm, not /proc/self/smaps, which walks every mapping under the mmap
 # lock and made the 2 ms sampler thread a fifth of a large bench's CPU time.
 memory-stats = { version = "1.2", features = ["always_use_statm"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+# One Vulkan instance kept for the whole test process (`gpu_lock`).
+wgpu = { version = "30", default-features = false, features = ["std", "vulkan"] }

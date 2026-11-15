@@ -69,29 +69,75 @@ pub(crate) fn toolbar_position(tool: Tool) -> usize {
     TOOL_SECTIONS.iter().flat_map(|section| section.iter()).flat_map(|slot| slot.iter()).position(|&t| t == tool).unwrap_or(usize::MAX)
 }
 
-/// [`TOOL_SECTIONS`] without the tools hidden in Edit › Toolbar (`hidden` holds tool names: the
-/// dialog writes `Tool` debug names, `edit.toolbar` takes any name `Tool::from_name` reads). A
-/// slot keeps only its visible tools, so its flyout lists just those; a slot with none left is
-/// dropped, and so is a section with no slots. Each slot carries its index in `TOOL_SECTIONS`,
-/// so its flyout stays put when other slots are hidden.
-pub(super) fn visible_sections(hidden: &[String]) -> Vec<Vec<(usize, Vec<Tool>)>> {
-    let hidden: Vec<Tool> = hidden.iter().map(String::as_str).filter_map(Tool::from_name).collect();
+/// The toolbar's group layout from Edit › Toolbar (`edit.toolbar`), as tools: the slots' groups
+/// in order, then the Extra Tools groups. Names were resolved by the engine
+/// (`ToolbarCustomization::layout`), which writes `Tool` debug names.
+pub(crate) fn tool_layout(custom: &photocraft_engine::prefs::ToolbarCustomization) -> (Vec<Vec<Tool>>, Vec<Vec<Tool>>) {
+    let layout = custom.layout();
+    let tools = |groups: Vec<Vec<String>>| -> Vec<Vec<Tool>> {
+        groups.iter().map(|g| g.iter().filter_map(|n| Tool::from_name(n)).collect::<Vec<Tool>>()).filter(|g| !g.is_empty()).collect()
+    };
+    (tools(layout.toolbar), tools(layout.extras))
+}
+
+/// Every tool in layout order: the slots' groups, then the extras. Shift+letter steps through a
+/// key's tools in this order, across slots.
+pub(crate) fn layout_order(custom: &photocraft_engine::prefs::ToolbarCustomization) -> Vec<Tool> {
+    let (toolbar, extras) = tool_layout(custom);
+    toolbar.into_iter().chain(extras).flatten().collect()
+}
+
+/// The default slot (section, index in [`TOOL_SECTIONS`] read slot by slot) that holds `tool`.
+fn home_slot(tool: Tool) -> Option<(usize, usize)> {
     let mut index = 0usize;
-    let mut sections = Vec::new();
-    for section in TOOL_SECTIONS {
-        let mut slots = Vec::new();
+    for (si, section) in TOOL_SECTIONS.iter().enumerate() {
         for slot in section.iter() {
-            let tools: Vec<Tool> = slot.iter().copied().filter(|tool| !hidden.contains(tool)).collect();
-            if !tools.is_empty() {
-                slots.push((index, tools));
+            if slot.contains(&tool) {
+                return Some((si, index));
             }
             index += 1;
         }
-        if !slots.is_empty() {
-            sections.push(slots);
+    }
+    None
+}
+
+/// The slots the toolbar draws: one per toolbar group of the stored layout, in order, each
+/// listing its group's tools in order. Consecutive groups whose first tools come from the same
+/// default section share a section, so the default layout keeps its dividers. Each slot carries
+/// the index of its first tool's default slot in `TOOL_SECTIONS` (or one past the defaults when
+/// that index is taken), so its flyout stays put when other slots are hidden or moved.
+pub(crate) fn layout_sections(custom: &photocraft_engine::prefs::ToolbarCustomization) -> Vec<Vec<(usize, Vec<Tool>)>> {
+    let (groups, _) = tool_layout(custom);
+    let defaults: usize = TOOL_SECTIONS.iter().map(|section| section.len()).sum();
+    let mut used: Vec<usize> = Vec::new();
+    let mut sections: Vec<Vec<(usize, Vec<Tool>)>> = Vec::new();
+    let mut last_section = None;
+    for (i, group) in groups.into_iter().enumerate() {
+        let home = group.first().copied().and_then(home_slot);
+        let index = match home {
+            Some((_, slot)) if !used.contains(&slot) => slot,
+            _ => defaults + i,
+        };
+        used.push(index);
+        let section = home.map(|(si, _)| si);
+        if sections.is_empty() || section != last_section {
+            sections.push(Vec::new());
+        }
+        last_section = section;
+        if let Some(current) = sections.last_mut() {
+            current.push((index, group));
         }
     }
     sections
+}
+
+/// [`layout_sections`] for the default layout without the tools hidden in Edit › Toolbar
+/// (`hidden` holds tool names: the dialog writes `Tool` debug names, `edit.toolbar` takes any
+/// name `Tool::from_name` reads). A slot keeps only its visible tools, so its flyout lists just
+/// those; a slot with none left is dropped, and so is a section with no slots.
+#[cfg(test)]
+pub(super) fn visible_sections(hidden: &[String]) -> Vec<Vec<(usize, Vec<Tool>)>> {
+    layout_sections(&photocraft_engine::prefs::ToolbarCustomization { hidden: hidden.to_vec(), ..Default::default() })
 }
 
 /// A primary-button gesture started on this tool; open only after it leaves its hit area.
@@ -168,7 +214,7 @@ pub fn toolbar(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
     let t = Tokens::get(ui.ctx());
     let (_, bx) = toolbar_columns(t.pro);
     let m = if t.pro { 5i8 } else { 7i8 };
-    let sections = visible_sections(&app.session.prefs().toolbar.hidden);
+    let sections = layout_sections(&app.session.prefs().toolbar);
     // Two columns when the header chevron asks for them; a column that doesn't fit scrolls.
     let double = app.ui.panels.toolbar_double;
     let w = toolbar_width(t.pro, double);

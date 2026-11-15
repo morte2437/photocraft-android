@@ -165,10 +165,12 @@ fn options_disabled_eraser_caption_and_added_regions_do_nothing() {
     h.state_mut().ui.tool = crate::state::Tool::Eraser;
     h.state_mut().ui.tool_options.eraser_mode = "block".into();
     h.run_steps(3);
+    // The Eraser's own brush (its first use gives it its reset tip, #11936): nothing changes it.
+    let hardness = h.state().session.tools.brush.hardness;
     let (l, f) = geometry(&h);
     for at in [l.center(), pos2(f.right() + 8.0, l.center().y), l.center() + vec2(0.0, 10.0)] {
         drag(&mut h, at, 12.0, Modifiers::NONE);
-        assert_eq!(h.state().session.tools.brush.hardness, 0.5);
+        assert_eq!(h.state().session.tools.brush.hardness, hardness);
         assert!(h.state().session.journal.is_empty());
     }
 }

@@ -148,6 +148,21 @@ pub fn open(app: &mut PhotocraftApp, command: &str) -> Option<u64> {
             resample = "nearest";
         }
         f.insert("__indexed".into(), json!(indexed));
+        // The "Image Size:" readout counts the flat image (#14768): the mode's colour channels at
+        // the document's depth, no alpha, whatever the first layer's surface stores.
+        // An Indexed image is one index channel and a Bitmap one 1-bit channel, though both are
+        // stored expanded for editing. A Multichannel image counts its inks, not a fixed three; with
+        // no inks it keeps the old count.
+        let image_bytes_per_pixel = match d.mode {
+            photocraft_color::ColorMode::Bitmap => 1.0 / 8.0,
+            photocraft_color::ColorMode::Indexed => 1.0,
+            photocraft_color::ColorMode::Multichannel => {
+                let inks = d.channels.iter().filter(|c| c.spot.is_some()).count();
+                (if inks == 0 { d.mode.color_channels() } else { inks } * d.depth.bytes()) as f64
+            }
+            mode => (mode.color_channels() * d.depth.bytes()) as f64,
+        };
+        f.insert("__imageBytesPerPixel".into(), json!(image_bytes_per_pixel));
         f.insert("__constrain".into(), json!(true));
         f.insert("resolution".into(), json!(res));
         f.insert("resample".into(), json!(resample));
@@ -202,6 +217,28 @@ pub fn human_bytes(b: f64) -> String {
         format!("{:.1}M", b / (1024.0 * 1024.0))
     } else {
         format!("{:.0}K", (b / 1024.0).max(1.0))
+    }
+}
+
+/// The Image Size dialog's "Image Size:" figure (#14768): whole bytes below 1K (`3 bytes`), then
+/// K, M, G or T (1K = 1024 bytes) with one decimal in the system's decimal mark (`351.6K`, `351,6K`).
+fn image_size_bytes(b: f64) -> String {
+    let n = if b.is_finite() { b.max(0.0).round() } else { 0.0 };
+    if n < 1024.0 {
+        return crate::i18n::trn(crate::i18n::current(), n as u64, "{n} byte", "{n} bytes");
+    }
+    let (mut v, mut unit) = (n / 1024.0, "K");
+    for next in ["M", "G", "T"] {
+        // A figure that would round to 1024.0 reads as 1.0 of the next unit.
+        if (v * 10.0).round() < 10240.0 {
+            break;
+        }
+        (v, unit) = (v / 1024.0, next);
+    }
+    let text = format!("{v:.1}{unit}");
+    match crate::i18n::decimal_separator() {
+        Some(',') => text.replace('.', ","),
+        _ => text,
     }
 }
 
@@ -317,7 +354,6 @@ fn set_unit(f: &mut Map<String, Value>, key: &str, unit: &str) {
 fn image_size(ui: &mut egui::Ui, f: &mut Map<String, Value>) {
     let t = Tokens::get(ui.ctx());
     let (ow, oh) = (num(f, "__origW"), num(f, "__origH"));
-    let bpp = num(f, "__bytesPerPixel").max(1.0);
     let resample = f.get("resample").and_then(Value::as_str).unwrap_or("bicubic").to_string();
     let resampling = resample != "none";
     if !resampling {
@@ -326,8 +362,20 @@ fn image_size(ui: &mut egui::Ui, f: &mut Map<String, Value>) {
         f.insert("width".into(), json!(ow));
         f.insert("height".into(), json!(oh));
     }
-    let (w, h) = (num(f, "width").round(), num(f, "height").round());
-    info_row(ui, tl!("Image Size:"), crate::i18n::fmt(tl!("{size} (was {old})"), &[("size", &human_bytes(w * h * bpp)), ("old", &human_bytes(ow * oh * bpp))]));
+    // The sides the command applies: whole pixels from 1 to MAX_CANVAS_SIDE, as image.imageSize clamps.
+    let side = |key| num(f, key).round().clamp(1.0, f64::from(photocraft_format::MAX_CANVAS_SIDE));
+    let (w, h, orig_w, orig_h) = (side("width"), side("height"), side("__origW"), side("__origH"));
+    // "(was …)" appears only once the pixel dimensions differ from the original (#14768).
+    let image_bpp = num(f, "__imageBytesPerPixel").max(0.0);
+    // Rows hold whole bytes, so a Bitmap row of w bits takes ceil(w / 8) bytes.
+    let flat = |width: f64, height: f64| (width * image_bpp).ceil() * height;
+    let (size, old) = (flat(w, h), flat(orig_w, orig_h));
+    let readout = if (w, h) == (orig_w, orig_h) {
+        image_size_bytes(size)
+    } else {
+        crate::i18n::fmt(tl!("{size} (was {old})"), &[("size", &image_size_bytes(size)), ("old", &image_size_bytes(old))])
+    };
+    info_row(ui, tl!("Image Size:"), readout);
     info_row(ui, tl!("Dimensions:"), format!("{} px × {} px", w as i64, h as i64));
     ui.add_space(6.0);
     // Photoshop keeps width and height linked while Resample is off.
@@ -580,5 +628,8 @@ fn anchor_grid(ui: &mut egui::Ui, current: &str, dw: f64, dh: f64) -> Option<&'s
     picked
 }
 
+#[cfg(test)]
+#[path = "image_size_readout_tests.rs"]
+mod image_size_readout_tests;
 #[cfg(test)]
 mod tests;

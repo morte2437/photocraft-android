@@ -456,6 +456,9 @@ fn filter_body(app: &mut PhotocraftApp, ui: &mut egui::Ui, d: &Dialog, fields: &
     } else {
         first_field_focused(ui, id, |ui| body(ui, fields));
     }
+    if let Some(Value::String(msg)) = fields.remove("__rangeAlert") {
+        crate::panels::options_bar::range_alert(&mut app.ui, &msg);
+    }
 }
 
 /// The OK / Cancel row (with Apply, Alternate or Reset where the dialog has them), drawn in the
@@ -736,6 +739,26 @@ pub fn show(app: &mut PhotocraftApp, ctx: &egui::Context) {
                 outcome = dialog_body(app, ui, &d, &mut fields, id, interactive);
             }
             crate::field_tab::end(ui.ctx(), tab);
+            if let Some(index) = fields.remove("__scratchBrowse").and_then(|v| v.as_u64()) {
+                let dialog_id = d.id;
+                let result = app.ask_folder(move |app, path| {
+                    let dialog = app.ui.dialog_mut(dialog_id).ok_or("the dialog was closed")?;
+                    let disk = dialog
+                        .fields
+                        .get_mut("values")
+                        .and_then(|v| v.pointer_mut(&format!("/scratchDisks/disks/{index}/path")))
+                        .ok_or("the scratch disk was removed")?;
+                    if disk.as_str().is_some_and(|s| s.trim() != "(system temp)") {
+                        *disk = json!(path);
+                    }
+                    Ok(Value::Null)
+                });
+                if let Err(error) = result
+                    && error != crate::file_dialog::CANCELLED
+                {
+                    app.ui.status = error;
+                }
+            }
             if let Some(Value::String(key)) = fields.remove(BROWSE_FIELD) {
                 browse_field(app, d.id, &fields, &key);
             }
@@ -801,6 +824,11 @@ pub fn show(app: &mut PhotocraftApp, ctx: &egui::Context) {
         }
         outcome = image_processor_ui::finish(&mut app.ui, interactive, processor_alert, outcome);
         outcome = fit_image_range::finish(&mut app.ui, interactive, fit_image_alert, outcome);
+        // A size warning must precede creation, while Cancel discards the edit and its warning.
+        // Wait until the buttons have answered so the click that left a field cannot do both.
+        if crate::shape_dialog::owns(&fields) && outcome != Some(false) && crate::shape_dialog::open_owed_alert(app, ctx, &mut fields) {
+            outcome = None;
+        }
         if let Some(dm) = app.ui.dialog_mut(d.id) {
             dm.fields = fields;
         }

@@ -870,6 +870,8 @@ mod tool_shift_cycle_order_tests;
 #[cfg(test)]
 mod tool_shortcut_tests;
 #[cfg(test)]
+mod toolbar_custom_group_layout_tests;
+#[cfg(test)]
 mod toolbar_group_order_tests;
 #[cfg(test)]
 mod toolbar_more_slot_flyout_tests;
@@ -1064,6 +1066,8 @@ mod export_quality_tests;
 mod options_hit_area_tests;
 #[cfg(test)]
 mod select_and_mask_button_tests;
+#[cfg(test)]
+mod wand_tolerance_field_tests;
 
 #[cfg(test)]
 mod saved_path_edit_tests;

@@ -723,9 +723,12 @@ fn global_light(s: &mut Session, p: &Value) -> Result<Value> {
         Some(v) if v.is_finite() && v.abs() <= f64::from(f32::MAX) => Ok(v as f32),
         Some(_) => Err(bad("layer.layerStyle.globalLight", format!("{key} must be a finite number"))),
     };
-    let angle = f32_param("angle", cur.angle)?;
+    let raw_angle = f32_param("angle", cur.angle)?;
     let altitude = f32_param("altitude", cur.altitude)?.clamp(0.0, 90.0);
-    let angle = (angle + 180.0).rem_euclid(360.0) - 180.0;
+    let mut angle = (raw_angle + 180.0).rem_euclid(360.0) - 180.0;
+    if angle == -180.0 && raw_angle > 0.0 {
+        angle = 180.0;
+    }
     s.edit("Global Light", |doc, _| {
         doc.global_light.angle = angle;
         doc.global_light.altitude = altitude;
@@ -1070,7 +1073,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "layer.layerStyle.globalLight",
             "Global Light…",
             ["Layer", "Layer Style"],
-            r##"{"angle":-180..180=120,"altitude":0..90=30}"##,
+            r##"{"angle":-360..360=120,"altitude":0..90=30}"##,
             has_doc,
             global_light
         ),
