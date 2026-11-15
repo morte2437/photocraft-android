@@ -284,6 +284,10 @@ fn set_ruler(app: &mut PhotocraftApp, r: Ruler) {
 mod analysis_ruler_click_tests;
 
 #[cfg(test)]
+#[path = "analysis_ruler_visibility_tests.rs"]
+mod analysis_ruler_visibility_tests;
+
+#[cfg(test)]
 #[path = "note_show_on_new_tests.rs"]
 mod note_show_on_new_tests;
 
@@ -507,7 +511,9 @@ fn handle(painter: &egui::Painter, p: Pos2) {
 pub fn draw_overlay(app: &PhotocraftApp, painter: &egui::Painter, xf: &ViewXform) {
     let Some(doc) = app.session.active().map(|d| d.doc.clone()) else { return };
     let v = &app.ui.view;
-    if app.ui.tool == Tool::Ruler
+    // The ruler stays drawn whichever tool is active, and View › Extras hides it (#11987). View ›
+    // Show has no Ruler entry, so only the master Extras switch applies.
+    if v.extras
         && let Some(r) = doc.measurement.ruler
     {
         let s = xf.to_screen(r.start[0] as f32, r.start[1] as f32);
