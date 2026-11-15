@@ -35,20 +35,17 @@ const MAX_TEXT_BYTES: usize = 1 << 20;
 
 struct Tiff<'a> {
     b: &'a [u8],
-    le: bool,
+    order: craft_tiff::ByteOrder,
     /// Text bytes this read may still decode: duplicate tags can share one large blank value.
     text_left: std::cell::Cell<usize>,
 }
 
 impl Tiff<'_> {
     fn u16(&self, o: usize) -> Option<u16> {
-        let s = self.b.get(o..o.checked_add(2)?)?;
-        Some(if self.le { u16::from_le_bytes([s[0], s[1]]) } else { u16::from_be_bytes([s[0], s[1]]) })
+        self.order.read_u16(self.b, o)
     }
     fn u32(&self, o: usize) -> Option<u32> {
-        let s = self.b.get(o..o.checked_add(4)?)?;
-        let a = [s[0], s[1], s[2], s[3]];
-        Some(if self.le { u32::from_le_bytes(a) } else { u32::from_be_bytes(a) })
+        self.order.read_u32(self.b, o)
     }
     /// Entries of the IFD at `off`: (tag, type, count, value offset field position).
     fn ifd(&self, off: usize) -> Vec<(u16, u16, u32, usize)> {
@@ -61,19 +58,14 @@ impl Tiff<'_> {
             })
             .collect()
     }
-    fn data_at(&self, typ: u16, count: u32, field: usize) -> Option<usize> {
-        let size = match typ {
-            1 | 2 | 6 | 7 => 1usize,
-            3 | 8 => 2,
-            4 | 9 | 11 => 4,
-            5 | 10 | 12 => 8,
-            _ => return None,
+    fn data_at(&self, typ: u16, _count: u32, field: usize) -> Option<usize> {
+        // Keep this caller's historical classic-TIFF type policy; shared spans also
+        // support IFD/BigTIFF types which CameraInfo never accepted.
+        if !(1..=12).contains(&typ) {
+            return None;
         }
-        .checked_mul(usize::try_from(count).ok()?)?;
-        let at = if size <= 4 { field } else { usize::try_from(self.u32(field)?).ok()? };
-        // The whole value must lie inside the payload, not just its first element.
-        self.b.get(at..at.checked_add(size)?)?;
-        Some(at)
+        let span = craft_tiff::entry_span(self.b, field.checked_sub(8)?, self.order, false, 0)?;
+        usize::try_from(span.start).ok()
     }
     fn number(&self, typ: u16, count: u32, field: usize) -> Option<f64> {
         let at = self.data_at(typ, count, field)?;
@@ -118,7 +110,7 @@ pub fn read(exif: &[u8]) -> CameraInfo {
         Some([b'M', b'M', 0, 42]) => false,
         _ => return info,
     };
-    let t = Tiff { b, le, text_left: std::cell::Cell::new(MAX_TEXT_BYTES) };
+    let t = Tiff { b, order: if le { craft_tiff::ByteOrder::Little } else { craft_tiff::ByteOrder::Big }, text_left: std::cell::Cell::new(MAX_TEXT_BYTES) };
     let Some(ifd0) = t.u32(4) else { return info };
     let mut queue = vec![ifd0 as usize];
     let mut seen = Vec::new();
@@ -376,6 +368,72 @@ mod tests {
             build(&CameraInfo { make: Some("Make".into()), date_taken: Some("2024:02:17 12:40:19".into()), exposure_time: Some(0.004), ..Default::default() });
         for cut in 0..good.len() {
             let _ = read(&good[..cut]);
+        }
+    }
+}
+
+// Keep the previous byte reader only as a test oracle during the shared-span cutover.
+#[cfg(test)]
+#[path = "exif_legacy_tests.rs"]
+mod legacy;
+
+#[cfg(test)]
+mod shared_span_parity {
+    use super::*;
+
+    fn compare(bytes: &[u8]) {
+        assert_eq!(format!("{:?}", read(bytes)), format!("{:?}", legacy::read(bytes)));
+    }
+
+    #[test]
+    fn preserves_camera_selection_for_valid_truncated_and_mutated_payloads() {
+        let bytes = build(&CameraInfo {
+            make: Some("Maker".into()),
+            model: Some("Camera".into()),
+            lens: Some("Lens".into()),
+            exposure_time: Some(0.125),
+            f_number: Some(2.8),
+            iso: Some(200.0),
+            focal_length: Some(50.0),
+            focal_length_35mm: Some(75.0),
+            date_taken: Some("not normalized: original date".into()),
+        });
+        compare(&bytes);
+        let mut prefixed = b"Exif\0\0".to_vec();
+        prefixed.extend_from_slice(&bytes);
+        compare(&prefixed);
+        for end in 0..=bytes.len() {
+            compare(&bytes[..end]);
+        }
+        // Exercise offsets, tags, types, counts and payloads independently, not random
+        // external data. The complete shared span must remain bounded for every edit.
+        for index in 0..bytes.len() {
+            for value in [0, 0xff, 0x80] {
+                let mut changed = bytes.clone();
+                changed[index] = value;
+                compare(&changed);
+            }
+        }
+    }
+
+    #[test]
+    fn preserves_partial_entry_and_zero_count_semantics_in_both_orders() {
+        for little in [true, false] {
+            let u16b = |v: u16| if little { v.to_le_bytes() } else { v.to_be_bytes() };
+            let u32b = |v: u32| if little { v.to_le_bytes() } else { v.to_be_bytes() };
+            for count in [0u32, 1, 2, u32::MAX] {
+                let mut bytes = if little { b"II".to_vec() } else { b"MM".to_vec() };
+                bytes.extend(u16b(42));
+                bytes.extend(u32b(8));
+                bytes.extend(u16b(1));
+                bytes.extend(u16b(0x8827));
+                bytes.extend(u16b(3));
+                bytes.extend(u32b(count));
+                bytes.extend(u16b(200));
+                compare(&bytes); // two inline bytes, no full 12-byte entry/next pointer
+                bytes.extend(u16b(0));
+                compare(&bytes);
+            }
         }
     }
 }
