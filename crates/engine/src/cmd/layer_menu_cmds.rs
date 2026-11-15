@@ -935,6 +935,16 @@ fn content_options(s: &mut Session, _: &Value) -> Result<Value> {
 
 /// The layer rendered alone (visible, its blend mode ignored) and trimmed to its pixels, as a
 /// one-layer document — what Export As does for a layer.
+/// The error [`layer_document`] gives for a layer with nothing on the canvas: an empty pixel
+/// layer, an adjustment layer, a layer entirely off the canvas.
+const EMPTY_LAYER: &str = "the layer is empty";
+
+/// Whether `e` is [`layer_document`]'s error for a layer with nothing on the canvas, which a
+/// several-layer export skips (#14806), rather than a real failure.
+pub fn is_empty_layer(e: &EngineError) -> bool {
+    matches!(e, EngineError::Other(msg) if msg == EMPTY_LAYER)
+}
+
 pub fn layer_document(doc: &Document, id: LayerId) -> Result<Document> {
     let l = doc.layer(id).ok_or(EngineError::NoLayer(id))?;
     let mut alone = l.clone();
@@ -955,7 +965,7 @@ pub fn layer_document(doc: &Document, id: LayerId) -> Result<Document> {
         }
     }
     if b.is_empty() {
-        return Err(other("the layer is empty"));
+        return Err(other(EMPTY_LAYER));
     }
     let fmt = doc.pixel_format();
     let mut out = Document::new(l.name.clone(), photocraft_doc::Size::new(b.width(), b.height()), doc.mode, doc.depth);
