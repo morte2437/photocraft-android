@@ -176,28 +176,19 @@ fn bake_cube_layers(size: usize, title: &str, layers: &[&Layer], depth: photocra
         lattice.layers.push(a);
     }
     let out = photocraft_compose::flatten(&lattice);
-    // The reference application's comment layout. There is no Copyright input yet (#13748), so the
-    // `#Copyright:` line is never written.
-    let mut s = format!(
-        "#Created by: PhotoCraft\nTITLE \"{}\"\n\n#LUT size\nLUT_3D_SIZE {n}\n\n#data domain\nDOMAIN_MIN 0.0 0.0 0.0\nDOMAIN_MAX 1.0 1.0 1.0\n\n#LUT data points\n",
-        title.replace('"', "'")
-    );
-    // 8- and 16-bit documents write values on 1/32768 steps; 32-bit stays unquantised.
-    let quantise = |v: f32| -> f32 {
-        let v = v.clamp(0.0, 1.0);
-        if matches!(depth, photocraft_color::SampleType::F32) { v } else { (v * 32768.0).round() / 32768.0 }
-    };
-    // .cube order: red changes fastest, then green, then blue.
-    for b in 0..n {
-        for g in 0..n {
-            for r in 0..n {
-                let (x, y) = (b * n + r, g);
-                let px = out.px[y * w as usize + x];
-                s.push_str(&format!("{:.6} {:.6} {:.6}\n", quantise(px[0]), quantise(px[1]), quantise(px[2])));
-            }
-        }
-    }
-    s
+    // Composition is app policy; the shared writer owns CUBE syntax and export precision.
+    let data = (0..n)
+        .flat_map(|b| (0..n).flat_map(move |g| (0..n).map(move |r| (b, g, r))))
+        .flat_map(|(b, g, r)| {
+            let px = out.px[g * w as usize + b * n + r];
+            [px[0], px[1], px[2]].map(|v| v.clamp(0.0, 1.0))
+        })
+        .collect();
+    let lut = craft_cms::lutfile::LutFile { title: title.into(), size: n, data, domain_min: [0.0; 3], domain_max: [1.0; 3] };
+    craft_cms::lutfile::write_cube_with_options(
+        &lut,
+        craft_cms::lutfile::CubeWriteOptions { created_by: Some("PhotoCraft"), quantize_15_bit: !matches!(depth, photocraft_color::SampleType::F32) },
+    )
 }
 
 /// Backwards-compatible helper for exporting all visible top-level adjustments.

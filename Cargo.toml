@@ -46,7 +46,7 @@ photocraft-ipp = { path = "crates/ipp" }
 
 # external
 # ICC colour management: the shared crate (replaces crates/cms; craft-libs#779).
-craft-cms = { git = "https://github.com/storytold/craft-libs", rev = "e2dc681a3" }
+craft-cms = { git = "https://github.com/storytold/craft-libs", rev = "6dfb580c08aeacfb0f30f79900d392394a14e798" }
 craft-print = { git = "https://github.com/storytold/craft-libs", rev = "e2dc681a3" }
 # HEIC/HEIF: the shared decoder (replaces crates/heif; craft-libs#784).
 craft-heif = { git = "https://github.com/storytold/craft-libs", rev = "e2dc681a3" }
