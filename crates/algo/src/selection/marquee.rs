@@ -317,22 +317,19 @@ pub fn combine_sparse(a: &Surface, b: &Surface, area: Rect, f: impl Fn(f32, f32)
         let source = tb.bytes();
         let (x0, x1) = ((tr.x0 - rect.x0) as usize, (tr.x1 - rect.x0) as usize);
         for ly in (tr.y0 - rect.y0) as usize..(tr.y1 - rect.y0) as usize {
-            let row = ly * TS;
-            let Some(src_row) = source.get(row + x0..row + x1) else { continue };
-            let Some((first, last)) = nonzero_bounds(src_row) else { continue };
-            let (s, e) = (row + x0 + first, row + x0 + last + 1);
-            let (Some(dst), Some(src)) = (data.get_mut(s..e), src_row.get(first..last + 1)) else { continue };
+            let (s, e) = (ly * TS + x0, ly * TS + x1);
+            let (Some(dst), Some(src)) = (data.get_mut(s..e), source.get(s..e)) else { continue };
             for (d, y) in dst.iter_mut().zip(src) {
                 *d = pair(*d, *y);
             }
         }
         drop((data, source));
-        let non_default = tile.content_bounds(&[da]).is_some();
+        let (lo, hi) = tile.bytes().iter().fold((u8::MAX, 0u8), |(lo, hi), v| (lo.min(*v), hi.max(*v)));
         Some((
             tc,
-            if !non_default {
+            if lo == da && hi == da {
                 None
-            } else if tile.content_bounds(&[u8::MAX]).is_none() {
+            } else if lo == u8::MAX {
                 Some(Arc::clone(&full))
             } else {
                 Some(Arc::new(tile))
@@ -348,20 +345,6 @@ pub fn combine_sparse(a: &Surface, b: &Surface, area: Rect, f: impl Fn(f32, f32)
         }
     }
     out
-}
-
-/// The first and last nonzero byte in a row, compared in blocks so empty spans skip quickly.
-fn nonzero_bounds(row: &[u8]) -> Option<(usize, usize)> {
-    const ZERO: [u8; 64] = [0; 64];
-    let first_block = row.chunks(64).position(|block| block != &ZERO[..block.len()])?;
-    let first_start = first_block * 64;
-    let first_chunk = row.get(first_start..first_start + 64).unwrap_or_else(|| row.get(first_start..).unwrap_or_default());
-    let first = first_start + first_chunk.iter().position(|byte| *byte != 0)?;
-    let last_block = row.chunks(64).rposition(|block| block != &ZERO[..block.len()])?;
-    let last_start = last_block * 64;
-    let last_chunk = row.get(last_start..last_start + 64).unwrap_or_else(|| row.get(last_start..).unwrap_or_default());
-    let last = last_start + last_chunk.iter().rposition(|byte| *byte != 0)?;
-    Some((first, last))
 }
 
 #[cfg(test)]
