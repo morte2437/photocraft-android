@@ -18,7 +18,7 @@ What exists on `main` today. The numbered sections below are the original design
   UI, CLI, JSON control channel and MCP server all dispatch by command id. 628 Photoshop menu items
   map to them (`crates/ui-egui/src/menu_catalog.rs`).
 - **Rendering:** CPU compositor (`compose`, the oracle) and wgpu compositor (`gpu`, ≤ 1/255 of the
-  CPU); colour through our own ICC engine (`cms`), GPU display conversion through matrix/shaper stages or a 3D LUT fallback.
+  CPU); colour through our own ICC engine (`craft-cms`, from craft-libs), GPU display conversion through matrix/shaper stages or a 3D LUT fallback.
 - **Files:** own PSD/PSB crate (`psd`), flat codecs (`codecs`), camera raw (`raw`), HEIF (`craft-heif`, from craft-libs),
   Affinity (`affinity`), document mapping (`io`), native `.pcraft` (`format`, atomic saves).
   Coverage: [`file-format-parity.md`](file-format-parity.md).
@@ -108,7 +108,6 @@ photocraft/
 ├─ crates/
 │  │  ── foundation (no_std-friendly where practical, wasm-safe) ──
 │  ├─ geom/                    photocraft-geom      points, rects, affine/perspective, tile coords, bezier (kurbo)
-│  ├─ cms/                     photocraft-cms       pure-Rust ICC colour management: profiles, transforms, intents, BPC, soft proof, 3D LUTs
 │  ├─ color/                   photocraft-color     pixel formats, color spaces, blend-mode math (scalar reference); conversions via cms
 │  ├─ raster/                  photocraft-raster    tiled COW surfaces, masks, mip pyramids, damage regions, pixel iterators
 │  │  ── document ──
@@ -127,7 +126,7 @@ photocraft/
 │  ├─ psd/                     craft-psd       PSD/PSB read + write; its OWN format-level model; depends on nothing in this workspace
 │  ├─ adobe-assets/            photocraft-adobe-assets  .abr .asl .aco/.ase .grd .pat .csh .atn .cube/.3dl, ACR .xmp presets (standalone, like psd)
 │  ├─ codecs/                  photocraft-codecs    flat raster decode/encode at format-supported depths; AVIF encode only (feature `avif`), HEIF/HEIC decode only (feature `heif`); no JPEG XL
-│  ├─ affinity/                photocraft-affinity  bounded native Affinity reader: archive, object stream, layers, vectors, text, pixels (standalone; read only)
+│  ├─ affinity/                craft-affinity       bounded native Affinity reader: archive, object stream, layers, vectors, text, pixels (shared in craft-libs)
 │  ├─ raw/                     photocraft-raw       clean-room camera RAW decode (DNG, CR2, TIFF/EP) + develop pipeline (standalone, like psd)
 │  ├─ format/                  photocraft-format    native document format (.pcraft bundle): manifest + content-addressed tiles
 │  ├─ io/                      photocraft-io        import/export orchestration; doc ⇄ PSD mapping; PDF/SVG import (features)
@@ -530,7 +529,7 @@ schemars = "1"
 blake3 = "1"
 zstd = "*"           # native; ruzstd for wasm decode
 # color / codecs
-# ICC: our own photocraft-cms (pure Rust)
+# ICC: our own craft-cms (pure Rust, from craft-libs)
 image = { version = "*", default-features = false }
 jxl-oxide = "*"
 # gpu

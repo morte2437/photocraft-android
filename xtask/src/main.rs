@@ -170,7 +170,7 @@ fn wasm_set() -> Result<Vec<String>, String> {
 
 /// Optional features that official builds enable and the web app ships, also checked for wasm32:
 /// (package, feature).
-const WASM_FEATURES: &[(&str, &str)] = &[("photocraft-codecs", "heif")];
+const WASM_FEATURES: &[(&str, &str)] = &[("photocraft-io", "heif")];
 
 /// One `cargo check` for the whole set: each crate is checked once, and `--keep-going` still
 /// reports every failing crate. Features unify across the set, so each crate is checked with the

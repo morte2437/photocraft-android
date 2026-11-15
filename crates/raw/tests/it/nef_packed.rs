@@ -27,7 +27,8 @@ fn packed(values: &[u16], w: usize, bits: u32, padded: bool) -> Vec<u8> {
 
 #[test]
 fn packed_nef_uses_maker_mode_not_the_shared_tiff_compression() {
-    let (w, h) = (22, 5);
+    // craft-raw reads the measured layouts only: 12-bit rows of an even width, 14-bit rows of a multiple of 4.
+    let (w, h) = (24, 5);
     for (bits, mode) in [(12u32, 6u16), (14, 10)] {
         let values: Vec<u16> = (0..w * h).map(|i| ((i * 83 + 11) % (1 << bits)) as u16).collect();
         for padded in [false, true] {
@@ -70,14 +71,14 @@ fn packed_nef_rejects_truncation_wrong_depth_and_unknown_modes() {
 
 #[test]
 fn nikon_crop_area_uses_sensor_coordinates_and_ignores_invalid_rectangles() {
-    let strip = packed(&[1000; 22 * 10], 22, 14, true);
+    let strip = packed(&[1000; 24 * 10], 24, 14, true);
     for (rect, expected) in [
         ([2, 2, 18, 6], photocraft_raw::Rect::new(2, 2, 18, 6)),
-        ([2, 2, 22, 10], photocraft_raw::Rect::new(0, 0, 22, 10)),
-        ([2, 2, 0, 6], photocraft_raw::Rect::new(0, 0, 22, 10)),
-        ([u32::MAX, 2, 18, 6], photocraft_raw::Rect::new(0, 0, 22, 10)),
+        ([2, 2, 22, 10], photocraft_raw::Rect::new(0, 0, 24, 10)),
+        ([2, 2, 0, 6], photocraft_raw::Rect::new(0, 0, 24, 10)),
+        ([u32::MAX, 2, 18, 6], photocraft_raw::Rect::new(0, 0, 24, 10)),
     ] {
-        let bytes = nef_compressed(22, 10, 14, strip.clone(), [0, 1, 1, 2], false, vec![(0x93, Val::Short(vec![10])), (0x45, Val::Long(rect.to_vec()))]);
+        let bytes = nef_compressed(24, 10, 14, strip.clone(), [0, 1, 1, 2], false, vec![(0x93, Val::Short(vec![10])), (0x45, Val::Long(rect.to_vec()))]);
         let sensor = photocraft_raw::decode(&bytes, &Limits::default()).unwrap();
         assert_eq!(sensor.crop, expected);
         let developed = photocraft_raw::develop_sensor(&sensor, &Default::default()).unwrap();

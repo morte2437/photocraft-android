@@ -46,7 +46,7 @@ fn display_image_matches_egui_unmultiplied_conversion() {
     let reference = |img: photocraft_raster::Rgba8Image| egui::ColorImage::from_rgba_unmultiplied([img.width as usize, img.height as usize], &img.pixels);
     assert_eq!(super::display_image(None, &buf).pixels, reference(buf.to_rgba8()).pixels);
     let mut doc = photocraft_doc::Document::new("t", photocraft_geom::Size::new(1, 1), photocraft_doc::ColorMode::Rgb, photocraft_doc::SampleType::U8);
-    doc.icc_profile = Some(photocraft_cms::Builtin::AdobeRgbCompat.profile().to_bytes());
+    doc.icc_profile = Some(craft_cms::Builtin::AdobeRgbCompat.profile().to_bytes());
     let mut color = photocraft_engine::color_cmds::ColorState::default();
     color.settings.monitor_profile = "srgb".into();
     let d = color.canvas_display(&doc).unwrap();

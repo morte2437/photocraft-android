@@ -598,7 +598,7 @@ pub(super) fn tool_event_with_view(app: &mut PhotocraftApp, ev: ToolEvent, mods:
             }
             match tool {
                 Tool::PathSelection => {
-                    let tol = 6.0 / f64::from(app.point_zoom().max(0.01));
+                    let tol = crate::path_components::press_tolerance(app);
                     if let Some(st) = app.session.active()
                         && let Some(id) = crate::vector_ui::pick_shape_at(&st.doc, [x, y], tol)
                     {

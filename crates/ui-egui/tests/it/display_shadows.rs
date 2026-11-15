@@ -6,7 +6,7 @@
 
 use std::sync::Arc;
 
-use photocraft_cms::{Builtin, Profile, curve::Curve};
+use craft_cms::{Builtin, Profile, curve::Curve};
 use photocraft_color::{ColorMode, PixelFormat, SampleType};
 use photocraft_doc::{Document, Layer, LayerContent, Size};
 use photocraft_engine::display_color::Display;
@@ -82,7 +82,7 @@ fn profiles() -> (Arc<Vec<u8>>, Arc<Vec<u8>>) {
     (source.with_encoded_bytes().to_bytes(), monitor.with_encoded_bytes().to_bytes())
 }
 
-/// Solve the monitor matrix without using any photocraft-cms transform/math/curve evaluator.
+/// Solve the monitor matrix without using any craft-cms transform/math/curve evaluator.
 fn solve(mut m: [[f64; 3]; 3], mut xyz: [f64; 3]) -> [f64; 3] {
     for column in 0..3 {
         let pivot = (column..3).max_by(|&a, &b| m[a][column].abs().total_cmp(&m[b][column].abs())).unwrap();
@@ -203,7 +203,7 @@ fn gpu_display_shadows_match_independent_icc_reference_at_all_depths() {
 #[test]
 #[ignore = "manual 24 MP GPU timing; run with --release --ignored --nocapture"]
 fn compare_display_paths_24mp() {
-    use photocraft_cms::{Intent, Lut3d, Transform};
+    use craft_cms::{Intent, Lut3d, Transform};
     use photocraft_ui_egui::gpu_canvas::{GpuCanvas, ViewParams};
     use std::time::Instant;
 
@@ -215,14 +215,14 @@ fn compare_display_paths_24mp() {
     let source = Profile::parse(&source).expect("synthetic source");
     let monitor = Profile::parse(&monitor).expect("synthetic monitor");
     let transform = Transform::new(&source, &monitor, Intent::RelativeColorimetric, true).expect("display transform");
-    let lut = Lut3d::from_transform(&transform, 33).to_rgba8();
+    let lut = Lut3d::from_transform(&transform, 33).unwrap().to_rgba8();
     let shaper = transform.gpu_matrix_shaper().expect("matrix/shaper");
 
     let mut prep_lut_ms = Vec::new();
     let mut prep_shaper_ms = Vec::new();
     for _ in 0..5 {
         let start = Instant::now();
-        std::hint::black_box(Lut3d::from_transform(&transform, 33).to_rgba8());
+        std::hint::black_box(Lut3d::from_transform(&transform, 33).unwrap().to_rgba8());
         prep_lut_ms.push(start.elapsed().as_secs_f64() * 1000.0);
         let start = Instant::now();
         std::hint::black_box(transform.gpu_matrix_shaper().expect("matrix/shaper"));

@@ -260,6 +260,9 @@ mod triangle_align_edges_tests;
 #[cfg(test)]
 mod triangle_shift_equilateral_tests;
 
+#[cfg(test)]
+mod rectangle_gear_tests;
+
 pub(crate) use pen::freeform_locked_shape;
 #[cfg(test)]
 use pen_resume::pen_finish_on_redo;
@@ -307,9 +310,7 @@ enum PenTarget {
 pub(crate) fn capture_pen_owner(app: &PhotocraftApp) -> Option<PenOwner> {
     let st = app.session.active()?;
     let target = if app.ui.tool_options.vector_mode == "shape" {
-        let mut open_stroke = app.ui.tool_options.shape_stroke.params();
-        open_stroke["width"] = json!(app.ui.tool_options.stroke_width.max(1.0));
-        open_stroke["color"] = json!(app.session.tools.foreground);
+        let open_stroke = shapes::open_pen_stroke_param(app);
         PenTarget::Shape { fill: fill_param(app), stroke: stroke_param(app), open_stroke }
     } else if let Some((name, _)) = selected_document_geometry(app) {
         PenTarget::Path { name, append: true }

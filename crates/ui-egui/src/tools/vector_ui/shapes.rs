@@ -27,6 +27,19 @@ pub(super) fn stroke_param(app: &PhotocraftApp) -> Value {
     p
 }
 
+/// An open Pen shape's stroke: the options bar's stroke when one is set, else a 1 px stroke in the
+/// foreground colour, so the open path stays visible.
+pub(super) fn open_pen_stroke_param(app: &PhotocraftApp) -> Value {
+    let stroke = stroke_param(app);
+    if !stroke.is_null() {
+        return stroke;
+    }
+    let mut fallback = app.ui.tool_options.shape_stroke.params();
+    fallback["width"] = json!(1.0);
+    fallback["color"] = json!(app.session.tools.foreground);
+    fallback
+}
+
 /// The paint the next shape's fill (`stroke` false) or stroke takes: the options bar's gradient,
 /// else the foreground / background colour.
 fn tool_paint(app: &PhotocraftApp, stroke: bool) -> photocraft_doc::Fill {
@@ -115,14 +128,7 @@ pub(super) fn shape_geometry(o: &ToolOptions, tool: Tool, start: [f64; 2], end: 
             // Settings saved with the old 0..100 range draw at the nearest value (#13258).
             "arrowConcavity": if o.arrow_concavity.is_finite() { o.arrow_concavity.round().clamp(-50.0, 50.0) } else { 0.0 }})
     } else {
-        let (mut w, mut h) = (end[0] - start[0], end[1] - start[1]);
-        if mods.shift {
-            // The drag's shorter side sets the square, as in the reference application (#13222).
-            let m = w.abs().min(h.abs());
-            (w, h) = (m * w.signum(), m * h.signum());
-        }
-        let (x0, y0) = if mods.alt { (start[0] - w, start[1] - h) } else { (start[0], start[1]) };
-        let (w, h) = if mods.alt { (w * 2.0, h * 2.0) } else { (w, h) };
+        let [x0, y0, w, h] = drag_box(o, tool, start, end, mods);
         let rect = [x0.min(x0 + w), y0.min(y0 + h), w.abs(), h.abs()];
         // Align Edges (#13370) is the Triangle tool's option, and only in Shape mode, where its
         // checkbox is enabled. The other shape tools, and a greyed checkbox, still snap.
@@ -149,6 +155,43 @@ pub(super) fn shape_geometry(o: &ToolOptions, tool: Tool, start: [f64; 2], end: 
             _ => json!({"kind": "polygon", "rect": rect, "sides": o.polygon_sides.max(3)}),
         }
     })
+}
+
+/// The box `[x, y, w, h]` of a Shape-tool drag from `start` to `end`, before it is snapped, with
+/// `w` and `h` signed the way the drag went. ⇧ squares it from the drag's shorter side, as in the
+/// reference application (#13222), and ⌥ draws it from the centre. The Rectangle tool's gear
+/// (#13343) can keep either on, and then ⇧ turns Square off and ⌥ From Center, as in the
+/// reference. Fixed Size puts the gear's W × H with its top-left corner at the release point;
+/// Proportional draws the largest box of the gear's W : H inside the dragged one, from the press
+/// point. A Fixed Size or Proportional field left empty draws as Unconstrained.
+fn drag_box(o: &ToolOptions, tool: Tool, start: [f64; 2], end: [f64; 2], mods: egui::Modifiers) -> [f64; 4] {
+    let gear = tool == Tool::Rectangle;
+    let constraint = if gear { o.rect_constraint.as_str() } else { "unconstrained" };
+    let from_center = mods.alt != (gear && o.rect_from_center);
+    if constraint == "fixedSize"
+        && let Some((fw, fh)) = positive_pair(o.rect_fixed_width, o.rect_fixed_height)
+    {
+        // From Center with Fixed Size is not measured: the size is centred on the release point.
+        let (x, y) = if from_center { (end[0] - fw / 2.0, end[1] - fh / 2.0) } else { (end[0], end[1]) };
+        return [x, y, fw, fh];
+    }
+    let (mut w, mut h) = (end[0] - start[0], end[1] - start[1]);
+    if mods.shift != (constraint == "square") {
+        let m = w.abs().min(h.abs());
+        (w, h) = (m * w.signum(), m * h.signum());
+    }
+    if constraint == "proportional"
+        && let Some((rw, rh)) = positive_pair(o.rect_ratio_width, o.rect_ratio_height)
+    {
+        let s = (w.abs() / rw).min(h.abs() / rh);
+        (w, h) = (rw * s * w.signum(), rh * s * h.signum());
+    }
+    if from_center { [start[0] - w, start[1] - h, 2.0 * w, 2.0 * h] } else { [start[0], start[1], w, h] }
+}
+
+/// `(w, h)` in f64 when both are finite and above zero (gear fields that are not empty).
+fn positive_pair(w: f32, h: f32) -> Option<(f64, f64)> {
+    (w.is_finite() && h.is_finite() && w > 0.0 && h > 0.0).then(|| (f64::from(w), f64::from(h)))
 }
 
 /// The box `[x0, y0, x1, y1]` a Shape-tool drag draws (a line's: its ends'), which snaps while

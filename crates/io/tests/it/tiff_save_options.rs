@@ -33,8 +33,12 @@ fn save(doc: &Document, layers: bool, transparency: Option<bool>) -> ExportResul
 }
 
 fn extra_samples_tag(bytes: &[u8]) -> Vec<u16> {
-    let mut dec = tiff::decoder::Decoder::new(std::io::Cursor::new(bytes)).unwrap();
-    dec.get_tag_u16_vec(tiff::tags::Tag::ExtraSamples).unwrap_or_default()
+    let tiff = craft_tiff::Tiff::parse(bytes).unwrap();
+    tiff.ifds
+        .first()
+        .and_then(|ifd| ifd.value(craft_tiff::tags::EXTRA_SAMPLES))
+        .map(|v| v.to_u64_vec().into_iter().map(|x| x as u16).collect())
+        .unwrap_or_default()
 }
 
 /// A TIFF's channel resources: the names in 1006, and the byte lengths of DisplayInfo (1077)

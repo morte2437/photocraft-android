@@ -99,13 +99,14 @@ fn batch_menu_offers_quality() {
 }
 
 #[test]
-fn image_processor_menu_offers_webp() {
+fn image_processor_menu_offers_independent_file_types() {
     let _gpu = photocraft_testkit::gpu_lock();
     let mut h = harness();
     open(&mut h, "file.scripts.imageProcessor");
-    open_format_choices(&mut h);
+    for label in ["Save as JPEG", "Save as PSD", "Save as TIFF"] {
+        h.get_by_role_and_label(egui::accesskit::Role::CheckBox, label);
+    }
     evidence(&mut h, "image-processor-formats");
-    assert!(h.query_by_label("WebP").or_else(|| h.query_by_label("Webp")).is_some(), "Image Processor must offer the supported WebP output format");
 }
 
 struct Scratch(PathBuf);
@@ -207,7 +208,7 @@ fn batch_custom_quality_is_bounded_dialog_local_and_reversible() {
 /// Actual folder-mode controls must pass both WebP quality endpoints to the encoder while
 /// preserving the active document, history, preferences and recorded actions.
 #[test]
-fn batch_and_processor_real_controls_write_the_chosen_webp_quality() {
+fn batch_real_controls_write_the_chosen_webp_quality() {
     let _gpu = photocraft_testkit::gpu_lock();
     let dir = Scratch::new();
     let input = dir.0.join("input");
@@ -220,47 +221,33 @@ fn batch_and_processor_real_controls_write_the_chosen_webp_quality() {
     let history = h.state().session.active().unwrap().history.entries();
     let prefs = serde_json::to_value(h.state().session.prefs()).unwrap();
     let actions = serde_json::to_value(&h.state().session.actions.list).unwrap();
-    for (command, prefix) in [("file.automate.batch", "batch"), ("file.scripts.imageProcessor", "processor")] {
-        let mut outputs = Vec::new();
-        for quality in [0, 12] {
-            let output = dir.0.join(format!("{prefix}-{quality}"));
-            open(&mut h, command);
-            if prefix == "batch" {
-                assert!(h.state().ui.dialogs.last().unwrap().fields["quality"].is_null());
-                h.get_by_label("Custom").click();
-                h.run_steps(3);
-            } else {
-                let fields = &h.state().ui.dialogs.last().unwrap().fields;
-                assert_eq!(fields["quality"], json!(8));
-                assert_eq!(fields["width"], json!(0));
-                assert_eq!(fields["height"], json!(0));
-                assert_eq!(fields["convertToSrgb"], json!(true));
-                h.get_by_role_and_label(egui::accesskit::Role::ComboBox, "Source").click();
-                h.run_steps(3);
-                h.get_by_label("Folder").click();
-                h.run_steps(3);
-            }
-            choose_webp(&mut h);
-            edit_path(&mut h, "Input", &input);
-            edit_path(&mut h, "Output", &output);
-            edit_quality(&mut h, &quality.to_string());
-            evidence(&mut h, &format!("{prefix}-webp-quality-{quality}"));
-            h.get_by_label("OK").click();
-            h.run_steps(5);
-            assert!(h.state().ui.dialogs.is_empty());
-            let bytes = std::fs::read(output.join("owned-pattern.webp")).expect("the actual dialog confirmation writes the selected WebP");
-            let decoded = photocraft_codecs::decode_as(Format::WebP, &bytes).unwrap();
-            assert_eq!(decoded.dimensions(), (64, 48));
-            assert_eq!(decoded.layout(), ChannelLayout::Rgb);
-            let (_, params) = h.state().session.journal.last().unwrap();
-            assert_eq!(params["format"], json!("webp"));
-            assert_eq!(params["quality"].as_f64(), Some(f64::from(quality)));
-            assert!(params.as_object().unwrap().keys().all(|k| !k.starts_with("__")), "private shell values never become command params");
-            outputs.push(bytes);
-        }
-        assert_ne!(outputs[0], outputs[1], "{command}: actual chosen quality reaches the encoder");
-        assert!(outputs[0].len() < outputs[1].len());
+    let mut outputs = Vec::new();
+    for quality in [0, 12] {
+        let output = dir.0.join(format!("batch-{quality}"));
+        open(&mut h, "file.automate.batch");
+        assert!(h.state().ui.dialogs.last().unwrap().fields["quality"].is_null());
+        h.get_by_label("Custom").click();
+        h.run_steps(3);
+        choose_webp(&mut h);
+        edit_path(&mut h, "Input", &input);
+        edit_path(&mut h, "Output", &output);
+        edit_quality(&mut h, &quality.to_string());
+        evidence(&mut h, &format!("batch-webp-quality-{quality}"));
+        h.get_by_label("OK").click();
+        h.run_steps(5);
+        assert!(h.state().ui.dialogs.is_empty());
+        let bytes = std::fs::read(output.join("owned-pattern.webp")).expect("the actual dialog confirmation writes the selected WebP");
+        let decoded = photocraft_codecs::decode_as(Format::WebP, &bytes).unwrap();
+        assert_eq!(decoded.dimensions(), (64, 48));
+        assert_eq!(decoded.layout(), ChannelLayout::Rgb);
+        let (_, params) = h.state().session.journal.last().unwrap();
+        assert_eq!(params["format"], json!("webp"));
+        assert_eq!(params["quality"].as_f64(), Some(f64::from(quality)));
+        assert!(params.as_object().unwrap().keys().all(|k| !k.starts_with("__")), "private shell values never become command params");
+        outputs.push(bytes);
     }
+    assert_ne!(outputs[0], outputs[1], "actual chosen quality reaches the encoder");
+    assert!(outputs[0].len() < outputs[1].len());
     let active = h.state().session.active().unwrap();
     assert!(Arc::ptr_eq(&active.doc, &doc));
     assert_eq!((active.revision, active.history.entries()), (revision, history));

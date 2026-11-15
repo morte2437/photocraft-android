@@ -38,11 +38,11 @@ fn read(d: &Descriptor) -> Option<(&[u8], &'static str, String, bool)> {
         return None;
     }
     let parser = match format {
-        "3dl" => photocraft_cms::lutfile::Format::ThreeDl,
-        "look" => photocraft_cms::lutfile::Format::Look,
-        _ => photocraft_cms::lutfile::Format::Cube,
+        "3dl" => craft_cms::lutfile::Format::ThreeDl,
+        "look" => craft_cms::lutfile::Format::Look,
+        _ => craft_cms::lutfile::Format::Cube,
     };
-    let lut = photocraft_cms::lutfile::parse_as(parser, bytes).ok()?;
+    let lut = craft_cms::lutfile::parse_as(parser, bytes).ok()?;
     if !lut.domain_is_default() {
         return None;
     }

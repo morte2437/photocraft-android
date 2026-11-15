@@ -13,7 +13,7 @@ workspace = true
 # Real-file corpus tests (opt-in; `cargo xtask test-corpus`). Fail when the corpus is missing.
 corpus = []
 # HEIC/HEIF decode (forwarded to photocraft-codecs; see its `heif` feature).
-heif = ["photocraft-codecs/heif"]
+heif = ["photocraft-codecs/heif", "photocraft-formats/heif"]
 # Test support for synthetic memory injection, estimate charges and verification across crates.
 testgen = []
 # Editable PDF import (experimental): painted paths and embedded-font text become editable
@@ -23,35 +23,37 @@ pdf-editable = ["dep:kurbo"]
 [dependencies]
 photocraft-geom = { workspace = true }
 photocraft-color = { workspace = true }
-photocraft-cms = { workspace = true }
+craft-cms = { workspace = true }
 photocraft-raster = { workspace = true }
 photocraft-doc = { workspace = true }
 photocraft-compose = { workspace = true }
 photocraft-algo = { workspace = true }
 craft-psd = { workspace = true }
 photocraft-codecs = { workspace = true }
+photocraft-formats = { workspace = true }
 photocraft-raw = { workspace = true }
-photocraft-affinity = { workspace = true }
+craft-affinity = { workspace = true }
 photocraft-text = { workspace = true }
 photocraft-paint = { workspace = true }
 photocraft-vector = { workspace = true }
 photocraft-format = { path = "../format" }
+craft-pdf = { workspace = true }
 craft-docpath = { workspace = true }
+craft-ora = { workspace = true }
+craft-kra = { workspace = true }
+craft-xcf = { workspace = true }
+craft-pdn = { workspace = true }
+craft-svg = { workspace = true }
+craft-tiff = { workspace = true }
+craft-crs = { workspace = true }
+craft-xml = { workspace = true }
 thiserror = { workspace = true }
 ttf-parser = "0.25.1"
 serde_json = { workspace = true }
 blake3 = { version = "1.8", default-features = false, features = ["pure"] }
-# svg.rs inflates `.svgz` itself (with a size cap) so the XML can be checked before it is parsed;
 # pdn.rs inflates Paint.NET's gzip pixel chunks.
 flate2 = { workspace = true }
-# ora.rs reads OpenRaster's stack.xml (already in the tree through usvg).
-roxmltree = "0.21"
-# Reuse usvg's locked header reader to bound embedded SVG raster data before decoding.
-imagesize = "0.13"
-# SVG import (svg.rs): usvg parses, resvg rasterises what the shape model can't hold. Both are
-# already in the tree through the UI's icon loader; text shaping needs the fonts feature set.
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-resvg = { version = "0.45", default-features = false, features = ["text", "system-fonts", "raster-images"] }
 # The SVG fallback font search keeps each font file's character map (already in the tree through usvg).
 ttf-parser = { version = "0.25", default-features = false }
 # PDF import (pdf_import.rs): craft-pdf rasterizes pages in pure Rust; no shared library ships.
@@ -60,14 +62,11 @@ craft-pdf = { workspace = true }
 # This is the same kurbo 0.13 that craft-pdf already links; naming it adds no crate to the graph.
 kurbo = { version = "0.13", optional = true }
 
-[target.'cfg(target_arch = "wasm32")'.dependencies]
-resvg = { version = "0.45", default-features = false, features = ["text", "raster-images"] }
-
 [dev-dependencies]
 lopdf = { version = "0.38", default-features = false }
 miniz_oxide = "0.9"
 crc32fast = "1.5"
-photocraft-affinity = { workspace = true, features = ["synth"] }
+craft-affinity = { workspace = true, features = ["synth"] }
 flate2 = { workspace = true }
 craft-psd = { workspace = true, features = ["testgen"] }
 photocraft-raw = { workspace = true, features = ["testgen"] }
@@ -76,4 +75,3 @@ proptest = { workspace = true }
 # Lossless JPEG XL encoder for the JPEG XL DNG preview test (tests only), as in photocraft-raw.
 zune-jpegxl = { version = "=0.5.2", default-features = false, features = ["std"] }
 zune-core = { workspace = true }
-tiff = { version = "0.11", default-features = false, features = ["deflate", "lzw"] }

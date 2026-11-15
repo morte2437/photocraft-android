@@ -34,6 +34,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 /// `%PDF-` magic. `.ai` files that start with it are PDFs and render through this importer.
+#[cfg(test)]
 pub fn is_pdf(bytes: &[u8]) -> bool {
     bytes.starts_with(b"%PDF-")
 }

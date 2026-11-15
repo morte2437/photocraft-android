@@ -85,5 +85,6 @@ fn the_entries_keep_their_parameter_values() {
     let mut app = app_with_paths();
     let (id, _) = open(&mut app);
     let choices = app.ui.dialog_mut(id).unwrap().fields["__choices"]["paths"].clone();
-    assert_eq!(choices, json!(["all", "work", "Curve A", "Curve B"]));
+    // Document Bounds comes first (#13771).
+    assert_eq!(choices, json!(["documentBounds", "all", "work", "Curve A", "Curve B"]));
 }

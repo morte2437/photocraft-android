@@ -1020,6 +1020,9 @@ mod history_names_tests;
 mod shift_angle_tests;
 
 #[cfg(test)]
+mod options_bar_tests;
+
+#[cfg(test)]
 mod freeform_command_tests {
     use super::*;
 

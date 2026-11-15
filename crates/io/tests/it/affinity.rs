@@ -24,7 +24,7 @@ fn chunk(kind: &[u8; 4], data: &[u8]) -> Vec<u8> {
 /// A synthetic record envelope, not an Affinity document writer (there is no object graph).
 fn file(png: &[u8]) -> Vec<u8> {
     let mut b = vec![0; 72];
-    b[..4].copy_from_slice(photocraft_affinity::MAGIC);
+    b[..4].copy_from_slice(craft_affinity::MAGIC);
     b[4..6].copy_from_slice(&12u16.to_le_bytes());
     b[8..12].copy_from_slice(b"nsrP");
     b[12..16].copy_from_slice(b"#Inf");
@@ -196,7 +196,7 @@ proptest! {
 
 mod native {
     use super::*;
-    use photocraft_affinity::synth::{self, F, Method, tag};
+    use craft_affinity::synth::{self, F, Method, tag};
     use photocraft_doc::LayerContent;
 
     fn rgba(r: f32, g: f32, b: f32, a: f32) -> F {

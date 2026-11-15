@@ -12,7 +12,7 @@
 use std::borrow::Cow;
 use std::sync::{Arc, Mutex};
 
-use photocraft_cms::{Builtin, Intent, Profile, Transform};
+use craft_cms::{Builtin, Intent, Profile, Transform};
 use photocraft_codecs::{self as codecs, ChannelLayout, Format, Image, SampleType};
 pub use photocraft_raw::Demosaic;
 use photocraft_raw::{CameraLook, DevelopOptions, Limits, PreviewColorSpace, RawError, Reference, Sensor, WhiteBalance};
@@ -326,7 +326,7 @@ fn developed_document(name: &str, bytes: &[u8], format: &str, dev: photocraft_ra
     // no orientation: the developed image is already upright.
     img.meta.exif = codecs::raw_exif(bytes);
     let mut r = image_to_document(name, &img)?;
-    r.document.icc_profile = Some(Arc::new(photocraft_cms::Builtin::ProPhotoCompat.profile().to_bytes().to_vec()));
+    r.document.icc_profile = Some(Arc::new(craft_cms::Builtin::ProPhotoCompat.profile().to_bytes().to_vec()));
     let camera = camera_name(dev.info.make.as_deref(), dev.info.model.as_deref());
     r.warnings.push(format!(
         "{format}{} {summary} into 16-bit {}",
@@ -375,15 +375,10 @@ fn preview_profile(raw: &[u8], icc: Option<&[u8]>) -> Result<Option<Cow<'static,
 /// converts it to sRGB when it is in another colour space ([`preview_profile`]). `Err` says
 /// why there is no fit.
 pub fn fit_preview_look(raw: &[u8], sensor: &Sensor, opts: &DevelopOptions) -> Result<CameraLook, String> {
-    let previews = photocraft_raw::embedded_previews(raw);
-    let long = |p: &photocraft_raw::Preview| p.width.max(p.height);
-    let pick = previews
-        .iter()
-        .filter(|p| long(p) >= FIT_PREVIEW_EDGE)
-        .min_by_key(|p| long(p))
-        .or_else(|| previews.iter().max_by_key(|p| long(p)))
+    let jpeg = photocraft_raw::embedded_jpeg_preview_covering(raw, FIT_PREVIEW_EDGE)
+        .or_else(|| photocraft_raw::embedded_jpeg_preview(raw))
         .ok_or("no embedded JPEG preview")?;
-    let img = upright_preview(raw, pick.jpeg, &opts.limits).map_err(|e| format!("the embedded preview does not decode: {e}"))?;
+    let img = upright_preview(raw, &jpeg, &opts.limits).map_err(|e| format!("the embedded preview does not decode: {e}"))?;
     if img.layout() != ChannelLayout::Rgb || img.sample_type() != SampleType::U8 {
         return Err("the embedded preview is not 8-bit RGB".into());
     }
@@ -392,7 +387,7 @@ pub fn fit_preview_look(raw: &[u8], sensor: &Sensor, opts: &DevelopOptions) -> R
     if let Some(src) = preview_profile(raw, img.icc.as_deref())? {
         let t = Transform::new(&src, Builtin::Srgb.profile(), Intent::RelativeColorimetric, false).map_err(|e| e.to_string())?;
         let mut out = vec![0u8; rgb.len()];
-        t.convert_u8(&rgb, 3, &mut out, 3, false);
+        t.convert_u8(&rgb, 3, &mut out, 3, false).map_err(|e| e.to_string())?;
         rgb = Cow::Owned(out);
     }
     photocraft_raw::fit_look(sensor, opts, &Reference { width: w, height: h, rgb: &rgb }).map_err(|e| e.to_string())
@@ -477,17 +472,22 @@ fn import_raw_with_inner(name: &str, bytes: &[u8], opts: &DevelopOptions, keep: 
             developed_document(name, bytes, format, dev, &summary)
         }
         Err(RawError::Unsupported(reason)) => {
-            let jpeg = photocraft_raw::embedded_preview(bytes);
+            let jpeg = photocraft_raw::embedded_jpeg_preview(bytes).map(|jpeg| (jpeg,));
             // A DNG 1.7 converter keeps only its small thumbnail as JPEG and writes the larger
             // previews as JPEG XL, like the raw data (#8125): open the largest of either kind.
-            let jpeg_area = jpeg.map_or(0, |p| u64::from(p.width) * u64::from(p.height));
+            let jpeg_img = jpeg.map(|(jpeg,)| preview_image(bytes, &jpeg, &opts.limits).map(|img| (jpeg, img)));
+            let jpeg_area = jpeg_img.as_ref().and_then(|r| r.as_ref().ok()).map_or(0, |(_, img)| u64::from(img.width()) * u64::from(img.height()));
             let jxl = photocraft_raw::embedded_jxl_preview(bytes, &opts.limits).filter(|p| u64::from(p.width) * u64::from(p.height) > jpeg_area);
-            let (img, kind, (w, h)) = match (jxl, jpeg) {
+            let (img, kind, (w, h)) = match (jxl, jpeg_img) {
                 (Some(p), _) => {
                     let size = (p.width, p.height);
                     (jxl_preview_image(bytes, p)?, "JPEG XL", size)
                 }
-                (None, Some(p)) => (preview_image(bytes, p.jpeg, &opts.limits)?, "JPEG", (p.width, p.height)),
+                (None, Some(Ok((_, img)))) => {
+                    let size = img.dimensions();
+                    (img, "JPEG", size)
+                }
+                (None, Some(Err(error))) => return Err(error),
                 (None, None) => return Err(IoError::Raw(RawError::Unsupported(reason))),
             };
             let depth = if img.sample_type() == SampleType::U8 { "8-bit" } else { "16-bit" };
@@ -496,18 +496,20 @@ fn import_raw_with_inner(name: &str, bytes: &[u8], opts: &DevelopOptions, keep: 
             );
             preview_document(name, &img, note)
         }
-        // Damaged sensor data: the camera's JPEG is often still intact, so the photo opens.
-        Err(RawError::Malformed(reason)) => {
-            match photocraft_raw::embedded_preview(bytes).map(|p| (p.width, p.height, preview_image(bytes, p.jpeg, &opts.limits))) {
-                Some((w, h, Ok(img))) => {
-                    let note = format!(
-                        "{format}: the raw sensor data is damaged ({reason}); opened the camera's embedded {w}x{h} JPEG preview instead (8-bit, not the raw sensor data)"
-                    );
-                    preview_document(name, &img, note)
-                }
-                _ => Err(IoError::Raw(RawError::Malformed(reason))),
+        // A damaged DNG can still carry a valid JPEG, but opening that thumbnail as if it were
+        // the photograph hides a corrupt raw source. Keep preview fallback for other camera
+        // formats whose independent preview is the established recovery path.
+        Err(RawError::Malformed(reason)) if format == "DNG" => Err(IoError::Raw(RawError::Malformed(reason))),
+        Err(RawError::Malformed(reason)) => match photocraft_raw::embedded_jpeg_preview(bytes).map(|jpeg| preview_image(bytes, &jpeg, &opts.limits)) {
+            Some(Ok(img)) => {
+                let (w, h) = img.dimensions();
+                let note = format!(
+                    "{format}: the raw sensor data is damaged ({reason}); opened the camera's embedded {w}x{h} JPEG preview instead (8-bit, not the raw sensor data)"
+                );
+                preview_document(name, &img, note)
             }
-        }
+            _ => Err(IoError::Raw(RawError::Malformed(reason))),
+        },
         Err(e) => Err(IoError::Raw(e)),
     }
 }

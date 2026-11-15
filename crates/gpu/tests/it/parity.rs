@@ -101,7 +101,7 @@ fn timed<T>(what: &str, run: impl FnOnce() -> T) -> T {
 fn gpu() -> Option<Gpu> {
     let lock = GPU_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     let required = std::env::var_os("WGPU_BACKEND").is_some();
-    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
+    let instance = crate::instance();
     let adapter = match pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())) {
         Ok(a) => a,
         Err(e) => {
@@ -145,10 +145,7 @@ fn gpu() -> Option<Gpu> {
 /// The returned guard holds [`GPU_LOCK`] until the device is dropped.
 fn any_device() -> Option<(wgpu::Adapter, wgpu::Device, wgpu::Queue, std::sync::MutexGuard<'static, ()>)> {
     let lock = GPU_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-    let adapter = pollster::block_on(
-        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()).request_adapter(&wgpu::RequestAdapterOptions::default()),
-    )
-    .ok()?;
+    let adapter = pollster::block_on(crate::instance().request_adapter(&wgpu::RequestAdapterOptions::default())).ok()?;
     let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).ok()?;
     Some((adapter, device, queue, lock))
 }

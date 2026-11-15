@@ -222,7 +222,7 @@ LUT_3D_SIZE 2
     assert!(s.execute("image.adjustments.colorLookup", json!({"data": "LUT_3D_SIZE 3\n0 0 0\n"})).is_err());
     assert!(s.execute("layer.newAdjustmentLayer.colorLookup", json!({"file": "/nonexistent/x.cube"})).is_err());
     let looks = s.execute("image.adjustments.colorLookup.list", json!({})).unwrap();
-    assert_eq!(looks.as_array().unwrap().len(), photocraft_cms::lutfile::BUILTIN.len());
+    assert_eq!(looks.as_array().unwrap().len(), craft_cms::lutfile::BUILTIN.len());
 }
 
 #[test]
@@ -263,7 +263,7 @@ fn color_lookup_file_round_trips_psd_in_its_own_format() {
             }
         }
     }
-    let hex: String = photocraft_cms::lutfile::LutFile::identity(2).data.iter().flat_map(|v| v.to_le_bytes()).map(|b| format!("{b:02X}")).collect();
+    let hex: String = craft_cms::lutfile::LutFile::identity(2).unwrap().data.iter().flat_map(|v| v.to_le_bytes()).map(|b| format!("{b:02X}")).collect();
     let look = format!("<look><LUT><size>2</size><data>{hex}</data></LUT></look>");
     for (text, file_name, format, psd_format) in
         [(threedl.as_str(), "Invert.3dl", LutFormat::ThreeDl, "LUTFormat3DL"), (look.as_str(), "Grade.look", LutFormat::Look, "LUTFormatLOOK")]

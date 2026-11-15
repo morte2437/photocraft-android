@@ -34,24 +34,16 @@ pub fn options_bar(app: &mut PhotocraftApp, ui: &mut egui::Ui, tool: Tool) -> bo
         crate::widgets::scrub_option_label(ui, &label);
     };
     let target = selected_shape(&app.session);
-    if tool == Tool::PathSelection && !crate::direct_select::active_paths(app).is_empty() {
+    // Direct Selection shares the Path Selection bar (#13219).
+    if matches!(tool, Tool::PathSelection | Tool::DirectSelection) && !crate::direct_select::active_paths(app).is_empty() {
         path_operations_menu(app, ui);
         crate::widgets::vline(ui, 22.0);
     }
     let o = &mut app.ui.tool_options;
-    if tool == Tool::PathSelection && target.is_none() {
-        lbl(ui, if app.ui.vector_mask_target { "Drag to move the targeted vector mask" } else { tl!("Drag to move the selected path") });
-        return true;
-    }
-    if tool == Tool::DirectSelection && target.is_none() {
-        let (shift, alt) = (crate::shortcuts::pretty("Shift"), crate::shortcuts::pretty("Alt"));
-        lbl(
-            ui,
-            &crate::i18n::fmt(
-                tl!("Click: select anchor · Drag: move anchor, handle or segment · {shift}-click: add · {alt}-click: whole subpath"),
-                &[("shift", &shift), ("alt", &alt)],
-            ),
-        );
+    if matches!(tool, Tool::PathSelection | Tool::DirectSelection) && target.is_none() {
+        if tool == Tool::PathSelection {
+            lbl(ui, if app.ui.vector_mask_target { "Drag to move the targeted vector mask" } else { tl!("Drag to move the selected path") });
+        }
         return true;
     }
     if tool == Tool::AddAnchorPoint {
@@ -126,6 +118,10 @@ pub fn options_bar(app: &mut PhotocraftApp, ui: &mut egui::Ui, tool: Tool) -> bo
         // Shape draws a shape layer, Path adds the outline to the work path (#9453).
         let opts = [("shape".to_string(), tl!("Shape")), ("path".to_string(), tl!("Path"))];
         crate::widgets::dropdown(ui, "shape-mode", tl!("Mode"), &mut app.ui.tool_options.shape_mode, &opts, 80.0);
+        if draws_path(&app.ui.tool_options) {
+            crate::widgets::vline(ui, 22.0);
+            make_buttons(app, ui);
+        }
     } else {
         // Path Selection and Direct Selection edit the selected shape layer: the Shape tools'
         // Path mode isn't theirs to show or change.
@@ -143,6 +139,10 @@ pub fn options_bar(app: &mut PhotocraftApp, ui: &mut egui::Ui, tool: Tool) -> bo
         super::pen::path_operations_menu(app, ui);
         super::pen::path_alignment_menu(app, ui);
         super::pen::path_arrangement_menu(app, ui);
+    }
+    if tool == Tool::Rectangle {
+        crate::widgets::vline(ui, 22.0);
+        rectangle_gear(&mut app.ui.tool_options, ui);
     }
     // Photoshop-style arrowhead settings at the right of Line options.
     if tool == Tool::Line {
@@ -182,6 +182,39 @@ pub fn options_bar(app: &mut PhotocraftApp, ui: &mut egui::Ui, tool: Tool) -> bo
         }
     }
     true
+}
+
+/// The Rectangle tool's gear, after the path arrangement as in the reference application
+/// (#13343): Unconstrained (the default), Square, Fixed Size and Proportional, each size's W and H
+/// greyed unless its radio is chosen, and From Center. The settings are tool options; Escape
+/// closes the popup and keeps them. The Path Options at its top are #9971's.
+fn rectangle_gear(o: &mut crate::state::ToolOptions, ui: &mut egui::Ui) {
+    let gear = crate::icons::button_with_icon_size(ui, "settings", 28.0, 20.0, false, tl!("Set additional shape and path options"));
+    egui::Popup::menu(&gear).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside).show(|ui| {
+        ui.set_min_width(220.0);
+        ui.radio_value(&mut o.rect_constraint, "unconstrained".to_string(), tl!("Unconstrained"));
+        ui.radio_value(&mut o.rect_constraint, "square".to_string(), tl!("Square"));
+        // An empty field is 0: Fixed Size starts empty.
+        let sizes = [
+            ("fixedSize", tl!("Fixed Size"), [tl!("Fixed Size W:"), tl!("Fixed Size H:")], "px", 0, 300_000.0),
+            ("proportional", tl!("Proportional"), [tl!("Proportional W:"), tl!("Proportional H:")], "", 3, 99_999.0),
+        ];
+        for (key, label, names, suffix, decimals, max) in sizes {
+            ui.horizontal(|ui| {
+                ui.radio_value(&mut o.rect_constraint, key.to_string(), label);
+                let on = o.rect_constraint == key;
+                let (w, h) =
+                    if key == "fixedSize" { (&mut o.rect_fixed_width, &mut o.rect_fixed_height) } else { (&mut o.rect_ratio_width, &mut o.rect_ratio_height) };
+                ui.add_enabled_ui(on, |ui| {
+                    for (value, name, caption) in [(w, names[0], tl!("W:")), (h, names[1], tl!("H:"))] {
+                        ui.label(caption);
+                        crate::widgets::value_field_prec_blank(ui, value, 0.0..=max, suffix, 72.0, decimals).accessible_name(name);
+                    }
+                });
+            });
+        }
+        ui.checkbox(&mut o.rect_from_center, tl!("From Center"));
+    });
 }
 
 /// Arrowhead Concavity in percent of the head's length, as the reference takes it (#13258).
@@ -570,3 +603,6 @@ mod line_arrow_concavity_field_tests;
 #[cfg(test)]
 #[path = "pen_make_mask_tests.rs"]
 mod pen_make_mask_tests;
+#[cfg(test)]
+#[path = "rectangle_path_make_tests.rs"]
+mod rectangle_path_make_tests;

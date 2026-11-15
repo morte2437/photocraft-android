@@ -21,7 +21,7 @@ use std::borrow::Cow;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
 
-use photocraft_cms::{Builtin, ColorSpace, Curve, Intent, Profile, Transform};
+use craft_cms::{Builtin, ColorSpace, Curve, Intent, Profile, Transform};
 use photocraft_compose::Buffer;
 use photocraft_doc::Document;
 use photocraft_raster::Rgba8Image;
@@ -128,7 +128,8 @@ fn apply_u8(t: &Transform, px: &mut [u8]) {
     for chunk in px.chunks_mut(BLOCK * 4) {
         src.clear();
         src.extend_from_slice(chunk);
-        t.convert_u8(&src, 4, chunk, 4, true);
+        // Refused only for a transform that is not RGB → RGB; the pixels then stay unconverted.
+        let _ = t.convert_u8(&src, 4, chunk, 4, true);
     }
 }
 
@@ -139,7 +140,7 @@ fn is_linear_rgb(p: &Profile) -> bool {
 
 /// The same primaries with the sRGB curve (what an sRGB-encoded texture of a linear composite is in).
 fn srgb_curve_twin(p: &Profile) -> Profile {
-    let c = photocraft_cms::curve::srgb_trc();
+    let c = craft_cms::curve::srgb_trc();
     let mut q = p.clone();
     q.trc = Some([c.clone(), c.clone(), c]);
     q.description = format!("{} (sRGB-encoded)", p.description);
@@ -152,10 +153,7 @@ fn is_identity(t: &Transform, neutral_only: bool) -> bool {
     const N: usize = 9;
     let s = (N - 1) as f32;
     let mut out = [0.0f32; 16];
-    let mut check = |v: [f32; 3]| {
-        t.eval(&v, &mut out);
-        (0..3).all(|i| (out[i] - v[i]).abs() <= 0.5 / 255.0)
-    };
+    let mut check = |v: [f32; 3]| t.eval(&v, &mut out).is_ok() && (0..3).all(|i| (out[i] - v[i]).abs() <= 0.5 / 255.0);
     if neutral_only {
         return (0..=32).all(|i| check([i as f32 / 32.0; 3]));
     }

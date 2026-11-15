@@ -628,3 +628,29 @@ fn merge_to_hdr_pro_accepts_sources_without_the_photomerge_budget() {
     assert_eq!(srcs.len(), 2);
     assert_eq!(fmt, PixelFormat::RGBA8);
 }
+
+/// Ticking "Use open documents" merges the open documents only: the dialog also sends its
+/// prefilled folder, which must not be scanned (#13580).
+#[test]
+fn photomerge_open_documents_ignores_the_folder() {
+    let (sw, sh) = (520, 220);
+    let sc = scene(sw, sh, 5);
+    let open_two = |sc: &[[f32; 4]]| {
+        let mut s = Session::new();
+        for (k, x0) in [0usize, 180].into_iter().enumerate() {
+            s.add_document(doc_from(&format!("o{k}"), &crop(sc, sw, x0, 10, 260, 200, 1.0), 260, 200, SampleType::U8), None);
+        }
+        s
+    };
+    for paths in [json!("."), json!("/no/such/folder"), json!("")] {
+        let mut s = open_two(&sc);
+        let r = s.execute("file.automate.photomerge", json!({"useOpenDocuments": true, "layout": "reposition", "paths": paths}));
+        let r = r.unwrap_or_else(|e| panic!("{paths}: {e}"));
+        assert_eq!(r["placed"].as_array().map(Vec::len), Some(2), "{paths}: {r}");
+    }
+    // Hostile shapes are errors or successes, never panics.
+    let mut s = open_two(&sc);
+    for paths in [json!(7), json!(null), json!([1, 2])] {
+        let _ = s.execute("file.automate.photomerge", json!({"useOpenDocuments": true, "layout": "reposition", "paths": paths}));
+    }
+}

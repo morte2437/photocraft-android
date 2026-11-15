@@ -3,8 +3,8 @@
 
 use std::sync::Arc;
 
-use photocraft_cms::synth::{CmykParams, cmyk_profile};
-use photocraft_cms::{Builtin, Intent, Profile, Transform};
+use craft_cms::synth::{CmykParams, cmyk_profile};
+use craft_cms::{Builtin, Intent, Profile, Transform};
 use photocraft_color::{Color, ColorMode, PixelFormat, SampleType};
 use photocraft_doc::{Document, Layer, LayerContent, Size};
 use photocraft_geom::Rect;
@@ -44,6 +44,7 @@ fn cmyk_doc(profile: Option<&Profile>, ink: [f32; 4]) -> Document {
 /// Synthetic CMYK profile unlike the built-in coated one (heavier dot gain, small tables).
 fn test_cmyk() -> Profile {
     cmyk_profile(&CmykParams { description: "Test Uncoated CMYK".into(), tvi: [0.26, 0.26, 0.26, 0.3], grid_a2b: 7, grid_b2a: 11, ..Default::default() })
+        .unwrap()
 }
 
 /// What the CPU canvas shows at the centre pixel (RGBA8).
@@ -58,7 +59,7 @@ fn shown(s: &Session, d: &Document) -> [f32; 3] {
 fn reference(src: &Profile, v: &[f32]) -> [f32; 3] {
     let t = Transform::new(src, Builtin::Srgb.profile(), Intent::RelativeColorimetric, true).unwrap();
     let mut o = [0.0f32; 16];
-    t.eval(v, &mut o);
+    t.eval(v, &mut o).unwrap();
     let n = t.outputs();
     [0, 1, 2].map(|k| o[if n == 1 { 0 } else { k }].clamp(0.0, 1.0) * 255.0)
 }
@@ -203,7 +204,7 @@ fn gray_exr_round_trip_is_linear() {
     let r = photocraft_io::export(&d, "x.exr", &photocraft_io::ExportOptions::default()).unwrap();
     let back = photocraft_io::import("x.exr", &r.bytes).unwrap().document;
     let icc = back.icc_profile.clone().expect("tagged");
-    assert_eq!(Profile::parse(&icc).unwrap().content_hash(), photocraft_cms::builtin::linear_gray().content_hash());
+    assert_eq!(Profile::parse(&icc).unwrap().content_hash(), craft_cms::builtin::linear_gray().content_hash());
     let v = back.layers[0].surface().unwrap().pixel(1, 1);
     assert!((v[0] - 0.2159).abs() < 1e-3, "stored linear: {v:?}");
     assert!(close(shown(&s, &back), shown(&s, &d), 1.0), "{:?} vs {:?}", shown(&s, &back), shown(&s, &d));
@@ -225,7 +226,10 @@ fn monitor_profile_setting() {
     assert!(!s.color.canvas_display(&srgb).unwrap().is_identity());
     let got = shown(&s, &srgb);
     let mut want = [0.0f32; 3];
-    Transform::new(Builtin::Srgb.profile(), Builtin::DisplayP3.profile(), Intent::RelativeColorimetric, true).unwrap().eval(&[0.8, 0.5, 0.3], &mut want);
+    Transform::new(Builtin::Srgb.profile(), Builtin::DisplayP3.profile(), Intent::RelativeColorimetric, true)
+        .unwrap()
+        .eval(&[0.8, 0.5, 0.3], &mut want)
+        .unwrap();
     assert!(close(got, want.map(|v| v * 255.0), TOL), "{got:?} vs {want:?}");
     // `auto` uses the platform's profile when supplied, else sRGB.
     s.execute("edit.colorSettings", json!({"monitorProfile": "auto"})).unwrap();
@@ -276,7 +280,7 @@ fn monitor_status_says_what_is_applied() {
     // Bytes that aren't a profile, a non-RGB profile, one that can't be a destination and none
     // at all fall back to sRGB with the reason.
     let mut link = Builtin::Srgb.profile().clone();
-    link.class = photocraft_cms::ProfileClass::DeviceLink;
+    link.class = craft_cms::ProfileClass::DeviceLink;
     let link = link.with_encoded_bytes();
     for (icc, why) in [
         (Some(vec![0u8; 16]), "can't be read"),
