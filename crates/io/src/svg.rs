@@ -1081,9 +1081,21 @@ pub fn rasterize(bytes: &[u8], scale: f32) -> Result<photocraft_compose::Buffer,
 
 /// Render untrusted embedded SVG with intrinsic raster-image and aggregate decode budgets.
 pub fn rasterize_bounded(bytes: &[u8], scale: f32, max_decoded_pixels: u64) -> Result<photocraft_compose::Buffer, IoError> {
+    rasterize_bounded_mode(bytes, scale, max_decoded_pixels, true).map(|(pixels, _)| pixels)
+}
+
+/// Bounded rendering for commands that report omissions to the user. Unlike the warningless
+/// APIs, this preserves the readable drawing and returns a bounded, count-only warning.
+/// Callers must surface the warnings and must not cache these pixels in strict render caches.
+pub fn rasterize_bounded_with_warnings(bytes: &[u8], scale: f32, max_decoded_pixels: u64) -> Result<(photocraft_compose::Buffer, Vec<String>), IoError> {
+    rasterize_bounded_mode(bytes, scale, max_decoded_pixels, false)
+}
+
+fn rasterize_bounded_mode(bytes: &[u8], scale: f32, max_decoded_pixels: u64, strict: bool) -> Result<(photocraft_compose::Buffer, Vec<String>), IoError> {
     on_svg_stack(|| {
         let (parsed, chain) = parse_bounded_inner(bytes, max_decoded_pixels)?;
-        let tree = complete_raster_tree(parsed)?;
+        let warnings = omitted_image_warning(parsed.image_usage).into_iter().collect();
+        let tree = if strict { complete_raster_tree(parsed)? } else { parsed.tree };
         if chain != 0 {
             let cv = canvas(&tree, &mut Vec::new());
             let k = cv.scale * scale.clamp(1.0 / 64.0, 64.0);
@@ -1092,7 +1104,7 @@ pub fn rasterize_bounded(bytes: &[u8], scale: f32, max_decoded_pixels: u64) -> R
             check_scratch_surfaces(u64::from(width) * u64::from(height), chain, max_decoded_pixels)
                 .map_err(|_| IoError::Svg("embedded SVG intermediate images exceed the rendered pixel budget".into()))?;
         }
-        rasterize_tree(&tree, scale)
+        Ok((rasterize_tree(&tree, scale)?, warnings))
     })
 }
 

@@ -460,6 +460,7 @@ impl PlaceInput {
 
 /// A place decoded, flattened and fitted, ready to be inserted by [`apply_place`].
 pub(crate) struct Prepared {
+    pub(super) warnings: Vec<String>,
     pub(super) content: LayerContent,
     pub(super) layer_name: String,
     /// The history step's name.
@@ -473,7 +474,7 @@ pub(crate) struct Prepared {
 
 /// Insert the prepared layer as one undo step and report the place. Runs on the session's thread.
 pub(crate) fn apply_place(s: &mut Session, p: Prepared) -> Result<Value> {
-    let Prepared { content, layer_name, label, scale, bounds, smart, frame } = p;
+    let Prepared { warnings, content, layer_name, label, scale, bounds, smart, frame } = p;
     let layer = Layer::new(layer_name, content);
     let id = layer.id;
     s.edit(label, move |doc, active| {
@@ -486,7 +487,7 @@ pub(crate) fn apply_place(s: &mut Session, p: Prepared) -> Result<Value> {
         }
         Ok(())
     })?;
-    Ok(json!({"layer": id.0, "frame": frame.map(|f| f.0), "scale": scale * 100.0, "bounds": bounds, "smartObject": smart}))
+    Ok(json!({"layer": id.0, "frame": frame.map(|f| f.0), "scale": scale * 100.0, "bounds": bounds, "smartObject": smart, "warnings": warnings}))
 }
 
 pub(super) fn place(s: &mut Session, p: &Value, linked: bool) -> Result<Value> {

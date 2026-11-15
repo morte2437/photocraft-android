@@ -96,9 +96,12 @@ fn svg_with_an_unreadable_embedded_image_still_places() {
     let mut s = Session::new();
     s.execute("file.new", json!({"width": 8, "height": 8})).unwrap();
     let placed = crate::file_cmds::place_bytes(&mut s, "Logo.svg", svg.as_bytes().to_vec(), None, &json!({"smartObject": true})).unwrap();
+    assert!(placed["warnings"].as_array().unwrap().iter().any(|w| w.as_str().unwrap().contains("embedded image was omitted")));
     let doc = &s.active().unwrap().doc;
     let LayerContent::Smart(sm) = &doc.layer(LayerId(placed["layer"].as_u64().unwrap())).unwrap().content else { panic!("smart") };
     assert_eq!(sm.cache.as_ref().unwrap().rgba(6, 4), [1.0, 0.0, 0.0, 1.0]);
+    // A warning-bearing command must not poison the strict source/filter caches.
+    assert!(render(doc, sm).is_err());
 }
 
 /// Warp setup needs only the source frame, found with the bounded parse and the exact canvas
@@ -142,7 +145,13 @@ fn svg_smart_render_cache_tracks_destination_profile_and_transform() {
         linear.icc_profile = Some(Builtin::LinearSrgb.profile().to_bytes());
         let mut smart = SmartObject::new(SmartSource::Embedded { file_name: "clipboard.svg".into(), bytes: Arc::new(SVG.to_vec()) }, Affine::IDENTITY, None);
         let original = render(&srgb, &smart).unwrap().unwrap();
+        let (reported, warnings) = render_with_warnings(&srgb, &smart).unwrap();
+        assert!(warnings.is_empty());
+        assert_eq!(reported.unwrap(), original, "warning-bearing sRGB parity");
         let corrected = render(&linear, &smart).unwrap().unwrap();
+        let (reported, warnings) = render_with_warnings(&linear, &smart).unwrap();
+        assert!(warnings.is_empty());
+        assert_eq!(reported.unwrap(), corrected, "warning-bearing ICC parity");
         assert!((original.pixel(3, 3)[0] - 128.0 / 255.0).abs() < 0.01);
         assert!((corrected.pixel(3, 3)[0] - 0.216).abs() < 0.01, "linear profile at {depth}-bit");
         assert_eq!(render(&srgb, &smart).unwrap().unwrap(), original, "profile-specific placed cache");
@@ -153,6 +162,9 @@ fn svg_smart_render_cache_tracks_destination_profile_and_transform() {
         let bounds = [0.0, 0.0, 8.0, 8.0];
         smart.warp = Some(photocraft_geom::warp::Warp::custom(photocraft_geom::warp::BezierMesh::identity(bounds, 1, 1), bounds));
         let warped = render(&linear, &smart).unwrap().unwrap();
+        let (reported, warnings) = render_with_warnings(&linear, &smart).unwrap();
+        assert!(warnings.is_empty());
+        assert_eq!(reported.unwrap(), warped, "warning-bearing warp parity");
         assert!((warped.pixel(10, 8)[0] - corrected.pixel(3, 3)[0]).abs() < 0.01, "warp must keep corrected colours");
         linear.layers = vec![Layer::new("Saved SVG", LayerContent::Smart(smart.clone()))];
         let saved = encode_source(&linear).unwrap();
