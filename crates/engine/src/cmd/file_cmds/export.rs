@@ -176,19 +176,12 @@ fn bake_cube_layers(size: usize, title: &str, layers: &[&Layer], depth: photocra
         lattice.layers.push(a);
     }
     let out = photocraft_compose::flatten(&lattice);
-    // Composition is app policy; the shared writer owns CUBE syntax and export precision.
-    let data = (0..n)
-        .flat_map(|b| (0..n).flat_map(move |g| (0..n).map(move |r| (b, g, r))))
-        .flat_map(|(b, g, r)| {
-            let px = out.px[g * w as usize + b * n + r];
-            [px[0], px[1], px[2]].map(|v| v.clamp(0.0, 1.0))
-        })
-        .collect();
-    let lut = craft_cms::lutfile::LutFile { title: title.into(), size: n, data, domain_min: [0.0; 3], domain_max: [1.0; 3] };
-    craft_cms::lutfile::write_cube_with_options(
-        &lut,
-        craft_cms::lutfile::CubeWriteOptions { created_by: Some("PhotoCraft"), quantize_15_bit: !matches!(depth, photocraft_color::SampleType::F32) },
-    )
+    // The shared writer owns CUBE syntax and precision; baking stays app-local.
+    let rows = (0..n).flat_map(|b| (0..n).flat_map(move |g| (0..n).map(move |r| (b, g, r)))).map(|(b, g, r)| {
+        let px = out.px[g * w as usize + b * n + r];
+        [px[0], px[1], px[2]]
+    });
+    craft_cms::lutfile::write_cube_export("PhotoCraft", title, n, !matches!(depth, photocraft_color::SampleType::F32), rows)
 }
 
 /// Backwards-compatible helper for exporting all visible top-level adjustments.
