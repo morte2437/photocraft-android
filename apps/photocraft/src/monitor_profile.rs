@@ -372,7 +372,8 @@ fn parse_reply(out: &str) -> Detection {
         let b64 = b64.trim();
         // An ICC profile starts with its size and carries `acsp` at offset 36; anything else is
         // treated as no profile (the engine then says the display has none).
-        let icc = (!b64.is_empty()).then(|| photocraft_engine::paint::tile::b64_decode(b64)).flatten().filter(|b| b.len() >= 132 && b.get(36..40) == Some(b"acsp"));
+        let icc =
+            (!b64.is_empty()).then(|| photocraft_engine::paint::tile::b64_decode(b64)).flatten().filter(|b| b.len() >= 132 && b.get(36..40) == Some(b"acsp"));
         let profile_name = Some(profile_name.trim().to_string()).filter(|n| !n.is_empty());
         displays.push(Display { id, name, frame: [x, top, w, h], profile_name, icc: icc.map(std::sync::Arc::new) });
     }
