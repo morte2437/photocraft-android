@@ -1644,6 +1644,11 @@ fn effect_cases() -> Vec<(&'static str, Vec<Effect>)> {
     ds_global.use_global_light = true;
     let mut og_contour = glow(FxPaint::Color(Color::rgb(1.0, 0.9, 0.2)), GlowTechnique::Softer, 9.0, 0.0, GlowSource::Edge);
     og_contour.contour = contour();
+    // #11361: a flat "always 100 %" contour paints a solid band up to the glow's reach on both
+    // renderers, not the whole effect rectangle.
+    let flat = Contour::Custom { name: "flat".into(), points: vec![Cp { input: 0.0, output: 1.0 }, Cp { input: 1.0, output: 1.0 }], corners: vec![] };
+    let og_flat_precise = Glow { contour: flat.clone(), ..glow(FxPaint::Color(Color::rgb(0.2, 0.9, 1.0)), GlowTechnique::Precise, 4.0, 0.0, GlowSource::Edge) };
+    let og_flat_softer = Glow { contour: flat, ..glow(FxPaint::Color(Color::rgb(0.2, 0.9, 1.0)), GlowTechnique::Softer, 10.0, 0.0, GlowSource::Edge) };
     let mut satin_inv = Satin {
         common: FxCommon::new(BlendMode::Multiply, 0.6),
         color: Color::rgb(0.3, 0.0, 0.4),
@@ -1685,6 +1690,8 @@ fn effect_cases() -> Vec<(&'static str, Vec<Effect>)> {
         ("inner shadow choke", vec![Effect::InnerShadow(shadow(BlendMode::Normal, 0.9, 300.0, 3.0, 7.0, 0.4))]),
         ("outer glow softer", vec![Effect::OuterGlow(glow(FxPaint::Color(Color::rgb(1.0, 0.9, 0.2)), GlowTechnique::Softer, 10.0, 0.3, GlowSource::Edge))]),
         ("outer glow contour", vec![Effect::OuterGlow(og_contour)]),
+        ("outer glow flat contour precise", vec![Effect::OuterGlow(og_flat_precise)]),
+        ("outer glow flat contour softer", vec![Effect::OuterGlow(og_flat_softer)]),
         ("outer glow precise gradient", vec![Effect::OuterGlow(glow(FxPaint::Gradient(gradient()), GlowTechnique::Precise, 8.0, 0.25, GlowSource::Edge))]),
         (
             "outer glow softer gradient",
