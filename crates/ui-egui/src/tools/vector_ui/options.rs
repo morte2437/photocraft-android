@@ -118,6 +118,10 @@ pub fn options_bar(app: &mut PhotocraftApp, ui: &mut egui::Ui, tool: Tool) -> bo
         // Shape draws a shape layer, Path adds the outline to the work path (#9453).
         let opts = [("shape".to_string(), tl!("Shape")), ("path".to_string(), tl!("Path"))];
         crate::widgets::dropdown(ui, "shape-mode", tl!("Mode"), &mut app.ui.tool_options.shape_mode, &opts, 80.0);
+        if draws_path(&app.ui.tool_options) {
+            crate::widgets::vline(ui, 22.0);
+            make_buttons(app, ui);
+        }
     } else {
         // Path Selection and Direct Selection edit the selected shape layer: the Shape tools'
         // Path mode isn't theirs to show or change.
@@ -599,3 +603,6 @@ mod line_arrow_concavity_field_tests;
 #[cfg(test)]
 #[path = "pen_make_mask_tests.rs"]
 mod pen_make_mask_tests;
+#[cfg(test)]
+#[path = "rectangle_path_make_tests.rs"]
+mod rectangle_path_make_tests;
