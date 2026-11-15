@@ -592,6 +592,41 @@ fn phone_layout_dialogs_fit_the_window() {
     assert!(wide.is_empty(), "sections wider than the phone's {:.0}: {wide:?}", screen.width());
 }
 
+/// Layer Style on a phone held upright (#36 on the Android port): its three columns are about 700
+/// points wide, so the phone layout stacks the list over the page with the buttons under them,
+/// all inside the screen.
+#[test]
+fn phone_layout_layer_style_fits_the_window() {
+    use egui_kittest::kittest::Queryable;
+    crate::i18n::with_language(crate::i18n::Lang::EN, || {
+        let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
+        app.compact_layout = true;
+        app.run("file.new", json!({"width": 64, "height": 64})).unwrap();
+        app.run("layer.new.layer", json!({})).unwrap();
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(400.0, 760.0));
+        let mut h = egui_kittest::Harness::builder().with_size(screen.size()).build_ui_state(|ui, app| show(app, ui.ctx()), app);
+        PhotocraftApp::setup_context(&h.ctx, crate::theme::ThemeKind::ALL[0]);
+        let d = crate::layer_style::open(h.state_mut(), Some("bevelEmboss")).expect("Layer Style opens");
+        h.run_steps(4);
+        let window = h.ctx.memory(|m| m.area_rect(egui::Id::unique(("dialog", d)))).expect("the Layer Style window");
+        assert!(screen.contains_rect(window), "Layer Style {window:?} inside the phone's {screen:?}");
+        for label in ["Layer Style", "Add a layer style", "OK", "Cancel", "New Style…", "Preview"] {
+            let r = h.get_by_label(label).rect();
+            assert!(window.contains_rect(r), "{label} {r:?} inside the window {window:?}");
+        }
+        // The page sits under the list, as wide as the window allows (it may be scrolled below).
+        let (list, page) = (h.get_by_label("Add a layer style").rect(), h.get_by_label("Depth").rect());
+        assert!(list.bottom() < page.top(), "the page {page:?} is under the list {list:?}");
+        assert!(page.left() >= window.left() && page.right() <= window.right(), "the page {page:?} fits across {window:?}");
+        // The buttons stay under the scrolling list and page, in view.
+        let ok = h.get_by_label("OK").rect();
+        assert!(ok.bottom() <= window.bottom(), "OK {ok:?} above the window's bottom {window:?}");
+        h.get_by_label("OK").click();
+        h.run_steps(2);
+        assert!(h.state().ui.dialogs.is_empty(), "OK closes Layer Style");
+    });
+}
+
 #[test]
 fn german_color_picker_fits_its_actions_and_translates_the_title() {
     if !crate::i18n::needs_catalogs() {

@@ -779,6 +779,16 @@ pub fn show(app: &mut PhotocraftApp, ctx: &egui::Context) {
                 // The body of a bottom dialog (phone layout) scrolls between its title and buttons.
                 let body_room = phone_height.filter(|_| on_canvas).map(|h| (h - 110.0).max(80.0));
                 outcome = match body_room {
+                    // Layer Style scrolls its own list and page above its own button row
+                    // (`layer_style::phone_body`): it gets the room below the title, no scroll.
+                    Some(_) if d.kind == DialogKind::LayerStyle => {
+                        let room = phone_height.map_or(240.0, |h| (h - 60.0).max(140.0));
+                        ui.allocate_ui(egui::vec2(ui.available_width(), room), |ui| {
+                            ui.set_height(room);
+                            dialog_body(app, ui, &d, &mut fields, id, interactive)
+                        })
+                        .inner
+                    }
                     Some(h) => egui::ScrollArea::vertical()
                         .id_salt(id.with("phone-body"))
                         .max_height(h)

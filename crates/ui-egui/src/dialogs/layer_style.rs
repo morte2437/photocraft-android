@@ -928,6 +928,9 @@ pub fn body(app: &mut PhotocraftApp, ui: &mut egui::Ui, f: &mut Map<String, Valu
 /// bar, the selected page, and a column with OK, Cancel, New Style…, Preview and the preview
 /// swatch. Returns OK (true) or Cancel (false) once chosen; Enter is OK.
 pub fn body_with_response(app: &mut PhotocraftApp, ui: &mut egui::Ui, f: &mut Map<String, Value>, interactive: bool) -> Option<bool> {
+    if app.compact_layout {
+        return phone_body(app, ui, f, interactive);
+    }
     let selected = f.get("selected").and_then(Value::as_str).unwrap_or("dropShadow").to_string();
     let mut style_click: Option<String> = None;
     let mut new_style = false;
@@ -954,6 +957,70 @@ pub fn body_with_response(app: &mut PhotocraftApp, ui: &mut egui::Ui, f: &mut Ma
             outcome = side_column(app, ui, f, &mut new_style);
         });
     });
+    finish(app, ui, f, style_click, new_style, outcome, interactive)
+}
+
+/// Layer Style in the phone layout, where the three columns (about 700 points) are wider than a
+/// phone held upright: the effect list and the selected page stacked in one scrolling column, with
+/// Preview, New Style…, Cancel and OK in a row under it that stays in view. Picking another effect
+/// scrolls its page into view. The preview swatch is left out: the canvas above shows the style.
+fn phone_body(app: &mut PhotocraftApp, ui: &mut egui::Ui, f: &mut Map<String, Value>, interactive: bool) -> Option<bool> {
+    let selected = f.get("selected").and_then(Value::as_str).unwrap_or("dropShadow").to_string();
+    let mut style_click: Option<String> = None;
+    let mut new_style = false;
+    let mut outcome = None;
+    let invalid = validate_params(f).err();
+    let height = ui.available_height().max(160.0);
+    let gap = ui.spacing().item_spacing.y;
+    // The page last shown, to scroll a newly picked one into view (not when the dialog opens).
+    let shown_id = egui::Id::unique("layer-style-phone-page");
+    let shown: Option<String> = ui.data(|d| d.get_temp(shown_id));
+    let jump = shown.as_deref().is_some_and(|s| s != selected);
+    ui.data_mut(|d| d.insert_temp(shown_id, selected.clone()));
+    egui::ScrollArea::vertical()
+        .id_salt("layer-style-phone")
+        .max_height((height - PHONE_ROW_H - gap).max(80.0))
+        .auto_shrink([false, true])
+        .show(ui, |ui| {
+            let w = ui.available_width();
+            boxed(ui, w, PHONE_LIST_H, |ui, h| {
+                egui::ScrollArea::vertical().id_salt("layer-style-effects").max_height(h - BAR_H).auto_shrink(false).show(ui, |ui| effect_list(ui, f, &selected));
+                list_bar(ui, f, &selected);
+            });
+            let t = Tokens::get(ui.ctx());
+            let frame = egui::Frame::new().stroke(Stroke::new(1.0, t.separator)).corner_radius(t.radius_sm).inner_margin(4.0).show(ui, |ui| {
+                ui.set_width((w - 10.0).max(40.0));
+                page(app, ui, f, &selected, invalid.as_deref(), &mut style_click);
+            });
+            if jump {
+                frame.response.scroll_to_me(Some(egui::Align::TOP));
+            }
+        });
+    ui.horizontal(|ui| {
+        let mut preview = f.get("preview").and_then(Value::as_bool).unwrap_or(true);
+        if widgets::checkbox(ui, &mut preview, tl!("Preview")).changed() {
+            f.insert("preview".into(), json!(preview));
+        }
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            let labels = [tl!("OK"), tl!("Cancel"), tl!("New Style…")];
+            let bw = widgets::button_width(ui, &labels);
+            if widgets::primary_button(ui, labels[0], bw).clicked() {
+                outcome = Some(true);
+            }
+            if widgets::secondary_button(ui, labels[1], bw).clicked() {
+                outcome = Some(false);
+            }
+            if widgets::secondary_button(ui, labels[2], bw).clicked() {
+                new_style = true;
+            }
+        });
+    });
+    finish(app, ui, f, style_click, new_style, outcome, interactive)
+}
+
+/// What both layouts do after drawing: apply a clicked style, save a new one, show the contour
+/// editor, and take Enter as OK.
+fn finish(app: &mut PhotocraftApp, ui: &mut egui::Ui, f: &mut Map<String, Value>, style_click: Option<String>, new_style: bool, mut outcome: Option<bool>, interactive: bool) -> Option<bool> {
     // Style swatch clicks apply to the layer (Photoshop does this immediately);
     // New Style… saves the dialog's pending state as a preset.
     if let Some(name) = style_click {
@@ -1368,6 +1435,12 @@ const LABEL_W: f32 = 104.0;
 
 /// The bar under the effect list (fx, move up, move down, delete).
 const BAR_H: f32 = 30.0;
+
+/// The phone layout's effect list: about five rows over its bar, scrolling.
+const PHONE_LIST_H: f32 = 190.0;
+
+/// The phone layout's button row (Preview, New Style…, Cancel, OK).
+const PHONE_ROW_H: f32 = 30.0;
 
 /// A bordered column `w` × `h`, as Photoshop frames the effect list and the page; `add` gets the
 /// height inside the border.
