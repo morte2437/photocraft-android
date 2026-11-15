@@ -168,22 +168,7 @@ fn sri(hex: &str) -> Option<String> {
         return None;
     }
     let bytes: Option<Vec<u8>> = (0..32).map(|i| hex.get(2 * i..2 * i + 2).and_then(|h| u8::from_str_radix(h, 16).ok())).collect();
-    Some(format!("sha256-{}", base64(&bytes?)))
-}
-
-/// Standard base64 (RFC 4648, with padding).
-fn base64(data: &[u8]) -> String {
-    const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut s = String::with_capacity(data.len().div_ceil(3) * 4);
-    for chunk in data.chunks(3) {
-        let b = |i: usize| u32::from(chunk.get(i).copied().unwrap_or(0));
-        let n = (b(0) << 16) | (b(1) << 8) | b(2);
-        for k in 0..4 {
-            let six = ((n >> (18 - 6 * k)) & 63) as usize;
-            s.push(if k <= chunk.len() { TABLE.get(six).map_or('=', |&c| char::from(c)) } else { '=' });
-        }
-    }
-    s
+    Some(format!("sha256-{}", base64::Engine::encode(&base64::engine::general_purpose::STANDARD, bytes?)))
 }
 
 struct State {

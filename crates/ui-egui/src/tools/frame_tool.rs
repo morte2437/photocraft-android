@@ -86,6 +86,8 @@ fn drawn(start: [f64; 2], cur: [f64; 2], square: bool, centred: bool) -> [i64; 4
 }
 #[cfg(test)]
 mod shift_square_tests;
+#[cfg(test)]
+mod size_hud_tests;
 pub fn selected(app: &PhotocraftApp) -> Option<&Layer> {
     let st = app.session.active()?;
     let id = photocraft_engine::frame_cmds::frame_of(&st.doc, st.active_layer?)?;
@@ -586,9 +588,14 @@ pub fn draw_overlay(app: &PhotocraftApp, painter: &egui::Painter, xf: &ViewXform
         return;
     }
     if let Some(FrameDrag::New { start, cur, square, centred, .. }) = &app.ui.frame_tool.drag {
-        if let Some(path) = outline(app, drawn(*start, *cur, *square, *centred)) {
+        let r = drawn(*start, *cur, *square, *centred);
+        if let Some(path) = outline(app, r) {
             paint_path(painter, xf, &path, stroke);
         }
+        // The size the release would make, beside the pointer, like the marquee's (#13870).
+        let at = painter.ctx().input(|i| i.pointer.latest_pos()).unwrap_or_else(|| xf.to_screen(cur[0] as f32, cur[1] as f32));
+        let size = crate::canvas::size_readout(app, [0.0, 0.0, (r[2] - r[0]) as f64, (r[3] - r[1]) as f64]);
+        crate::canvas::draw_value_readout(app, painter.ctx(), "frame-size-readout", at, ["W:", "H:"], size);
         return;
     }
     let Some(l) = selected(app) else { return };

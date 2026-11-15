@@ -1545,9 +1545,20 @@ source = "git+https://github.com/storytold/craft-libs?rev=ad8faa1c136ce289e9f132
 dependencies = [
  "blake3",
  "craft-atomic",
- "craft-pcraft-format",
+ "craft-pcraft-format 0.1.0 (git+https://github.com/storytold/craft-libs?rev=ad8faa1c136ce289e9f132c9137d0cd913bd4ef6)",
  "craft-zip",
  "ruzstd",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "craft-pcraft-format"
+version = "0.1.0"
+source = "git+https://github.com/storytold/craft-libs?rev=3e970577b9bb446967c2003ec8ecaf4f28b0768c#3e970577b9bb446967c2003ec8ecaf4f28b0768c"
+dependencies = [
+ "flate2",
+ "serde",
+ "serde_json",
  "thiserror 2.0.21",
 ]
 
@@ -5603,6 +5614,7 @@ dependencies = [
  "craft-cms",
  "craft-file-formats",
  "craft-image-codecs",
+ "craft-pcraft-format 0.1.0 (git+https://github.com/storytold/craft-libs?rev=3e970577b9bb446967c2003ec8ecaf4f28b0768c)",
  "craft-print",
  "craft-psd",
  "craft-xml",
@@ -5644,7 +5656,7 @@ dependencies = [
  "craft-file-formats",
  "craft-image-codecs",
  "craft-pcraft-bundle",
- "craft-pcraft-format",
+ "craft-pcraft-format 0.1.0 (git+https://github.com/storytold/craft-libs?rev=ad8faa1c136ce289e9f132c9137d0cd913bd4ef6)",
  "craft-zip",
  "crc32fast",
  "exacl",
@@ -5751,6 +5763,7 @@ dependencies = [
 name = "photocraft-paint"
 version = "0.23.1"
 dependencies = [
+ "base64 0.23.1",
  "craft-cms",
  "photocraft-color",
  "photocraft-geom",
@@ -5835,6 +5848,7 @@ dependencies = [
 name = "photocraft-text"
 version = "0.23.1"
 dependencies = [
+ "base64 0.23.1",
  "craft-psd",
  "flate2",
  "parley",
