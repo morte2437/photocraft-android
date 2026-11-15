@@ -83,6 +83,16 @@ fn polynomials(image: &craft_raw::RawImage) -> Vec<MapPolynomial> {
 
 fn warnings(image: &craft_raw::RawImage) -> Vec<String> {
     let mut out = Vec::new();
+    // Preserve decoder uncertainty: a fallback phase is not metadata supplied by the file.
+    if image.notices.assumed_cfa {
+        out.push("the raw colour filter phase was assumed".to_string());
+    }
+    if image.notices.default_crop_adjusted {
+        out.push("the raw default crop was adjusted to the active image".to_string());
+    }
+    if image.notices.gain_table_omitted {
+        out.push("the raw camera profile's invalid gain table map was omitted".to_string());
+    }
     for op in image.opcodes.list1.iter().chain(&image.opcodes.list2).chain(&image.opcodes.list3) {
         if !matches!(op, craft_raw::Opcode::GainMap { .. } | craft_raw::Opcode::MapPolynomial { .. }) {
             out.push("some raw correction opcodes are not applied by PhotoCraft".to_string());
@@ -160,7 +170,9 @@ pub(crate) fn adapt(image: craft_raw::RawImage) -> Sensor {
         warnings,
     };
     crate::cameras::apply(&mut sensor, image.bits);
-    if sensor.float_data.is_none() {
+    // Only DNG writers state a white level the sensor never reaches (saturation.rs); the other formats'
+    // levels come from the camera's own tags or the data, and their samples stay as decoded.
+    if sensor.float_data.is_none() && sensor.format == RawFormat::Dng {
         sensor.lift_clipped_samples();
     }
     sensor
