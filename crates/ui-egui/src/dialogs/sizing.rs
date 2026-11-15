@@ -151,11 +151,11 @@ pub fn open(app: &mut PhotocraftApp, command: &str) -> Option<u64> {
         // The "Image Size:" readout counts the flat image (#14768): the mode's colour channels at
         // the document's depth, no alpha, whatever the first layer's surface stores.
         // An Indexed image is one index channel and a Bitmap one 1-bit channel, though both are
-        // stored expanded for editing.
+        // stored expanded for editing. A Multichannel image counts its inks, not a fixed three; with
+        // no inks it keeps the old count.
         let image_bytes_per_pixel = match d.mode {
             photocraft_color::ColorMode::Bitmap => 1.0 / 8.0,
             photocraft_color::ColorMode::Indexed => 1.0,
-            // A Multichannel image is its ink (spot) channels, however many it has.
             photocraft_color::ColorMode::Multichannel => {
                 let inks = d.channels.iter().filter(|c| c.spot.is_some()).count();
                 (if inks == 0 { d.mode.color_channels() } else { inks } * d.depth.bytes()) as f64

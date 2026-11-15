@@ -1,7 +1,7 @@
 //! The Image Size dialog's "Image Size:" readout (#14768): width × height × the mode's colour
-//! channels × bytes per channel (no alpha; Bitmap one bit, rows padded to whole bytes), whole bytes
-//! below 1K, then K/M/G/T with one decimal in the system's decimal mark, and "(was …)" only once
-//! the pixel dimensions differ from the original.
+//! channels (a Multichannel image's inks) × bytes per channel (no alpha; Bitmap one bit, rows
+//! padded to whole bytes), whole bytes below 1K, then K/M/G/T with one decimal in the system's
+//! decimal mark, and "(was …)" only once the pixel dimensions differ from the original.
 
 use super::*;
 use egui_kittest::kittest::Queryable;
