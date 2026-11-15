@@ -752,7 +752,9 @@ fn artboards_to_pdf(s: &mut Session, p: &Value) -> Result<Value> {
     let doc = d.doc.clone();
     let quality = f64_param(p, "quality").or(Some(10.0));
     let mut pages = Vec::new();
-    for one in chosen_documents(&doc, p)? {
+    // Pages go bottom artboard of the Layers panel first, as in the reference application (#13643);
+    // `chosen_documents` lists them top first, the order Artboards to Files keeps.
+    for one in chosen_documents(&doc, p)?.into_iter().rev() {
         let buf = photocraft_compose::flatten(&one).over_background([1.0, 1.0, 1.0]);
         let fmt = PixelFormat::new(ColorMode::Rgb, SampleType::U8, true);
         let mut flat = Document::new(&one.name, one.size, ColorMode::Rgb, SampleType::U8);
@@ -837,7 +839,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "file.export.artboardsToPdf",
             "Artboards to PDF…",
             &["File", "Export"],
-            r##"{"path":str (.pdf),"artboards":[id]?,"quality":0..12=10} → {path, pages} (one raster page per board)"##,
+            r##"{"path":str (.pdf),"artboards":[id]?,"quality":0..12=10} → {path, pages} (one raster page per board, bottom artboard of the Layers panel first)"##,
             export_artboards,
             artboards_to_pdf
         ),
@@ -847,6 +849,9 @@ pub fn specs() -> Vec<CommandSpec> {
 #[cfg(test)]
 #[path = "artboard_cmds/first_board_background_tests.rs"]
 mod first_board_background_tests;
+#[cfg(test)]
+#[path = "artboard_cmds/pdf_page_order_tests.rs"]
+mod pdf_page_order_tests;
 #[cfg(test)]
 #[path = "artboard_cmds/tests.rs"]
 mod tests;
