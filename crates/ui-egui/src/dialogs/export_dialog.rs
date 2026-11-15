@@ -1200,7 +1200,7 @@ fn batch_unsupported(rows: usize, browser: bool) -> Option<&'static str> {
 fn batch_file_names(stem: &str, ext: &str, rows: &[(String, String)]) -> Result<Vec<String>, String> {
     let names: Vec<String> = rows.iter().map(|(_, suffix)| format!("{stem}{}.{ext}", file_suffix(suffix))).collect();
     for (i, name) in names.iter().enumerate() {
-        if names[..i].iter().any(|other| other.to_uppercase() == name.to_uppercase()) {
+        if names[..i].iter().any(|other| other.to_uppercase() == name.to_uppercase() || other.to_lowercase() == name.to_lowercase()) {
             return Err(format!("Two sizes would write the same file, {name}; give each size its own suffix"));
         }
     }
