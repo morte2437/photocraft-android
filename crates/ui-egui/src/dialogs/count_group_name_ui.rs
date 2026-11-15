@@ -26,8 +26,7 @@ pub fn open_new(app: &mut PhotocraftApp) {
 /// Opens the dialog to rename count group `group`, pre-filled with its name.
 pub fn open_rename(app: &mut PhotocraftApp, group: usize) {
     let Some(name) = app.session.active().and_then(|d| d.doc.measurement.count_groups.get(group)).map(|g| g.name.clone()) else { return };
-    let all: Vec<String> = app.session.active().map(|d| d.doc.measurement.count_groups.iter().map(|g| g.name.clone()).collect()).unwrap_or_default();
-    open(app, json!({"mode": "rename", "group": group, "name": name, "all": all}));
+    open(app, json!({"mode": "rename", "group": group, "name": name}));
 }
 
 fn open(app: &mut PhotocraftApp, fields: Value) {
@@ -36,23 +35,21 @@ fn open(app: &mut PhotocraftApp, fields: Value) {
     // only there. A switch to another document (and back, or a reopened one with a reused id)
     // makes a new activation.
     fields.insert("gen".into(), json!(app.session.active_generation()));
+    // The document's change marker: renaming targets a group by its index, which any later change
+    // to the document (a group deleted, another added) can move to a different group, even with
+    // the same names. It advances with every command, however many run before a frame.
+    fields.insert("rev".into(), json!(app.session.active().map(|d| d.revision)));
     app.ui.analysis.dialog = Some((KIND.to_string(), fields));
 }
 
 /// Is the dialog out of date: has another document been activated since it opened, or (renaming)
-/// has the list of groups changed (one added, deleted, reordered or renamed, which can move the
-/// group it targets even when names repeat)? Then it is dropped, with whatever was typed, so OK
-/// can't name a group of the wrong document or rename the wrong group.
+/// has the document changed at all, which can move the group it targets? Then it is dropped, with
+/// whatever was typed, so OK can't name a group of the wrong document or rename the wrong group.
 pub fn stale(app: &PhotocraftApp, f: &Map<String, Value>) -> bool {
     if f.get("gen").and_then(Value::as_u64) != Some(app.session.active_generation()) {
         return true;
     }
-    if f.get("mode").and_then(Value::as_str) != Some("rename") {
-        return false;
-    }
-    let now: Vec<&str> = app.session.active().map(|d| d.doc.measurement.count_groups.iter().map(|g| g.name.as_str()).collect()).unwrap_or_default();
-    let then: Vec<&str> = f.get("all").and_then(Value::as_array).map(|a| a.iter().filter_map(Value::as_str).collect()).unwrap_or_default();
-    now != then
+    f.get("mode").and_then(Value::as_str) == Some("rename") && f.get("rev").and_then(Value::as_u64) != app.session.active().map(|d| d.revision)
 }
 
 /// The dialog's body: the name field, focused with its text selected when the dialog opens.

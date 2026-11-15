@@ -216,3 +216,40 @@ fn closing_the_document_and_opening_another_drops_the_dialog() {
     assert!(h.state().ui.analysis.dialog.is_none(), "the dialog is dropped");
     assert_eq!(groups(&h), vec!["Mine".to_string()], "the new document's groups are untouched");
 }
+
+/// CodeRabbit on #14707: two control requests that run before the next frame (delete the first of
+/// `[B, B]`, add another `B`) leave the same names with a different group at index 0, which a list
+/// of names can't tell. Any change to the document drops the rename dialog.
+#[test]
+fn two_queued_edits_that_restore_the_names_still_drop_the_rename_dialog() {
+    let mut h = harness();
+    h.state_mut().run("count.newGroup", json!({"name": "B"})).unwrap();
+    h.state_mut().run("count.newGroup", json!({"name": "B"})).unwrap();
+    h.state_mut().run("count.deleteGroup", json!({"group": 0})).unwrap();
+    h.run_steps(2);
+    crate::count_group_name_ui::open_rename(h.state_mut(), 0);
+    h.run_steps(3);
+    assert!(h.state().ui.analysis.dialog.is_some(), "the dialog is open on [B, B]");
+    h.state_mut().run("count.deleteGroup", json!({"group": 0})).unwrap();
+    h.state_mut().run("count.newGroup", json!({"name": "B"})).unwrap();
+    h.run_steps(3);
+    assert!(h.state().ui.analysis.dialog.is_none(), "the dialog is dropped though the names are [B, B] again");
+}
+
+/// CodeRabbit on #14707: the same document closed and reopened under the same id (an activation
+/// the id can't tell) drops the dialog.
+#[test]
+fn reopening_the_document_under_the_same_id_drops_the_dialog() {
+    let mut h = harness();
+    h.get_by_label("Create a new count group").click();
+    h.run_steps(3);
+    assert!(h.state().ui.analysis.dialog.is_some());
+    let closed = h.state_mut().session.close(0).unwrap();
+    let id = closed.doc.id;
+    h.state_mut().session.add_document((*closed.doc).clone(), None);
+    assert_eq!(h.state().session.active().unwrap().doc.id, id, "the reopened document has the closed one's id");
+    let before = groups(&h);
+    h.run_steps(3);
+    assert!(h.state().ui.analysis.dialog.is_none(), "the dialog is dropped");
+    assert_eq!(groups(&h), before);
+}
