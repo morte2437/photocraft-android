@@ -449,7 +449,11 @@ fn run_droplet(s: &mut Session, p: &Value) -> Result<Value> {
         _ => return Err(bad(cmd, "missing \"input\" (files or folders)")),
     };
     for i in raw {
-        if std::path::Path::new(&i).is_dir() { inputs.extend(list_images(&i)?) } else { inputs.push(i) }
+        if std::path::Path::new(&i).is_dir() {
+            inputs.extend(list_images(&i)?)
+        } else if crate::file_cmds::openable_name(&i) {
+            inputs.push(i)
+        }
     }
     if inputs.is_empty() {
         return Err(bad(cmd, "no input images"));
@@ -694,6 +698,9 @@ pub fn specs() -> Vec<CommandSpec> {
     ]
 }
 
+#[cfg(test)]
+#[path = "droplet_skip_non_images_tests.rs"]
+mod droplet_skip_non_images_tests;
 #[cfg(test)]
 #[path = "automate_cmds/tests.rs"]
 mod tests;
