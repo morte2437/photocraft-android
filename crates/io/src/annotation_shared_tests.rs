@@ -67,7 +67,7 @@ fn shared_writer_matches_valid_legacy_bytes() {
         for x in [0.0, -5.5, f64::from(i32::MAX), f64::INFINITY] {
             let note = Note { text: text.into(), author: "ä✓".repeat(180), modified: "date".into(), position: [x, 2.5], ..Default::default() };
             let extra = vec![vec![0, 0, 0, 8, b's', b'n', b'd', b'A']];
-            assert_eq!(write_anno(&[note.clone()], &extra).unwrap(), legacy_anno(&[note], &extra));
+            assert_eq!(write_anno(std::slice::from_ref(&note), &extra).unwrap(), legacy_anno(&[note], &extra));
         }
     }
 }
@@ -80,7 +80,14 @@ fn every_export_path_refuses_excess_notes() {
         assert!(crate::document_to_psd(&d).is_err());
         assert!(crate::document_to_psd_with(&d, &Default::default()).is_err());
         assert!(crate::encode_with(&d, "psd", &Default::default(), &photocraft_raster::Interrupt::NONE).is_err());
-        assert!(crate::encode_with(&d, "tiff", &Default::default(), &photocraft_raster::Interrupt::NONE).is_err());
+        // Flat TIFF intentionally does not encode annotations. Exercise the actual layered
+        // Photoshop-data path; Multichannel has no TIFF layer representation.
+        if mode != photocraft_doc::ColorMode::Multichannel {
+            d.layers.push(photocraft_doc::Layer::raster("notes layer", d.pixel_format()));
+            let opts = crate::ExportOptions { tiff_layers: true, ..Default::default() };
+            assert!(crate::tiff_layers::would_write_layers(&d));
+            assert!(crate::encode_with(&d, "tiff", &opts, &photocraft_raster::Interrupt::NONE).is_err());
+        }
     }
 }
 #[test]

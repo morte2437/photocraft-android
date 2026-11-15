@@ -204,8 +204,9 @@ pub fn export_blocks(doc: &Document, mut blocks: Vec<photocraft_doc::PsdGlobalBl
     let entries = raw.as_deref().and_then(|d| parse_entries(d));
     let parsed: Option<Vec<Note>> = entries.as_ref().map(|e| e.iter().filter_map(|e| if let Entry::Text(n) = e { Some(n.clone()) } else { None }).collect());
     // Unedited decoded notes retain the original bounded block, even when its legacy
-    // single-byte text would exceed the UTF-16 writer budget after conversion.
-    if parsed.as_deref() == Some(doc.notes.as_slice()) || (entries.is_none() && doc.notes.is_empty()) {
+    // single-byte text would exceed the UTF-16 writer budget after conversion. An all-zero
+    // popup still needs the established default-rectangle normalization on save (#939).
+    if (parsed.as_deref() == Some(doc.notes.as_slice()) && doc.notes.iter().all(|n| n.popup != [0.0; 4])) || (entries.is_none() && doc.notes.is_empty()) {
         return Ok(blocks);
     }
     // Compare in stored precision (colours are 16-bit, positions whole pixels, empty popups get a
