@@ -1169,6 +1169,12 @@ fn a_latin1_embedded_svg_that_decodes_past_the_budget_is_refused() {
     assert!(error.to_string().contains("byte or nesting budget"), "{error}");
     let error = parse_bounded(image_svg(&format!("{wide}{small}")).as_bytes(), MAX_RASTER_PIXELS).unwrap_err();
     assert!(error.to_string().contains("byte or nesting budget"), "{error}");
+    // A damaged predecessor may consume the accounting budget, but must not hide
+    // the next child's own decoded-text overrun during refusal reclassification.
+    let compressed = gzip(b"<svg xmlns=\"http://www.w3.org/2000/svg\"/>");
+    let damaged = embedded_image("image/svg+xml", &compressed[..compressed.len() / 2]);
+    let error = parse_bounded(image_svg(&format!("{damaged}{wide}")).as_bytes(), MAX_RASTER_PIXELS).unwrap_err();
+    assert!(error.to_string().contains("byte or nesting budget"), "{error}");
 }
 
 /// After a damaged image spent the budget, images refused for bytes are unpacked again to tell

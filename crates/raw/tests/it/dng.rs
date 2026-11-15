@@ -994,7 +994,7 @@ fn jpeg_xl_mismatches_are_errors() {
 
 #[test]
 fn profile_gain_table_map_is_reported() {
-    let gain_table = |s: &Sensor| s.warnings.iter().any(|w| w.contains("gain table map"));
+    let gain_table = |s: &Sensor| s.warnings.iter().any(|w| w.contains("ProfileGainTableMap") || w.contains("gain table map"));
     let mut spec = DngSpec::cfa(8, 8, vec![500; 64]);
     assert!(!gain_table(&sensor(&spec.build())));
     // A well-formed ProfileGainTableMap (version 1, little-endian): one table of one gain. craft-raw
@@ -1014,7 +1014,7 @@ fn profile_gain_table_map_is_reported() {
     assert!(gain_table(&s));
     let d = develop_sensor(&s, &DevelopOptions::default()).unwrap();
     for warnings in [&s.warnings, &d.warnings] {
-        assert!(warnings.iter().any(|w| w.contains("gain table map") && w.contains("not applied")), "{warnings:?}");
+        assert!(warnings.iter().any(|w| w.contains("ProfileGainTableMap") && w.contains("not applied")), "{warnings:?}");
         assert!(!warnings.iter().any(|w| w.contains("gain table map") && w.contains("omitted")), "{warnings:?}");
     }
 }

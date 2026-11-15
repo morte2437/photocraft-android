@@ -155,8 +155,7 @@ fn rw2_round_trip_12_and_14_bit() {
         assert_eq!(s.data, data, "{bits}-bit");
         assert_eq!(s.cfa.as_ref().unwrap().phase(0, 0), [0, 1, 1, 2]);
         assert_eq!(s.black.values, vec![128.0, 129.0, 129.0, 130.0]);
-        // craft-raw takes the white level from the data: the saturation plateau of the scene, else the full range.
-        assert!(s.white[0] > 0.0 && s.white[0] <= f32::from(max), "{:?}", s.white);
+        assert_eq!(s.white, [f32::from(max); 3]);
         assert_eq!(s.camera_wb, Some([2.0, 1.0, 1.5]));
         assert_eq!(s.crop, Rect::new(2, 2, w - 4, h - 4));
         let d = develop_sensor(&s, &DevelopOptions::default()).unwrap();

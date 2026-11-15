@@ -48,7 +48,7 @@ fn metadata() {
     // craft-raw reads AsShotNeutral as the DNG colour tag; development turns it into multipliers.
     let neutral = sensor.color.as_shot_neutral.unwrap();
     assert!((neutral[0] - 0.375).abs() < 1e-9 && (neutral[2] - 0.617).abs() < 1e-9, "{neutral:?}");
-    assert_eq!((sensor.make.as_deref(), sensor.model.as_deref()), (Some("Hasselblad"), Some("Hasselblad X2D II 100C")));
+    assert_eq!((sensor.make.as_deref(), sensor.model.as_deref()), (Some("Hasselblad"), Some("X2D II 100C")));
     assert_eq!(sensor.orientation, 1);
     // This real-layout fixture deliberately has no CFAPattern tag. All source
     // metadata is retained, while the decoder discloses its assumed RGGB phase.

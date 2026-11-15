@@ -634,8 +634,13 @@ fn note_byte_refusal(data: &[u8], used: usize, refusals: &SvgRefusals) {
             // Every unpack is charged at least what it unpacked, so together they stay within one
             // budget; plain data is only measured.
             let (unpacked, too_large) = match craft_svg::svgz::inflate(data, limit) {
-                Ok(std::borrow::Cow::Borrowed(_)) => (0, false),
-                Ok(std::borrow::Cow::Owned(xml)) => (xml.len(), false),
+                Ok(xml) => {
+                    // Encoding expansion is part of the text budget too: a Latin-1 child
+                    // after corrupt data must not evade the normal decoded-text limit.
+                    let decoded = craft_svg::svgz::decode(&xml).map_or(xml.len(), |text| text.len());
+                    let work = if compressed { xml.len().max(decoded).min(limit) } else { 0 };
+                    (work, decoded > limit)
+                }
                 Err(craft_svg::svgz::Error::Nested(len)) => (len, false),
                 Err(craft_svg::svgz::Error::TooLarge(_)) => (if compressed { limit } else { 0 }, true),
                 Err(_) => (limit, false),
