@@ -147,9 +147,9 @@ pub(crate) fn tag_exr_colorspace(s: &Session, name: &str, doc: &mut Document) {
     if !name.to_ascii_lowercase().ends_with(".exr") || !s.prefs.get().file_handling.exr_aces_cg {
         return;
     }
-    let linear = photocraft_cms::Builtin::LinearSrgb.profile().to_bytes();
+    let linear = craft_cms::Builtin::LinearSrgb.profile().to_bytes();
     if doc.icc_profile.as_ref().map(|v| v.as_slice()) == Some(linear.as_slice()) {
-        doc.icc_profile = Some(photocraft_cms::Builtin::AcesCg.profile().to_bytes());
+        doc.icc_profile = Some(craft_cms::Builtin::AcesCg.profile().to_bytes());
     }
 }
 
@@ -200,7 +200,7 @@ pub fn open_bytes_as_with_options(
     let (r, raw_settings) = if let Some((imported, settings)) = raw {
         (imported, Some(settings))
     } else {
-        let r = photocraft_io::import_with_options(&decode_name, bytes, &opts).map_err(|e| match as_ext {
+        let r = photocraft_io::import_with_options_as(&decode_name, bytes, as_ext, &opts).map_err(|e| match as_ext {
             Some(ext) => crate::error::io_open_as_error(&file_name(name), ext, e),
             None => crate::error::io_open_error(&decode_name, e),
         })?;

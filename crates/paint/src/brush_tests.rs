@@ -1982,10 +1982,11 @@ fn general_loop_strokes_render_the_same_in_parallel_and_serially_at_every_depth(
 #[cfg(not(target_arch = "wasm32"))]
 #[test]
 fn a_parallel_composite_converts_through_the_documents_cmyk_profile() {
-    use photocraft_cms::synth::{CmykParams, cmyk_profile};
+    use craft_cms::synth::{CmykParams, cmyk_profile};
     use photocraft_color::convert::{CmykSpace, with_cmyk_space};
     let profile =
-        cmyk_profile(&CmykParams { description: "Brush Test CMYK".into(), tvi: [0.26, 0.26, 0.26, 0.3], grid_a2b: 5, grid_b2a: 9, ..Default::default() });
+        cmyk_profile(&CmykParams { description: "Brush Test CMYK".into(), tvi: [0.26, 0.26, 0.26, 0.3], grid_a2b: 5, grid_b2a: 9, ..Default::default() })
+            .unwrap();
     let bytes = profile.to_bytes();
     let Some(space) = CmykSpace::for_profile(Some(&bytes)) else { panic!("the synthetic profile is a CMYK space") };
     let fmt = PixelFormat::new(ColorMode::Cmyk, SampleType::U16, true);

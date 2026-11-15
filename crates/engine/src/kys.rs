@@ -68,34 +68,37 @@ pub fn parse(text: &str) -> Result<KysSet, String> {
         return Err("not a keyboard shortcut set (.kys): larger than 4 MiB".into());
     }
     let text = text.trim_start_matches('\u{feff}');
-    let doc = photocraft_io::xml::parse(text, roxmltree::ParsingOptions::default()).map_err(|e| format!("not a keyboard shortcut set (.kys): {e}"))?;
-    let root = doc.root_element();
-    if root.tag_name().name() != "photoshop-keyboard-shortcuts" {
+    let options = craft_xml::Options {
+        limits: craft_xml::Limits { max_input: MAX_BYTES, max_depth: 512, ..craft_xml::Limits::default() },
+        doctype: craft_xml::Doctype::Reject,
+        strict: true,
+        ..craft_xml::Options::default()
+    };
+    let doc = options.parse(text.as_bytes()).map_err(|e| format!("not a keyboard shortcut set (.kys): {e}"))?;
+    if doc.name != "photoshop-keyboard-shortcuts" {
         return Err("not a keyboard shortcut set (.kys): no <photoshop-keyboard-shortcuts> root".into());
     }
-    let name = root.attribute("filename").map(filename_to_name).filter(|n| !n.is_empty()).map(str::to_string);
+    let name = doc.attr("filename").map(filename_to_name).filter(|n| !n.is_empty()).map(str::to_string);
     let mut set = KysSet { name, ..Default::default() };
-    for node in root.children().filter(|n| n.is_element()) {
-        match node.tag_name().name() {
+    for node in doc.elements() {
+        match node.name.as_str() {
             "command" => {
-                let Some(name) = node.attribute("name").map(str::trim).filter(|n| !n.is_empty()) else { continue };
-                let shortcuts: Vec<String> = node
-                    .children()
-                    .filter(|n| n.is_element() && n.tag_name().name() == "shortcut")
-                    .filter_map(|n| n.text().map(str::trim).filter(|t| !t.is_empty()).map(str::to_string))
-                    .collect();
+                let Some(name) = node.attr("name").map(str::trim).filter(|n| !n.is_empty()) else { continue };
+                let shortcuts: Vec<String> = node.children("shortcut").map(|n| n.text()).map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
                 if !shortcuts.is_empty() {
-                    let id = node.attribute(PC_ID).map(str::trim).filter(|i| !i.is_empty()).map(str::to_string);
+                    let id = node.attr(PC_ID).map(str::trim).filter(|i| !i.is_empty()).map(str::to_string);
                     set.commands.push(KysCommand { name: name.to_string(), shortcuts, id });
                 }
             }
             "tool" => {
-                let key = node.text().map(str::trim).filter(|t| !t.is_empty());
-                let name = node.attribute("name").map(str::trim).filter(|n| !n.is_empty());
+                let text = node.text();
+                let key = text.trim();
+                let key = (!key.is_empty()).then_some(key);
+                let name = node.attr("name").map(str::trim).filter(|n| !n.is_empty());
                 if let Some(key) = key {
                     set.tool_keys += 1;
                     if let Some(name) = name {
-                        let id = node.attribute(PC_ID).map(str::trim).filter(|i| !i.is_empty()).map(str::to_string);
+                        let id = node.attr(PC_ID).map(str::trim).filter(|i| !i.is_empty()).map(str::to_string);
                         set.tools.push(KysCommand { name: name.to_string(), shortcuts: vec![key.to_string()], id });
                     }
                 }

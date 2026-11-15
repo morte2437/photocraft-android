@@ -3,7 +3,7 @@ use super::*;
 /// #321: New Document offers the working space and the other profiles of the mode's space.
 #[test]
 fn color_profile_menu_lists_the_profiles_of_the_modes_space() {
-    use photocraft_cms::{Builtin, ColorSpace, ProfileClass};
+    use craft_cms::{Builtin, ColorSpace, ProfileClass};
     use photocraft_engine::installed_profiles::InstalledProfile;
     let installed = [
         InstalledProfile { path: "press.icc".into(), description: "Press".into(), class: ProfileClass::Output, color_space: ColorSpace::Cmyk },
@@ -38,7 +38,7 @@ fn applying_a_preset_replaces_the_picked_profile() {
     press["profile"] = json!("coated-cmyk");
     s.execute("document.presets.save", json!({"name": "Press", "settings": press})).unwrap();
     let mut f = Map::new();
-    f.insert("profile".into(), json!(photocraft_cms::Builtin::AdobeRgbCompat.id()));
+    f.insert("profile".into(), json!(craft_cms::Builtin::AdobeRgbCompat.id()));
     apply_saved_preset(&mut f, &s.presets.documents[0]);
     assert!(!f.contains_key("profile"), "{f:?}");
     assert!(s.execute("file.new", command_params(&f)).is_ok());

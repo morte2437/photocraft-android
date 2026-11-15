@@ -247,13 +247,13 @@ fn color_mode_of(mode: &str) -> Option<photocraft_color::ColorMode> {
 /// its profile's description), then the built-in and installed profiles of that space, as
 /// `file.new`'s `profile` values (an id or a path) with their labels.
 fn profile_options(
-    space: Option<photocraft_cms::ColorSpace>,
+    space: Option<craft_cms::ColorSpace>,
     working: &str,
     installed: &[photocraft_engine::installed_profiles::InstalledProfile],
 ) -> Vec<(String, String)> {
     let mut v = vec![("working".to_string(), crate::i18n::fmt(tl!("Working: {working}"), &[("working", working)]))];
     let Some(space) = space else { return v };
-    v.extend(photocraft_cms::Builtin::ALL.iter().filter(|b| b.profile().color_space == space).map(|b| (b.id().to_string(), b.description().to_string())));
+    v.extend(craft_cms::Builtin::ALL.iter().filter(|b| b.profile().color_space == space).map(|b| (b.id().to_string(), b.description().to_string())));
     v.extend(installed.iter().filter(|i| i.is_destination() && i.color_space == space).map(|i| (i.path.clone(), i.description.clone())));
     v
 }

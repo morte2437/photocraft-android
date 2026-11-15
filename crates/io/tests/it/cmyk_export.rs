@@ -3,7 +3,7 @@
 
 use std::sync::Arc;
 
-use photocraft_cms::Builtin;
+use craft_cms::Builtin;
 use photocraft_codecs::ChannelLayout;
 use photocraft_color::{BlendMode, ColorMode, PixelFormat, SampleType};
 use photocraft_doc::{Document, Layer};

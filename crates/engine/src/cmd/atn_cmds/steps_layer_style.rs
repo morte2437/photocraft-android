@@ -86,11 +86,10 @@ fn has_style_reference(value: &D) -> bool {
     let mut pending = vec![value];
     while let Some(value) = pending.pop() {
         match value {
-            D::Reference(parts) => {
-                if parts.iter().any(|part| matches!(part, ReferenceItem::Property { key, .. } if key.is("Lefx"))) {
-                    return true;
-                }
+            D::Reference(parts) if parts.iter().any(|part| matches!(part, ReferenceItem::Property { key, .. } if key.is("Lefx"))) => {
+                return true;
             }
+            D::Reference(_) => {}
             D::Descriptor(d) | D::GlobalObject(d) => pending.extend(d.items.iter().map(|(_, value)| value)),
             D::List(values) => pending.extend(values),
             D::ObjectArray(array) => pending.extend(array.body.items.iter().map(|(_, value)| value)),

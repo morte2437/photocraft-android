@@ -2,7 +2,7 @@
 
 PhotoCraft opens GIMP's native `.xcf` files (and `.xcf.gz`) with their layers, read only. File ›
 Open, recent files, drops, the CLI (`convert`, `info`, `batch`) and automation (`doc.open`, MCP)
-use the same reader in `photocraft-io` (`crates/io/src/xcf.rs`). A file is recognised by its
+use the same import in `photocraft-io` (`crates/io/src/xcf.rs`), on craft-libs' `craft-xcf` reader. A file is recognised by its
 `gimp xcf ` signature, so an XCF with another extension still opens as one. Save suggests
 `.pcraft`, which keeps everything PhotoCraft holds; exporting as `.xcf` fails with a message.
 

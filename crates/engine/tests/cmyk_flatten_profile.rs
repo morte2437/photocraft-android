@@ -34,12 +34,9 @@ const INKS: [[f32; 4]; 8] = [
 ];
 
 fn profile() -> Arc<Vec<u8>> {
-    photocraft_cms::synth::cmyk_profile(&photocraft_cms::synth::CmykParams {
-        description: "Test Uncoated".into(),
-        tvi: [0.26, 0.26, 0.26, 0.3],
-        ..Default::default()
-    })
-    .to_bytes()
+    craft_cms::synth::cmyk_profile(&craft_cms::synth::CmykParams { description: "Test Uncoated".into(), tvi: [0.26, 0.26, 0.26, 0.3], ..Default::default() })
+        .unwrap()
+        .to_bytes()
 }
 
 /// A one-layer (Background) CMYK document, tagged with `profile()` when `tag`: the first row is

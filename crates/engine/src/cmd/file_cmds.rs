@@ -472,8 +472,8 @@ mod aces_exr_tests {
         .unwrap();
         let bytes = photocraft_codecs::encode(&image, photocraft_codecs::Format::OpenExr, &photocraft_codecs::EncodeOptions::default()).unwrap();
 
-        let linear = photocraft_cms::Builtin::LinearSrgb.profile().to_bytes();
-        let aces = photocraft_cms::Builtin::AcesCg.profile().to_bytes();
+        let linear = craft_cms::Builtin::LinearSrgb.profile().to_bytes();
+        let aces = craft_cms::Builtin::AcesCg.profile().to_bytes();
 
         // Off (the default): io's linear-sRGB tagging stays.
         let mut s = Session::new();
@@ -497,8 +497,8 @@ mod aces_exr_tests {
         let image = photocraft_codecs::Image::from_f32(4, 4, photocraft_codecs::ChannelLayout::Rgb, &[0.5; 48]).unwrap();
         let bytes =
             std::sync::Arc::new(photocraft_codecs::encode(&image, photocraft_codecs::Format::OpenExr, &photocraft_codecs::EncodeOptions::default()).unwrap());
-        let linear = photocraft_cms::Builtin::LinearSrgb.profile().to_bytes();
-        let aces = photocraft_cms::Builtin::AcesCg.profile().to_bytes();
+        let linear = craft_cms::Builtin::LinearSrgb.profile().to_bytes();
+        let aces = craft_cms::Builtin::AcesCg.profile().to_bytes();
         for (on, want) in [(false, &linear), (true, &aces)] {
             let mut s = Session::new();
             s.prefs.edit(|p| p.file_handling.exr_aces_cg = on);

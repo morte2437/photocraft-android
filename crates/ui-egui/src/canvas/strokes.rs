@@ -600,17 +600,21 @@ pub(super) fn offer_live_retouch(app: &mut PhotocraftApp, d: &Drag) {
     let rest: Vec<_> = d.points.get(fed..).unwrap_or_default().iter().map(|q| photocraft_engine::paint::StrokePoint::new(q[0], q[1], q[2] as f32)).collect();
     // A refused offer (the brush changed mid-stroke, say) leaves the commit to render the stroke.
     match stroke {
-        EngineStroke::Retouch(mut live) if !dab => {
-            if rest.is_empty() || live.push(&rest).is_ok() {
-                let _ = app.session.offer_live_retouch(*live);
-            }
-        }
-        EngineStroke::Dab(mut live) if dab => {
-            if rest.is_empty() || live.push(&rest).is_ok() {
-                let _ = app.session.offer_live_dab(*live);
-            }
-        }
+        EngineStroke::Retouch(live) if !dab => offer_retouch(app, live, &rest),
+        EngineStroke::Dab(live) if dab => offer_dab(app, live, &rest),
         _ => {}
+    }
+}
+
+fn offer_retouch(app: &mut PhotocraftApp, mut live: Box<photocraft_engine::retouch_cmds::LiveRetouch>, rest: &[photocraft_engine::paint::StrokePoint]) {
+    if rest.is_empty() || live.push(rest).is_ok() {
+        let _ = app.session.offer_live_retouch(*live);
+    }
+}
+
+fn offer_dab(app: &mut PhotocraftApp, mut live: Box<photocraft_engine::retouch_cmds::LiveDab>, rest: &[photocraft_engine::paint::StrokePoint]) {
+    if rest.is_empty() || live.push(rest).is_ok() {
+        let _ = app.session.offer_live_dab(*live);
     }
 }
 

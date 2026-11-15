@@ -1,6 +1,6 @@
 //! Working RGB must support reading and editing for the configured intent.
 
-use photocraft_cms::{
+use craft_cms::{
     Builtin, Curve, Intent, Profile, ProfileClass,
     pipeline::Stage,
     profile::{Lut, LutKind},
@@ -89,7 +89,7 @@ fn display_and_copy(s: &mut Session, depth: SampleType) {
     let target = s.active().unwrap().doc.clone();
     let display = s.color.display_transform(&target).expect("the destination document must also be a readable display source");
     let mut displayed = [0.0; 3];
-    display.eval(&[0.35, 0.65, 0.45], &mut displayed);
+    display.eval(&[0.35, 0.65, 0.45], &mut displayed).unwrap();
     assert!(displayed.iter().all(|v| v.is_finite()));
     let mut source = Document::new("Copy source", Size::new(8, 6), ColorMode::Rgb, SampleType::F32);
     source.icc_profile = Some(Builtin::AdobeRgbCompat.profile().to_bytes());
