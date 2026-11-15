@@ -132,6 +132,31 @@ pub fn form_keys(f: &Map<String, Value>) -> Vec<String> {
     keys
 }
 
+/// Batch keeps its normal caption fields. Only same-name actions in the chosen set need another selector.
+fn batch_occurrence_field(ui: &mut egui::Ui, f: &mut Map<String, Value>) {
+    use crate::actions::{BATCH_OCCURRENCE, BATCH_OCCURRENCES};
+
+    let Some(choices) = f.get(BATCH_OCCURRENCES).and_then(Value::as_array) else { return };
+    let action = f.get("action");
+    let set = f.get("set").filter(|set| !set.is_null());
+    let mut choices: Vec<_> = choices
+        .iter()
+        .filter(|choice| choice.get("action") == action && choice.get("set").filter(|set| !set.is_null()) == set)
+        .filter_map(|choice| Some((Some(choice["row"].as_u64()?), choice["label"].as_str()?)))
+        .collect();
+    if choices.len() < 2 {
+        return;
+    }
+    let name = tl!("Occurrence");
+    let mut current = f.get(BATCH_OCCURRENCE).and_then(Value::as_u64).filter(|row| choices.iter().any(|(choice, _)| *choice == Some(*row)));
+    choices.insert(0, (None, tl!("By name")));
+    ui.label(name);
+    if crate::widgets::dropdown_literal(ui, "form-batch-occurrence", name, &mut current, &choices, 200.0) {
+        f.insert(BATCH_OCCURRENCE.into(), json!(current));
+    }
+    ui.end_row();
+}
+
 /// Body of a `__form` dialog: text fields, number fields, checkboxes and `__choices` dropdowns.
 pub fn form_body(ui: &mut egui::Ui, f: &mut Map<String, Value>) {
     let choices = f.get("__choices").cloned().unwrap_or(Value::Null);
@@ -261,8 +286,12 @@ pub fn form_body(ui: &mut egui::Ui, f: &mut Map<String, Value>) {
                     }
                 }
             };
+            let batch_action = k == "action" && f.get("__command").and_then(Value::as_str) == Some("file.automate.batch");
             f.insert(k, new);
             ui.end_row();
+            if batch_action {
+                batch_occurrence_field(ui, f);
+            }
         }
     });
     if let Some(key) = browse {
@@ -593,9 +622,10 @@ pub(super) fn front(app: &mut PhotocraftApp, ctx: &egui::Context, id: &str, para
             json!({"source": ["current", "open", "folder"]}),
         ),
         "file.automate.batch" => {
-            let Some(action) = crate::actions::selected_action(app) else {
+            let Some(row) = crate::actions::selected_action_row(app) else {
                 return Some(Err("record an action in the Actions panel first".into()));
             };
+            let action = &app.session.actions.list[row];
             let (name, set) = (action.name.clone(), action.set.clone());
             let (names, sets) = crate::actions::action_form_choices(app);
             let mut fields = json!({
@@ -610,7 +640,10 @@ pub(super) fn front(app: &mut PhotocraftApp, ctx: &egui::Context, id: &str, para
             if let Some(set) = set {
                 fields["set"] = json!(set);
             }
-            dialog(app, fields, json!({"set": sets, "action": names, "format": ["same", "png", "jpg", "psd", "tiff", "webp"], "source": ["folder", "open"]}))
+            let choices = json!({"set": sets, "action": names, "format": ["same", "png", "jpg", "psd", "tiff", "webp"], "source": ["folder", "open"]});
+            let dialog = form(app, id, label, fields, choices);
+            crate::actions::bind_batch_dialog(app, dialog, row);
+            Some(Ok(json!({"dialog": dialog})))
         }
         // Channel workflow dialogs (see channels_panel.rs for the channel references).
         "select.saveSelection" | "select.loadSelection" | "image.applyImage" | "image.calculations" => {

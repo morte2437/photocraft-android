@@ -105,6 +105,14 @@ fn droplet(file: &str, output: &str, extra: &[(&str, D)]) -> Descriptor {
     d
 }
 
+#[test]
+fn unresolved_droplet_identity_cannot_export_a_fallback_caption() {
+    let mut params = json!({"path": "C:/work/Sharpen.pcdroplet", "action": "Sharpen", "set": "Tools", "output": "C:/work/out"});
+    assert!(export_item("file.automate.createDroplet", &params, "Tools").is_some());
+    params["actionId"] = Value::Null;
+    assert!(export_item("file.automate.createDroplet", &params, "Tools").is_none());
+}
+
 /// Create Droplet loads as `file.automate.createDroplet`, plays (writes the droplet with the
 /// action's steps) and saves back as recorded.
 #[test]

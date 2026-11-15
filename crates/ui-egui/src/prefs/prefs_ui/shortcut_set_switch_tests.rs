@@ -165,7 +165,8 @@ fn an_unmodified_set_switches_at_once() {
 fn an_action_function_key_is_no_edit() {
     let (mut h, first) = dialog();
     h.state_mut().ui.dialogs.retain(|d| d.id != first);
-    crate::actions::assign_shortcut(h.state_mut(), "Sepia", "F2").unwrap();
+    h.state_mut().session.actions.list.push(photocraft_engine::actions_cmds::Action::new("Sepia", Vec::new()));
+    crate::actions::assign_shortcut(h.state_mut(), 0, "F2").unwrap();
     let ctx = h.ctx.clone();
     let id = crate::menus::invoke(h.state_mut(), &ctx, "edit.keyboardShortcuts", json!({})).unwrap()["dialog"].as_u64().unwrap();
     h.run_steps(4);

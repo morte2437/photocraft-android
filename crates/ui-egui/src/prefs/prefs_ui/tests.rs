@@ -629,6 +629,152 @@ fn stored(store: &Arc<Mutex<Option<String>>>) -> Value {
 }
 
 #[test]
+fn saving_preferences_waits_for_the_actions_write_only_for_its_shortcuts() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    let old = "actions.playById:00112233445566778899aabbccddeeff";
+    let new = "actions.playById:ffeeddccbbaa99887766554433221100";
+    let (mut app, store) = app_with_saved(Some(json!({"shortcuts": {(old): "F2"}, "alternateShortcuts": {(old): ["F3"]}}).to_string()));
+    let pending = Arc::new(AtomicBool::new(false));
+    let observed = pending.clone();
+    app.services.actions_write_pending = Some(Box::new(move || observed.load(Ordering::Relaxed)));
+    let ctx = egui::Context::default();
+    tick(&mut app, &ctx);
+
+    pending.store(true, Ordering::Relaxed);
+    app.session.edit_prefs(|prefs| {
+        prefs.shortcuts.remove(old);
+        prefs.shortcuts.insert(new.into(), "F2".into());
+        prefs.alternate_shortcuts.remove(old);
+        prefs.file_handling.recent_file_count = 12;
+    });
+    tick(&mut app, &ctx);
+    let before_commit = stored(&store);
+    assert_eq!(before_commit["fileHandling"]["recentFileCount"], 12);
+    assert_eq!(before_commit["shortcuts"][old], "F2");
+    assert_eq!(before_commit["alternateShortcuts"][old], json!(["F3"]));
+    assert!(before_commit["shortcuts"].get(new).is_none());
+
+    pending.store(false, Ordering::Relaxed);
+    tick(&mut app, &ctx);
+    let after_commit = stored(&store);
+    assert!(after_commit["shortcuts"].get(old).is_none());
+    assert!(after_commit["alternateShortcuts"].get(old).is_none());
+    assert_eq!(after_commit["shortcuts"][new], "F2");
+}
+
+#[test]
+fn desktop_shortcuts_wait_for_the_actions_definition_write() {
+    use photocraft_engine::actions_cmds;
+    use photocraft_engine::preset_store::{ACTIONS_FILE, MemBackend, PresetBackend, open};
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    struct RetriableActionsWrite {
+        store: MemBackend,
+        reject: Arc<AtomicBool>,
+    }
+
+    impl PresetBackend for RetriableActionsWrite {
+        fn list(&self) -> Result<Vec<(String, u64)>, String> {
+            self.store.list()
+        }
+
+        fn read(&self, name: &str, max: u64) -> Result<Vec<u8>, String> {
+            self.store.read(name, max)
+        }
+
+        fn write(&self, name: &str, bytes: &[u8]) -> Result<(), String> {
+            if name == ACTIONS_FILE && self.reject.load(Ordering::Relaxed) {
+                return Err("injected Actions write rejection".into());
+            }
+            self.store.write(name, bytes)
+        }
+
+        fn remove(&self, name: &str) -> Result<(), String> {
+            self.store.remove(name)
+        }
+    }
+
+    let old_id = "00112233445566778899aabbccddeeff";
+    let old = actions_cmds::occurrence_key(old_id);
+    let original = json!({"version":1, "actions":[{"name":"Saved", "action_id":old_id}]});
+    let ctx = egui::Context::default();
+    for attach in [true, false] {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let (mut app, prefs) = app_with_saved(Some(json!({"shortcuts":{(&old):"F4"}, "alternateShortcuts":{(&old):["F4","F8"]}}).to_string()));
+        app.services.preset_store = Some(rx);
+        app.run("actions.record", json!({"name":"Early"})).unwrap();
+        app.run("actions.stop", json!({})).unwrap();
+        crate::actions::assign_shortcut(&mut app, 0, "F4").unwrap();
+        let new_id = app.session.actions.list[0].action_id.clone().unwrap();
+        let new = actions_cmds::occurrence_key(&new_id);
+        let assert_held = |ordinary| {
+            let saved = stored(&prefs);
+            assert_eq!(saved["fileHandling"]["recentFileCount"], ordinary);
+            assert_eq!(saved["shortcuts"][&old], "F4");
+            assert_eq!(saved["alternateShortcuts"][&old], json!(["F4", "F8"]));
+            assert!(saved["shortcuts"].get(&new).is_none());
+        };
+
+        app.session.edit_prefs(|p| p.file_handling.recent_file_count = 12);
+        save_preferences(&mut app).unwrap();
+        assert_held(12);
+        app.session.edit_prefs(|p| p.file_handling.recent_file_count = 13);
+        tick(&mut app, &ctx);
+        assert_held(13);
+
+        let definitions = MemBackend::default();
+        definitions.write(ACTIONS_FILE, original.to_string().as_bytes()).unwrap();
+        let reject = Arc::new(AtomicBool::new(true));
+        if attach {
+            tx.send(open(Box::new(RetriableActionsWrite { store: definitions.clone(), reject: reject.clone() }))).unwrap();
+        }
+        drop(tx);
+        tick(&mut app, &ctx);
+        assert!(app.services.preset_store.is_none());
+        assert_eq!(app.session.preset_store.is_some(), attach);
+        app.session.edit_prefs(|p| p.file_handling.recent_file_count = 14);
+        save_preferences(&mut app).unwrap();
+        assert_held(14);
+        assert_eq!(serde_json::from_slice::<Value>(&definitions.read(ACTIONS_FILE, 4096).unwrap()).unwrap(), original);
+
+        if attach {
+            reject.store(false, Ordering::Relaxed);
+            // A normal command retries the failed Actions write before preferences are saved.
+            app.run("file.new", json!({"width":2,"height":2})).unwrap();
+            save_preferences(&mut app).unwrap();
+            let durable = serde_json::from_slice::<Value>(&definitions.read(ACTIONS_FILE, 4096).unwrap()).unwrap();
+            assert_eq!(durable["actions"][0]["action_id"], new_id);
+            let saved = stored(&prefs);
+            assert_eq!(saved["shortcuts"][&new], "F4");
+            assert_ne!(saved["shortcuts"][&old], "F4");
+            assert_eq!(saved["alternateShortcuts"][&old], json!(["F8"]));
+            assert_eq!(saved["fileHandling"]["recentFileCount"], 14);
+        } else {
+            app.run("actions.record", json!({"name":"After disconnect"})).unwrap();
+            app.run("actions.stop", json!({})).unwrap();
+            crate::actions::assign_shortcut(&mut app, 1, "F8").unwrap();
+            let late_id = app.session.actions.list[1].action_id.clone().unwrap();
+            let late = actions_cmds::occurrence_key(&late_id);
+            save_preferences(&mut app).unwrap();
+            assert_held(14);
+            assert!(stored(&prefs)["shortcuts"].get(&late).is_none());
+
+            let (tx, rx) = std::sync::mpsc::channel();
+            tx.send(open(Box::new(definitions.clone()))).unwrap();
+            app.services.preset_store = Some(rx);
+            tick(&mut app, &ctx);
+            let durable = serde_json::from_slice::<Value>(&definitions.read(ACTIONS_FILE, 4096).unwrap()).unwrap();
+            assert_eq!(durable["actions"][1]["action_id"], late_id);
+            let saved = stored(&prefs);
+            assert_eq!(saved["shortcuts"][&new], "F4");
+            assert_eq!(saved["shortcuts"][&late], "F8");
+            assert!(saved["alternateShortcuts"][&old].as_array().is_none_or(Vec::is_empty));
+        }
+    }
+}
+
+#[test]
 fn a_wrongly_typed_value_resets_only_itself_and_is_repaired_on_disk() {
     // #6611: one bad value used to reset every preference, on every launch.
     let saved = json!({

@@ -344,6 +344,7 @@ fn command_body(app: &mut PhotocraftApp, ui: &mut egui::Ui, d: &Dialog, fields: 
 fn command_body_more(app: &mut PhotocraftApp, ui: &mut egui::Ui, d: &Dialog, fields: &mut Fields, id: egui::Id) -> Option<bool> {
     let mut outcome: Option<bool> = None;
     match d.kind {
+        _ if crate::actions::library::owns(fields) => crate::actions::library::body(app, ui, d.id),
         _ if crate::variables_ui::owns(fields) => crate::variables_ui::body(app, ui, fields),
         _ if merge_channels_ui::owns(fields) => merge_channels_ui::body(ui, fields),
         _ if crate::file_ui::owns(fields) => crate::file_ui::body(app, ui, fields, d.id),
@@ -492,7 +493,10 @@ fn button_row(
     } else {
         let ok_label = ok_label(d);
         // Dialogs that need an input first (a preset name, a selection) grey OK out.
-        let can_ok = crate::crop_presets::can_confirm(app, fields) && crate::stack_dialog::can_confirm(fields) && merge_channels_ui::can_confirm(fields);
+        let can_ok = crate::crop_presets::can_confirm(app, fields)
+            && crate::stack_dialog::can_confirm(fields)
+            && merge_channels_ui::can_confirm(fields)
+            && (!crate::actions::library::owns(fields) || crate::actions::library::can_confirm(app, d.id));
         let ok = DialogButton::new(ButtonRole::Default, ok_label, 84.0).enabled(can_ok);
         // Photoshop: holding Alt turns Cancel into Reset (the dialog stays open).
         // Dialogs opt in via `dialog_alt_reset::supported` (per marker).
@@ -507,7 +511,9 @@ fn button_row(
             tl!("Cancel")
         };
         let cancel = DialogButton::new(ButtonRole::Cancel, cancel_label, 84.0);
-        let clicked = if d.kind == DialogKind::Command && crate::prefs_ui::is_preferences(fields) {
+        let clicked = if crate::actions::library::owns(fields) {
+            crate::actions::library::buttons(app, ui, d.id)
+        } else if d.kind == DialogKind::Command && crate::prefs_ui::is_preferences(fields) {
             let changed = crate::prefs_ui::preferences_changed(app, fields);
             dialog_buttons(ui, &[ok, cancel, DialogButton::new(ButtonRole::Apply, tl!("Apply"), 84.0).enabled(changed)])
         } else if crate::mask_trash_prompt::owns(fields) && !crate::mask_trash_prompt::is_vector(fields) {
@@ -969,6 +975,7 @@ const ROUTES: &[fn(&Fields) -> bool] = &[
     crate::prefs_ui::owns,
     crate::open_prompt::owns,
     crate::replace_prompt::owns,
+    crate::actions::library::owns,
     crate::preset_group_prompt::owns,
     crate::layer_style::color_picker::owns,
     |f| f.contains_key("__export"),
@@ -1027,8 +1034,13 @@ fn confirm_generic_command(app: &mut PhotocraftApp, mut d: Dialog) -> Result<Val
         crate::actions::abandoned(app, &d.fields);
         return Err("dialog has no command".into());
     };
-    let params = crate::filter_dialog::params_of(&d.fields);
-    if let Err(error) = crate::actions::authorize_panel_preview(app, d.id, &d.fields, &cmd, &params) {
+    let mut params = crate::filter_dialog::params_of(&d.fields);
+    let exact = if cmd == "file.automate.batch" {
+        crate::actions::batch_dialog_params(app, d.id, d.fields.get(crate::actions::BATCH_OCCURRENCE), &mut params)
+    } else {
+        Ok(())
+    };
+    if let Err(error) = exact.and_then(|()| crate::actions::authorize_panel_preview(app, d.id, &d.fields, &cmd, &params)) {
         app.filter_preview = None;
         crate::actions::abandoned(app, &d.fields);
         return Err(error);
@@ -1189,6 +1201,7 @@ fn confirm_command(app: &mut PhotocraftApp, d: Dialog) -> Result<Value, String> 
 /// The rest of the command dialogs: files, colour, preferences and export, then any other command.
 fn confirm_command_more(app: &mut PhotocraftApp, d: Dialog) -> Result<Value, String> {
     match d.kind {
+        _ if crate::actions::library::owns(&d.fields) => crate::actions::library::confirm(app, d.id),
         _ if merge_channels_ui::owns(&d.fields) => merge_channels_ui::confirm(app, &d.fields),
         _ if crate::analysis_ui::owns_delete_note(&d.fields) => crate::analysis_ui::confirm_delete_note(app, &d.fields),
         _ if crate::analysis_ui::owns_clear_notes(&d.fields) => crate::analysis_ui::confirm_clear_notes(app, &d.fields),
@@ -1260,8 +1273,10 @@ pub fn cancel(app: &mut PhotocraftApp, id: u64) -> Result<Value, String> {
     }
     app.ui.dialogs.retain(|d| !pickers.contains(&d.id));
     crate::actions::record_again::cancel(app, id);
+    crate::actions::cancel_batch_dialog(app, id);
     crate::actions::menu_item::cancel(app, id);
     crate::actions::stopped(app, &closed.fields);
+    crate::actions::library::cancel(app, id);
     if crate::guide_layout_ui::owns(&closed.fields) {
         app.ui.dialogs.retain(|child| child.fields.get("__dialog").and_then(Value::as_u64) != Some(id));
     }

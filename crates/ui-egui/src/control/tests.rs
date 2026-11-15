@@ -8,6 +8,66 @@ fn call(app: &mut PhotocraftApp, ctx: &egui::Context, method: &str, params: Valu
     }
 }
 
+#[test]
+fn batch_occurrence_fields_are_read_only_through_control() {
+    let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
+    let ctx = egui::Context::default();
+    app.run("file.new", json!({"width": 8, "height": 8})).unwrap();
+    app.session.actions.list.push(photocraft_engine::actions_cmds::Action::new("Target", vec![("select.all".into(), json!({}))]));
+    app.ui.actions.selected = Some(0);
+    let id = crate::menus::invoke(&mut app, &ctx, "file.automate.batch", json!({})).unwrap()["dialog"].as_u64().unwrap();
+    let original = app.ui.dialog_mut(id).unwrap().fields.clone();
+    assert_eq!(original["__command"], "file.automate.batch");
+    assert!(original.contains_key(crate::actions::BATCH_OCCURRENCE));
+    assert!(original.contains_key(crate::actions::BATCH_OCCURRENCES));
+
+    // The public form command is mutable, but it cannot disable the private dialog binding.
+    let changed_command = "file.automate.createDroplet";
+    assert_eq!(call(&mut app, &ctx, "ui.dialog.set", json!({"dialog": id, "field": "__command", "value": changed_command}))["ok"], true);
+    let reply = call(&mut app, &ctx, "ui.dialog.set", json!({"dialog": id, "field": crate::actions::BATCH_OCCURRENCE, "value": 1}));
+    assert_eq!(reply["ok"], false, "changing __command cannot unlock occurrence fields: {reply}");
+    assert!(reply["error"].as_str().unwrap().contains("Batch occurrence fields are read-only"));
+    assert_eq!(app.ui.dialog_mut(id).unwrap().fields[crate::actions::BATCH_OCCURRENCE], original[crate::actions::BATCH_OCCURRENCE]);
+    assert_eq!(call(&mut app, &ctx, "ui.dialog.set", json!({"dialog": id, "field": "__command", "value": "file.automate.batch"}))["ok"], true);
+
+    let mut forged_reset = original["__formOrig"].as_object().unwrap().clone();
+    forged_reset.insert(crate::actions::BATCH_OCCURRENCE.into(), json!(1));
+    forged_reset.insert(crate::actions::BATCH_OCCURRENCES.into(), json!([{"action": "Forged", "row": 1}]));
+    for (field, value) in [
+        ("__formOrig", Value::Object(forged_reset)),
+        (crate::actions::BATCH_OCCURRENCE, json!(1)),
+        (crate::actions::BATCH_OCCURRENCES, json!([{"action": "Forged", "row": 1}])),
+    ] {
+        let reply = call(&mut app, &ctx, "ui.dialog.set", json!({"dialog": id, "field": field, "value": value}));
+        assert_eq!(reply["ok"], false, "{reply}");
+        assert!(reply["error"].as_str().unwrap().contains("Batch occurrence fields are read-only"));
+        assert_eq!(app.ui.dialog_mut(id).unwrap().fields, original, "rejected edits leave the real Batch form unchanged");
+    }
+    let input = json!(["source.png"]);
+    assert_eq!(call(&mut app, &ctx, "ui.dialog.set", json!({"dialog": id, "field": "input", "value": input}))["ok"], true);
+    let fields = &app.ui.dialog_mut(id).unwrap().fields;
+    assert_eq!(fields["input"], input, "ordinary Batch form fields remain editable");
+    for field in [crate::actions::BATCH_OCCURRENCE, crate::actions::BATCH_OCCURRENCES] {
+        assert_eq!(fields[field], original[field]);
+    }
+
+    // The legitimate Reset still restores ordinary fields and keeps the captured occurrence.
+    crate::view_cmds::reset_form(&mut app.ui.dialog_mut(id).unwrap().fields);
+    let fields = &app.ui.dialog_mut(id).unwrap().fields;
+    assert_eq!(fields.get("input"), original.get("input"));
+    for field in [crate::actions::BATCH_OCCURRENCE, crate::actions::BATCH_OCCURRENCES] {
+        assert_eq!(fields.get(field), original.get(field));
+    }
+
+    // An unrelated, real dialog still accepts its ordinary fields.
+    let reply = call(&mut app, &ctx, "ui.dialog.open", json!({"kind": "newDocument"}));
+    assert_eq!(reply["ok"], true, "the unrelated New Document dialog opens: {reply}");
+    let other = reply["result"]["dialog"].as_u64().unwrap();
+    let width = json!(16);
+    assert_eq!(call(&mut app, &ctx, "ui.dialog.set", json!({"dialog": other, "field": "width", "value": width}))["ok"], true);
+    assert_eq!(app.ui.dialog_mut(other).unwrap().fields["width"], width);
+}
+
 /// #3674: a guessed name gets a pointer to the right one, in both directions; and every
 /// method listed for those hints is served.
 #[test]

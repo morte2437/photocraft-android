@@ -20,7 +20,7 @@ fn batch_resolves_action_by_name_and_detects_recursion() {
         p["output"] = json!(out);
         assert!(s.execute("file.automate.batch", p).is_err());
     }
-    s.actions.playback_stack.push("Scale".into());
+    s.actions.playback_stack.push(crate::actions_cmds::PlaybackTarget { name: "Scale".into(), id: None, position: None });
     let err = s.execute("file.automate.batch", json!({"action":"Scale","input":[input],"output":out})).unwrap_err();
     assert!(err.to_string().contains("recursive action call"), "{err}");
 }
@@ -532,7 +532,7 @@ fn named_open_document_batch_keeps_cycle_context_and_live_recorder() {
             crate::actions_cmds::Action::new("Leaf", vec![("actions.play".into(), json!({"action":0}))]),
         ];
         let definitions = s.actions.list[1..].to_vec();
-        s.actions.playback_stack = vec!["Enclosing".into()];
+        s.actions.playback_stack = vec![crate::actions_cmds::PlaybackTarget { name: "Enclosing".into(), id: None, position: None }];
         s.actions.recording = Some((s.journal.len(), 0));
         let take = s.actions.take;
         s.authorize = Some(gate);
@@ -540,7 +540,7 @@ fn named_open_document_batch_keeps_cycle_context_and_live_recorder() {
         let result = batch(&mut s, &json!({"source":"open","action":"Loop A"})).unwrap();
         assert!(result["errors"][0]["error"].as_str().unwrap().contains("recursive action"), "{result}");
         assert!(CALLS.load(Ordering::SeqCst) <= 2, "the cycle check must beat the finite sentinel");
-        assert_eq!(s.actions.playback_stack, ["Enclosing"]);
+        assert_eq!(s.actions.playback_stack, [crate::actions_cmds::PlaybackTarget { name: "Enclosing".into(), id: None, position: None }]);
         assert_eq!(s.actions.recording.map(|(_, owner)| owner), Some(0));
         assert_eq!(s.actions.take, take);
         assert_eq!(&s.actions.list[1..], definitions.as_slice());
@@ -549,10 +549,82 @@ fn named_open_document_batch_keeps_cycle_context_and_live_recorder() {
         let result = batch(&mut s, &json!({"source":"open","action":"Leaf","calledActions":embedded})).unwrap();
         assert_eq!(result["errors"], json!([]), "{result}");
         assert_eq!(doc(&s).walk().len(), before + 1);
-        assert_eq!(s.actions.playback_stack, ["Enclosing"]);
+        assert_eq!(s.actions.playback_stack, [crate::actions_cmds::PlaybackTarget { name: "Enclosing".into(), id: None, position: None }]);
         assert_eq!(s.actions.recording.map(|(_, owner)| owner), Some(0));
         assert_eq!(s.actions.take, take);
         assert_eq!(&s.actions.list[1..], definitions.as_slice());
+    }
+}
+
+#[test]
+fn batch_legacy_rows_in_embedded_libraries_do_not_alias_the_caller() {
+    use crate::actions_cmds::Action;
+    let dir = tmp("batch-legacy-occurrence");
+    let input = png(&dir, "red.png", 8, 8, "#ff0000");
+    let embedded = vec![Action::new("Shared", vec![("layer.new.layer".into(), json!({"name": "embedded leaf"}))])];
+    let play = ("actions.play".to_string(), json!({"action": 0}));
+    for source in ["open", "folder"] {
+        let mut s = Session::new();
+        if source == "open" {
+            s.execute("file.openAs", json!({"path": input})).unwrap();
+        }
+        s.actions.list.push(Action::new("Shared", vec![play.clone()]));
+        let result = s
+            .execute(
+                "file.automate.batch",
+                json!({
+                    "source": source, "input": [input], "output": join(&dir, source),
+                    "format": "png", "action": 0, "calledActions": embedded,
+                }),
+            )
+            .unwrap();
+        assert_eq!(result["errors"], json!([]), "{result}");
+        assert_eq!(s.actions.playback_namespace, 0);
+        assert!(s.actions.playback_stack.is_empty());
+    }
+
+    let mut s = Session::new();
+    s.execute("file.new", json!({"width": 8, "height": 8})).unwrap();
+    s.execute("actions.record", json!({"name": "Recorder"})).unwrap();
+    let params = json!({"source": "open", "steps": [play], "calledActions": embedded});
+    let result = s.execute("file.automate.batch", params.clone()).unwrap();
+    assert_eq!(result["errors"], json!([]), "{result}");
+    assert!(doc(&s).layers.iter().any(|layer| layer.name == "embedded leaf"));
+    s.execute("actions.stop", json!({})).unwrap();
+    assert_eq!(s.actions.list[0].steps, [("file.automate.batch".to_string(), params)]);
+}
+
+#[test]
+fn batch_stable_ids_are_scoped_to_the_embedded_library() {
+    use crate::actions_cmds::Action;
+
+    let dir = tmp("batch-stable-occurrence");
+    let input = png(&dir, "red.png", 8, 8, "#ff0000");
+    let id = "112233445566778899aabbccddeeff00";
+    let mut leaf = Action::new("Leaf", vec![("layer.new.layer".into(), json!({"name":"embedded leaf"}))]);
+    leaf.action_id = Some(id.into());
+    for source in ["open", "folder"] {
+        let mut s = Session::new();
+        if source == "open" {
+            s.execute("file.openAs", json!({"path":input})).unwrap();
+        }
+        let mut caller = Action::new("Caller", vec![("actions.play".into(), json!({"actionId":id}))]);
+        caller.action_id = Some(id.into());
+        s.actions.list.push(caller);
+        let mut params = json!({
+            "source":source, "input":[input], "output":join(&dir, source),
+            "format":"png", "actionId":id, "calledActions":[leaf],
+        });
+        let result = s.execute("file.automate.batch", params.clone()).unwrap();
+        assert_eq!(result["errors"], json!([]), "{result}");
+        assert_eq!(s.actions.playback_namespace, 0);
+        assert!(s.actions.playback_stack.is_empty());
+        if source == "open" {
+            assert!(doc(&s).layers.iter().any(|layer| layer.name == "embedded leaf"));
+            params.as_object_mut().unwrap().remove("calledActions");
+            let recursive = s.execute("file.automate.batch", params).unwrap();
+            assert!(recursive["errors"][0]["error"].as_str().unwrap().contains("recursive action"), "{recursive}");
+        }
     }
 }
 
@@ -2888,7 +2960,7 @@ fn named_batch_limits_nesting_and_keeps_the_callers_state() {
         }
         s.actions.list.push(Action::new("Invert", vec![("image.adjustments.invert".into(), json!({}))]));
         s.actions.playing = 16;
-        s.actions.playback_stack = (0..16).map(|i| format!("Parent{i}")).collect();
+        s.actions.playback_stack = (0..16).map(|i| crate::actions_cmds::PlaybackTarget { name: format!("Parent{i}"), id: None, position: None }).collect();
         let before = s.actions.clone();
         let error = s.execute("file.automate.batch", params.clone()).unwrap_err();
         assert!(error.to_string().contains("nesting exceeds 16"), "{error}");
@@ -2944,14 +3016,14 @@ fn named_batch_charges_the_existing_budget_across_inputs_and_children() {
         Action::new("Leaf", vec![("select.deselect".into(), json!({})); 2]),
     ];
     s.actions.playing = 1;
-    s.actions.playback_stack = vec!["Parent".into()];
+    s.actions.playback_stack = vec![crate::actions_cmds::PlaybackTarget { name: "Parent".into(), id: None, position: None }];
     s.actions.playback_steps = MAX_PLAYBACK_STEPS - 4;
     let result = s.execute("file.automate.batch", json!({"action": "Outer", "input": [input, input], "output": output, "naming": "{serial}"})).unwrap();
     assert_eq!(result["files"].as_array().unwrap().len(), 1, "{result}");
     assert!(result["errors"][0]["error"].as_str().unwrap().contains("step limit"), "{result}");
     assert_eq!(s.actions.playback_steps, MAX_PLAYBACK_STEPS);
     assert_eq!(s.actions.playing, 1);
-    assert_eq!(s.actions.playback_stack, ["Parent"]);
+    assert_eq!(s.actions.playback_stack, [crate::actions_cmds::PlaybackTarget { name: "Parent".into(), id: None, position: None }]);
 }
 
 /// Nested named batches honor the caller's authorization and preserve its action state.
@@ -4496,4 +4568,76 @@ fn save_and_close_refuses_a_read_only_source() {
         assert!(error.contains("cannot replace this source"), "overrideOpen {override_open}: {result}");
         assert_eq!(std::fs::read(&source).unwrap(), bytes, "overrideOpen {override_open}: the source is unchanged");
     }
+}
+
+/// The public helper must retain the registered library, not alias an embedded namespace.
+#[test]
+fn public_begin_playback_scopes_registered_actions_but_still_rejects_real_recursion() {
+    use crate::actions_cmds::{Action, begin_playback, finish_playback};
+    let dir = tmp("public-playback-namespace");
+    let input = png(&dir, "red.png", 8, 8, "#ff0000");
+    let id = "112233445566778899aabbccddeeff00";
+    for source in ["open", "folder"] {
+        for stable in [false, true] {
+            let mut s = Session::new();
+            if source == "open" {
+                s.execute("file.openAs", json!({"path":input})).unwrap();
+            }
+            let mut registered = Action::new("Shared", vec![]);
+            let mut embedded = Action::new("Shared", vec![("layer.new.layer".into(), json!({"name":"embedded helper leaf"}))]);
+            if stable {
+                registered.action_id = Some(id.into());
+                embedded.action_id = Some(id.into());
+            }
+            s.actions.list.push(registered.clone());
+            let recording = begin_playback(&mut s, &registered).unwrap();
+            let stack = s.actions.playback_stack.clone();
+            assert_eq!(stack[0].position, Some((0, 0)), "public helper captures registered origin");
+            let target = if stable { json!({"actionId":id}) } else { json!({"action":0}) };
+            let result = s
+                .execute(
+                    "file.automate.batch",
+                    json!({
+                        "source":source,"input":[input],"output":join(&dir, &format!("{source}-{stable}")),"format":"png",
+                        "steps":[["actions.play",target]],"calledActions":[embedded],
+                    }),
+                )
+                .unwrap();
+            assert_eq!(result["errors"], json!([]), "a different library may reuse this identity: {result}");
+            assert_eq!(s.actions.playback_namespace, 0);
+            assert_eq!(s.actions.playback_stack, stack, "embedded playback restores the exact caller stack");
+            assert_eq!(s.actions.list, [registered.clone()]);
+            if source == "open" {
+                assert!(doc(&s).layers.iter().any(|layer| layer.name == "embedded helper leaf"));
+            }
+            let error = s.execute("actions.play", target).unwrap_err().to_string();
+            assert!(error.contains("recursive action"), "same-library recursion must still be refused: {error}");
+            assert_eq!(s.actions.playback_stack, stack);
+            finish_playback(&mut s, recording, &registered, 0);
+            assert!(s.actions.playback_stack.is_empty());
+        }
+    }
+    // A duplicate legacy caption is not a resolved occurrence. In particular, the row1
+    // caller must not be positioned at row0 and replay side effects before recursion is seen.
+    let mut s = Session::new();
+    s.execute("file.new", json!({"width":8,"height":8})).unwrap();
+    s.actions.list.push(Action::new("Duplicate", vec![]));
+    let second = Action::new("Duplicate", vec![("layer.new.layer".into(), json!({"name":"must not replay"})), ("actions.play".into(), json!({"action":1}))]);
+    s.actions.list.push(second.clone());
+    let layers = doc(&s).layers.len();
+    let recording = begin_playback(&mut s, &second).unwrap();
+    assert!(s.actions.playback_stack[0].position.is_none());
+    let error = s.execute("actions.play", json!({"action":1})).unwrap_err().to_string();
+    assert!(error.contains("recursive action"), "{error}");
+    assert_eq!(doc(&s).layers.len(), layers, "immediate recursion cannot replay the first side effect");
+    assert!(!doc(&s).layers.iter().any(|layer| layer.name == "must not replay"));
+    finish_playback(&mut s, recording, &second, 0);
+    assert!(s.actions.playback_stack.is_empty());
+
+    // Synthetic callers not in the registered list retain the conservative legacy behavior.
+    let mut s = Session::new();
+    let driver = Action::new("Synthetic driver", vec![]);
+    let recording = begin_playback(&mut s, &driver).unwrap();
+    assert!(s.actions.playback_stack[0].position.is_none());
+    finish_playback(&mut s, recording, &driver, 0);
 }
