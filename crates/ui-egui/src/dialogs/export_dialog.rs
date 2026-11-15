@@ -1221,22 +1221,27 @@ fn layer_file_stem(name: &str) -> String {
 
 /// The names several layers' files get, for `docs` in document order (bottom to top). Equal
 /// names are numbered in Layers panel order: the upper layer keeps the name, the next ones down
-/// get `-1`, `-2`, … (skipping a name another layer already has). Names are compared upper-cased (as
-/// Windows folds them, so a final sigma `ς` and `σ` are one name),
+/// get `-1`, `-2`, … (skipping a name another layer already has). Names are compared upper-cased and lower-cased
+/// (so a final sigma `ς` and `σ`, and `K` and the Kelvin sign, are one name),
 /// as a case-insensitive destination (a default Windows or macOS volume) treats `Logo` and `logo`
 /// as one file, which a second write would silently replace.
 fn layer_file_names(docs: &[Document], ext: &str) -> Vec<String> {
+    // A name is taken when its upper-cased or its lower-cased form is: upper-casing joins `σ` and `ς`
+    // (Windows folds that way), lower-casing joins `K` and the Kelvin sign `K` (which APFS treats as
+    // one name). Neither folding alone catches both.
+    let taken = |used: &std::collections::HashSet<String>, name: &str| used.contains(&name.to_uppercase()) || used.contains(&name.to_lowercase());
     let mut used = std::collections::HashSet::new();
     let mut names = vec![String::new(); docs.len()];
     for (i, doc) in docs.iter().enumerate().rev() {
         let stem = layer_file_stem(&doc.name);
         let mut name = format!("{stem}.{ext}");
         let mut n = 1u64;
-        while used.contains(&name.to_uppercase()) {
+        while taken(&used, &name) {
             name = format!("{stem}-{n}.{ext}");
             n = n.saturating_add(1);
         }
         used.insert(name.to_uppercase());
+        used.insert(name.to_lowercase());
         names[i] = name;
     }
     names

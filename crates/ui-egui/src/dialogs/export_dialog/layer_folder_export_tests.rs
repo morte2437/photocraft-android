@@ -31,6 +31,9 @@ fn names_keep_spaces_replace_illegal_characters_and_number_duplicates_downwards(
     // Windows folds names by upper-casing: a final sigma and a sigma are one file there.
     let docs = [named("ς"), named("σ")];
     assert_eq!(layer_file_names(&docs, "png"), ["ς-1.png", "σ.png"]);
+    // `K` and the Kelvin sign are one name on a volume that normalises (APFS); upper-casing alone keeps them apart.
+    let docs = [named("K"), named("\u{212A}")];
+    assert_eq!(layer_file_names(&docs, "png"), ["K-1.png", "\u{212A}.png"]);
     // A layer already called `Dup-1` keeps its name; the numbering skips it.
     let docs = [named("Dup"), named("Dup-1"), named("Dup")];
     assert_eq!(layer_file_names(&docs, "jpg"), ["Dup-2.jpg", "Dup-1.jpg", "Dup.jpg"]);
