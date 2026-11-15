@@ -461,14 +461,7 @@ fn commit_path_current(app: &mut PhotocraftApp, pen: &PenPath, closed: bool, fre
         app.run("shape.create", json!({"kind": "path", "path": path, "addTo": layer, "op": op}))
     } else if app.ui.tool_options.vector_mode == "shape" {
         let fill = if closed { fill_param(app) } else { Value::Null };
-        let stroke = if closed {
-            stroke_param(app)
-        } else {
-            let mut stroke = app.ui.tool_options.shape_stroke.params();
-            stroke["width"] = json!(app.ui.tool_options.stroke_width.max(1.0));
-            stroke["color"] = json!(app.session.tools.foreground);
-            stroke
-        };
+        let stroke = if closed { stroke_param(app) } else { super::shapes::open_pen_stroke_param(app) };
         app.run("shape.create", json!({"kind": "path", "path": path, "fill": fill, "stroke": stroke, "historyName": freeform.then_some("Freeform Pen")}))
     } else if let Some((name, p)) =
         pen.resumes.as_ref().and_then(|r| app.session.active().and_then(|st| with_resumed_subpath(&st.doc, r, &path)).map(|p| (r.path.clone(), p)))
