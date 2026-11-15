@@ -5763,6 +5763,7 @@ dependencies = [
 name = "photocraft-paint"
 version = "0.23.1"
 dependencies = [
+ "base64 0.23.1",
  "craft-cms",
  "photocraft-color",
  "photocraft-geom",
@@ -5847,6 +5848,7 @@ dependencies = [
 name = "photocraft-text"
 version = "0.23.1"
 dependencies = [
+ "base64 0.23.1",
  "craft-psd",
  "flate2",
  "parley",
