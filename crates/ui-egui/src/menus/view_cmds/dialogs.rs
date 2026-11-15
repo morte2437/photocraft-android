@@ -695,16 +695,23 @@ pub(super) fn front(app: &mut PhotocraftApp, ctx: &egui::Context, id: &str, para
     }
 }
 
+/// The name Save a Copy suggests: "<name> copy.psd" for a document with a file, or with
+/// Preferences › File Handling › Do not append "copy" to filename (`copy_suffix` empty) the
+/// document's own name (only the extension may change), as in Photoshop (#8080). A document that
+/// was never saved suggests its own name without " copy" either way (#14169).
+pub(super) fn suggested_copy_name(doc_name: &str, has_file: bool, copy_suffix: &str) -> String {
+    let stem = doc_name.rsplit_once('.').map_or(doc_name, |(a, _)| a);
+    let suffix = if has_file { copy_suffix } else { "" };
+    format!("{stem}{suffix}.psd")
+}
+
 /// File › Save a Copy: pick a name, encode with the export service, write; the document's path
 /// and saved state are untouched. An action being recorded keeps it as a `file.saveACopy` step
 /// with its path (#4373).
 fn save_a_copy(app: &mut PhotocraftApp) -> Result<Value, String> {
     let doc = app.session.active().ok_or("no document")?.doc.clone();
-    let stem = doc.name.rsplit_once('.').map_or(doc.name.as_str(), |(a, _)| a);
-    // "<name> copy.psd", or with Preferences › File Handling › Do not append "copy" to filename
-    // when saving a copy the document's own name (only the extension may change), as in
-    // Photoshop (#8080).
-    let suggested = format!("{stem}{}.psd", app.session.prefs().file_handling.copy_suffix());
+    let has_file = app.session.active().is_some_and(|d| d.path.is_some());
+    let suggested = suggested_copy_name(&doc.name, has_file, app.session.prefs().file_handling.copy_suffix());
     // The copy is of the document as it was when asked.
     app.pick_save(&suggested, move |app, path| {
         // An RGB Targa asks for its bits per pixel first, a DDS texture for its compression, a
