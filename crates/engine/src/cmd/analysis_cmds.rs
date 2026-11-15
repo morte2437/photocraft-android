@@ -795,7 +795,14 @@ fn straighten(s: &mut Session, p: &Value) -> Result<Value> {
     let (w0, h0) = (f64::from(d.size.width), f64::from(d.size.height));
     compound(s, "Straighten", |s| {
         if crop {
-            s.execute("image.rotation.arbitrary", json!({"angle": rot, "direction": "cw"}))?;
+            // Count points turn with the image here, since the crop after it moves them too.
+            // Called directly rather than through `execute`, so an untrusted session's gate is
+            // asked here, as dispatch would have asked it for the nested rotation.
+            let rotation = json!({"angle": rot, "direction": "cw"});
+            if let Some(gate) = s.authorize {
+                gate("image.rotation.arbitrary", &rotation)?;
+            }
+            crate::mode_cmds::rotate_arbitrary_with(s, &rotation, false)?;
             let nd = doc(s)?;
             let (cw, ch) = inscribed(w0, h0, rot.to_radians());
             let (nw, nh) = (f64::from(nd.size.width), f64::from(nd.size.height));

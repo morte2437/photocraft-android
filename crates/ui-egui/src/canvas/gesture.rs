@@ -6,6 +6,10 @@ use super::strokes::{
 use super::textures::shown_as_document;
 use super::{PhotocraftApp, Tool, json};
 
+#[cfg(test)]
+#[path = "rectangle_click_in_shape_tests.rs"]
+mod rectangle_click_in_shape_tests;
+
 pub(crate) fn finish_gesture(app: &mut PhotocraftApp, d: Drag) {
     finish(app, d, None);
 }
@@ -110,8 +114,10 @@ fn finish(app: &mut PhotocraftApp, mut d: Drag, click: Option<bool>) {
         // mode a click adds nothing: the dialog makes a shape layer, which Path mode never draws,
         // and the click's few pixels of travel would add a speck of a subpath to the work path.
         t if crate::vector_ui::is_shape_tool(t)
-            && crate::shape_dialog::is_click(d.start, &d.points, app.point_zoom())
-            && (crate::vector_ui::draws_path(&app.ui.tool_options) || crate::shape_dialog::open(app, t, d.start).is_some()) => {}
+            && crate::shape_dialog::is_tool_click(t, &app.ui.tool_options, d.start, &d.points, app.point_zoom())
+            && (crate::vector_ui::draws_path(&app.ui.tool_options)
+                || crate::shape_dialog::click_inside_active_rectangle(app, t, d.start)
+                || crate::shape_dialog::open(app, t, d.start).is_some()) => {}
         t if crate::vector_ui::is_shape_tool(t) => crate::vector_ui::finish_shape(app, t, d.start, [end[0], end[1]], d.live),
         Tool::PathSelection => crate::vector_ui::path_selection_finish(app, d.start, [end[0], end[1]]),
         Tool::Type | Tool::VerticalType | Tool::HorizontalTypeMask | Tool::VerticalTypeMask => crate::type_tool::pointer_up(app, d.start, [end[0], end[1]]),
@@ -167,7 +173,7 @@ fn finish(app: &mut PhotocraftApp, mut d: Drag, click: Option<bool>) {
                 if made.is_ok() && d.tool != Tool::Lasso {
                     crate::retouch_ui::patch_hint(app);
                 }
-            } else if app.session.is_enabled("select.deselect") {
+            } else if (d.tool != Tool::Lasso || selection_mode(app, d.modifiers) == "replace") && app.session.is_enabled("select.deselect") {
                 let _ = app.run("select.deselect", json!({}));
             }
         }

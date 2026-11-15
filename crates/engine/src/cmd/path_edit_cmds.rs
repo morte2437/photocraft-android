@@ -46,14 +46,20 @@ fn knot(cmd: &str, p: &Value) -> Result<[usize; 2]> {
     Ok([index(cmd, p, "subpath")?, index(cmd, p, "knot")?])
 }
 
-/// The History step name: `default`, or `named` when `stepName` asks for it (the Convert Point
-/// tool names its steps as the reference does, #12736). Any other value is refused.
-fn step_name(cmd: &str, p: &Value, default: &'static str, named: &'static str) -> Result<&'static str> {
+/// The History step name: `default`, or one of `named` when `stepName` asks for it (the Convert
+/// Point tool names its steps as the reference does, #12736; Direct Selection names a one-anchor
+/// drag, #13205). Any other value is refused.
+fn step_name(cmd: &str, p: &Value, default: &'static str, named: &[&'static str]) -> Result<&'static str> {
     match p.get("stepName") {
         None | Some(Value::Null) => Ok(default),
-        Some(Value::String(n)) if n == named => Ok(named),
-        Some(_) => Err(bad(cmd, format!("`stepName` must be \"{named}\""))),
+        Some(Value::String(n)) => named.iter().copied().find(|m| *m == n.as_str()).ok_or_else(|| bad(cmd, step_names_error(named))),
+        Some(_) => Err(bad(cmd, step_names_error(named))),
     }
+}
+
+fn step_names_error(named: &[&str]) -> String {
+    let names: Vec<String> = named.iter().map(|n| format!("\"{n}\"")).collect();
+    format!("`stepName` must be {}", names.join(" or "))
 }
 
 /// Applies `f` to the targeted path in one undoable step labelled `label`.
@@ -116,7 +122,7 @@ fn move_anchors(s: &mut Session, p: &Value) -> Result<Value> {
         })
         .collect::<Result<_>>()?;
     let d = offset(CMD, p)?;
-    let label = step_name(CMD, p, "Drag Anchor Points", "Drag Path")?;
+    let label = step_name(CMD, p, "Drag Anchor Points", &["Drag Path", "Drag Anchor Point"])?;
     if p.get("curvature").and_then(Value::as_bool).unwrap_or(false) {
         return edit_path(s, CMD, p, label, |path| edit::move_anchors_curvature(path, &anchors, d));
     }
@@ -129,7 +135,7 @@ fn move_handle(s: &mut Session, p: &Value) -> Result<Value> {
     let h = p.get("handle").and_then(Value::as_str).and_then(Handle::parse).ok_or_else(|| bad(CMD, "`handle` must be \"in\" or \"out\""))?;
     let to = point(CMD, p, "to")?.ok_or_else(|| bad(CMD, "missing `to`"))?;
     let independent = p.get("independent").and_then(Value::as_bool).unwrap_or(false);
-    let label = step_name(CMD, p, "Drag Direction Point", "Corner Drag")?;
+    let label = step_name(CMD, p, "Drag Control Point", &["Corner Drag"])?;
     edit_path(s, CMD, p, label, |path| edit::move_handle(path, k, h, to, independent))
 }
 
@@ -147,7 +153,7 @@ fn bend_segment(s: &mut Session, p: &Value) -> Result<Value> {
 fn convert_point(s: &mut Session, p: &Value) -> Result<Value> {
     const CMD: &str = "path.convertPoint";
     let k = knot(CMD, p)?;
-    let label = step_name(CMD, p, "Convert Point", "Change Anchor Point")?;
+    let label = step_name(CMD, p, "Convert Point", &["Change Anchor Point"])?;
     if p.get("curvature").and_then(Value::as_bool).unwrap_or(false) {
         return edit_path(s, CMD, p, label, |path| edit::toggle_curvature_point(path, k));
     }
@@ -205,6 +211,14 @@ fn delete_anchor(s: &mut Session, p: &Value) -> Result<Value> {
         o.insert("subpathRemoved".into(), json!(removed));
     }
     Ok(r)
+}
+
+/// ⌫ / Delete on a segment selected with Direct Selection: the segment goes, its anchors stay.
+/// Photoshop names the step Delete Anchor Point (#13203).
+fn delete_segment(s: &mut Session, p: &Value) -> Result<Value> {
+    const CMD: &str = "path.deleteSegment";
+    let k = knot(CMD, p)?;
+    edit_path(s, CMD, p, "Delete Anchor Point", |path| edit::delete_segment(path, k))
 }
 
 /// Merge Shape Components on a path (the Pen's and Path Selection's Path Operations menu): the
@@ -284,11 +298,11 @@ pub fn specs() -> Vec<CommandSpec> {
         journal: true,
     };
     vec![
-        spec("path.moveAnchors", "Drag Anchor Points", r#""anchors":[[subpath,knot],…],"move":[dx,dy],"curvature":bool=false (anchors move with their handles; Direct Selection drag. curvature = the Curvature Pen's drag: every smooth knot of the touched subpaths gets its handles recomputed so the curve flows through the anchors),"stepName":"Drag Path"? (History step name; the Convert Point tool sends it when it drags a whole path; default "Drag Anchor Points"; any other value is refused)"#.into(), move_anchors),
+        spec("path.moveAnchors", "Drag Anchor Points", r#""anchors":[[subpath,knot],…],"move":[dx,dy],"curvature":bool=false (anchors move with their handles; Direct Selection drag. curvature = the Curvature Pen's drag: every smooth knot of the touched subpaths gets its handles recomputed so the curve flows through the anchors),"stepName":"Drag Path"|"Drag Anchor Point"? (History step name; the Convert Point tool sends "Drag Path" when it drags a whole path, Direct Selection "Drag Anchor Point" when it drags one anchor; default "Drag Anchor Points"; any other value is refused)"#.into(), move_anchors),
         spec(
             "path.moveHandle",
-            "Drag Direction Point",
-            r#""subpath":i,"knot":j,"handle":"in|out","to":[x,y],"independent":bool=false (a smooth point turns its other handle to stay collinear; independent = ⌥ / Convert Point, makes a corner),"stepName":"Corner Drag"? (History step name; the Convert Point tool sends it; default "Drag Direction Point"; any other value is refused)"#.into(),
+            "Drag Control Point",
+            r#""subpath":i,"knot":j,"handle":"in|out","to":[x,y],"independent":bool=false (a smooth point turns its other handle to stay collinear; independent = ⌥ / Convert Point, makes a corner),"stepName":"Corner Drag"? (History step name; the Convert Point tool sends it; default "Drag Control Point"; any other value is refused)"#.into(),
             move_handle,
         ),
         spec(
@@ -314,6 +328,12 @@ pub fn specs() -> Vec<CommandSpec> {
             "Delete Anchor Point",
             r#""subpath":i,"knot":j,"segments":bool=false (its neighbours are joined, keeping their handles; segments = ⌫/Delete on a selected anchor: its two segments go too, so a closed subpath opens there and an open one splits; a subpath's last anchor removes the subpath; the path's only anchor empties a saved path and is refused elsewhere) (the result also has subpathRemoved:bool)"#.into(),
             delete_anchor,
+        ),
+        spec(
+            "path.deleteSegment",
+            "Delete Segment",
+            r#""subpath":i,"knot":j (the segment leaving it) (⌫/Delete on a segment selected with Direct Selection: the anchors stay; a closed subpath opens there, starting at the segment's end; an open one splits in two) (History: Delete Anchor Point)"#.into(),
+            delete_segment,
         ),
         spec(
             "path.mergeShapeComponents",
@@ -502,6 +522,34 @@ mod tests {
         assert_eq!(s.active().unwrap().history.undo_label(), Some("Delete Anchor Point"));
         assert!(s.undo());
         assert_eq!(work(&s), before);
+    }
+
+    #[test]
+    fn deleting_a_segment_opens_the_subpath_in_one_step_and_refuses_bad_params() {
+        let mut s = session();
+        s.execute("path.set", json!({"path": square()})).unwrap();
+        let (before, steps) = (work(&s), s.active().unwrap().history.entries().len());
+        s.execute("path.deleteSegment", json!({"subpath": 0, "knot": 1})).unwrap();
+        let sp = &work(&s).subpaths[0];
+        assert_eq!((sp.knots.len(), sp.closed), (4, false), "every anchor stays");
+        assert_eq!(sp.knots[0].anchor, before.subpaths[0].knots[2].anchor, "it starts at the segment's end");
+        assert_eq!(s.active().unwrap().history.entries().len(), steps + 1);
+        assert_eq!(s.active().unwrap().history.undo_label(), Some("Delete Anchor Point"));
+        assert!(s.undo());
+        assert_eq!(work(&s), before);
+        for p in
+            [json!({}), json!({"subpath": 0}), json!({"subpath": 0, "knot": 9}), json!({"subpath": -1, "knot": 0}), json!({"name": 3, "subpath": 0, "knot": 0})]
+        {
+            assert!(s.execute("path.deleteSegment", p.clone()).is_err(), "{p}");
+        }
+        assert_eq!(work(&s), before, "refusals change nothing");
+        // #13606: an open Intersect subpath's halves aren't measured, so it doesn't split.
+        let line = json!({"subpaths": [{"closed": true, "knots": [[10, 10], [60, 10], [60, 60], [10, 60]]},
+            {"closed": false, "knots": [[20, 80], [50, 80], [80, 80]], "op": "Intersect"}]});
+        s.execute("path.set", json!({"path": line})).unwrap();
+        let (before, steps) = (work(&s), s.active().unwrap().history.entries().len());
+        assert!(s.execute("path.deleteSegment", json!({"subpath": 1, "knot": 0})).is_err());
+        assert_eq!((work(&s), s.active().unwrap().history.entries().len()), (before, steps), "no step, no change");
     }
 
     #[test]
@@ -797,3 +845,7 @@ mod tests {
 #[cfg(test)]
 #[path = "path_delete_last_anchor_tests.rs"]
 mod path_delete_last_anchor_tests;
+
+#[cfg(test)]
+#[path = "direct_select_history_names_tests.rs"]
+mod direct_select_history_names_tests;

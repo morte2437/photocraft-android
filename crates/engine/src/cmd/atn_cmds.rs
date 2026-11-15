@@ -36,6 +36,7 @@ mod menu_item;
 
 mod steps_artboard;
 mod steps_artboard_section;
+mod steps_automate;
 mod steps_batch;
 mod steps_calculations;
 mod steps_channels;
@@ -44,6 +45,7 @@ mod steps_direct_adjustments;
 mod steps_distort;
 mod steps_doc;
 mod steps_droplet;
+mod steps_frame_section;
 mod steps_gallery;
 mod steps_gradient;
 mod steps_image;
@@ -190,6 +192,9 @@ mod layer_props_tests;
 mod layer_list_tests;
 
 #[cfg(test)]
+mod automate_tests;
+
+#[cfg(test)]
 mod stylize_tests;
 
 #[cfg(test)]
@@ -202,7 +207,13 @@ mod selection_tests;
 mod render_tests;
 
 #[cfg(test)]
+mod frame_section_tests;
+
+#[cfg(test)]
 mod recorded_tools_tests;
 
 #[cfg(test)]
 mod artboard_section_tests;
+
+#[cfg(test)]
+mod fade_step_tests;

@@ -33,6 +33,23 @@ fn stroke_backwards_compatible() {
 }
 
 #[test]
+fn a_stroke_from_far_off_the_canvas_paints_only_what_reaches_it() {
+    // Dabs that cannot reach the canvas are not rasterized (their coverage is never read).
+    let mut s = session(80, 80);
+    let r = s
+        .execute(
+            "paint.stroke",
+            json!({"points": [[-100_000, 20], [70, 20], [70, 60]], "size": 6, "color": "#0000ff", "brush": {"hardness": 0.5, "smoothing": {"amount": 0.0}}}),
+        )
+        .unwrap();
+    assert!(rgba(&s, 40, 20)[3] > 0.9, "the part on the canvas is painted: {:?} {r}", rgba(&s, 40, 20));
+    assert!(rgba(&s, 70, 50)[3] > 0.9);
+    assert_eq!(rgba(&s, 40, 40)[3], 0.0);
+    let d: Vec<i64> = r["damage"].as_array().unwrap().iter().map(|v| v.as_i64().unwrap()).collect();
+    assert!(d[0] > -100, "the damage does not span the off-canvas path: {r}");
+}
+
+#[test]
 fn fill_fills_the_enclosed_region_not_the_outline() {
     // #3659: a closed gesture with `fill` paints the interior, not a ring.
     let mut s = session(60, 60);
@@ -210,6 +227,35 @@ fn pencil_is_aliased_and_auto_erases() {
     // Starting elsewhere: paints foreground.
     s.execute("paint.pencil", json!({"points": [[40, 25], [40, 28]], "size": 3, "autoErase": true})).unwrap();
     assert_eq!(rgba(&s, 40, 26), [0.0, 0.0, 0.0, 1.0]);
+}
+
+/// #13060: in a CMYK document a foreground picked as CMYK inks (a rich black, which its sRGB
+/// stand-in does not convert back to) is painted as those inks, and Pencil Auto Erase recognises
+/// them: a stroke that starts on it paints the background colour, live and committed.
+#[test]
+fn pencil_auto_erase_probes_a_cmyk_pick_with_the_picked_inks() {
+    let rich_black = [0.6f32, 0.4, 0.4, 1.0];
+    let rgb = photocraft_color::convert::cmyk_to_rgb(rich_black).map(|c| c.clamp(0.0, 1.0));
+    let mut s = session(40, 20);
+    s.execute("image.mode.cmyk", json!({})).unwrap();
+    s.execute("tools.setColors", json!({"foreground": rgb, "foregroundCmyk": rich_black, "background": "#ffffff"})).unwrap();
+    s.execute("paint.pencil", json!({"points": [[5, 10], [35, 10]], "size": 5})).unwrap();
+    let pixel = |s: &Session, x: i32, y: i32| -> Vec<f32> { surface(s).read_region(Rect::new(x, y, x + 1, y + 1)).into_iter().take(4).collect() };
+    let painted = pixel(&s, 20, 10);
+    assert!(painted.iter().zip(rich_black).all(|(a, b)| (a - b).abs() < 0.01), "the stroke paints the picked inks: {painted:?}");
+    let white = [1.0f32, 1.0, 1.0, 1.0];
+
+    // Live: the stroke that starts on the rich black paints the background.
+    let p = json!({"points": [[12, 10]], "autoErase": true, "smoothing": 0.0});
+    let mut live = LiveStroke::begin_with(&s, "paint.pencil", &p).unwrap();
+    live.push(&[StrokePoint::new(12.0, 18.0, 1.0)]).unwrap();
+    let shown = live.doc.layer(s.active().unwrap().active_layer.unwrap()).unwrap().surface().unwrap().rgba(12, 17);
+    assert!(shown.iter().zip(white).all(|(a, b)| (a - b).abs() < 1e-3), "live: {shown:?}");
+
+    // Committed: the same.
+    s.execute("paint.pencil", json!({"points": [[20, 10], [20, 18]], "size": 3, "autoErase": true})).unwrap();
+    let erased = rgba(&s, 20, 17);
+    assert!(erased.iter().zip(white).all(|(a, b)| (a - b).abs() < 1e-3), "committed: {erased:?}");
 }
 
 #[test]
@@ -1157,12 +1203,15 @@ fn out_of_range_scatter_is_rejected_and_the_maximum_still_paints() {
     assert!(s.execute("tools.setBrush", json!({ "brush": scatter(1e38) })).is_err());
     assert!(s.execute("paint.stroke", stroke.clone()).is_ok());
     // The maximum (1000 %) is accepted and paints a finite, well-formed dab.
-    for patch in [scatter(10.0), dual(10.0)] {
+    for (patch, primary_on_canvas) in [(scatter(10.0), false), (dual(10.0), true)] {
         let mut s = new();
         s.execute("tools.setBrush", json!({ "brush": patch })).unwrap();
         let r = s.execute("paint.stroke", stroke.clone()).unwrap();
         let d: Vec<i64> = r["damage"].as_array().unwrap().iter().map(|v| v.as_i64().unwrap()).collect();
-        assert!(d[0].abs() < 1000 && d[1].abs() < 1000 && d[2] > 0 && d[3] > 0, "{r}");
+        // A dab scattered clear of the canvas is not rasterized, so its damage is empty. The dual
+        // brush scatters only its own tip: the primary dab stays on the canvas and always paints.
+        let off_canvas = !primary_on_canvas && d[2] == 0 && d[3] == 0;
+        assert!(off_canvas || (d[0].abs() < 1000 && d[1].abs() < 1000 && d[2] > 0 && d[3] > 0), "{r}");
     }
     // Control: 200 % scatter paints where it did before the cap (the soft default tip reaches a
     // little past its radius).
@@ -1176,13 +1225,14 @@ fn strokes_convert_through_the_documents_cmyk_profile() {
     // A synthetic uncoated-like profile: heavier dot gain than the built-in coated CMYK (whose
     // params are the defaults here), so painted ink differs from the default conversion. The
     // compositors and composite exports enter the document's space; the stroke must too (#583).
-    let profile = photocraft_cms::synth::cmyk_profile(&photocraft_cms::synth::CmykParams {
+    let profile = craft_cms::synth::cmyk_profile(&craft_cms::synth::CmykParams {
         description: "Stroke Test Uncoated".into(),
         tvi: [0.26, 0.26, 0.26, 0.3],
         grid_a2b: 5,
         grid_b2a: 9,
         ..Default::default()
     })
+    .unwrap()
     .to_bytes();
     let cmyk_session = |tagged: bool| {
         let mut s = Session::new();

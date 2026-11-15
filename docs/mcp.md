@@ -1,5 +1,66 @@
 # MCP conventions
 
+## Connecting the desktop app (no terminal)
+
+**One switch, in the ArtCraft Launcher.** Settings › AI agents › **Let AI agents use Craft apps**
+is the person's consent for every Craft app, PhotoCraft included; PhotoCraft has no switch of its
+own. **Add** next to an MCP client (Claude Desktop, Claude Code, Cursor, LM Studio) puts one entry
+in it, `ArtCraft`, for every installed Craft app (the `craft-ai-mcp` gateway, which starts
+`photocraft-cli mcp`); **Copy** gives the configuration for any other client. Then restart the
+client. Adding to MCP clients is the launcher's job alone: PhotoCraft writes no client
+configuration. The design is in storytold/craft-ai-integrations#195.
+
+This is behind the Craft suite's `AI-MCP` feature flag (`craft-flags`). Flags are set only in the
+per-user `ArtCraft/flags.toml` (`AI-MCP = true` under `[flags]`; on Windows in
+`%LOCALAPPDATA%\ArtCraft`), which every Craft app and the launcher read, or for one run with
+`CRAFT_FLAGS=AI-MCP`; no app or launcher setting switches them. Without the flag, everything is as
+it was: Preferences › AI Integrations shows Allow Agent Control and Control Port, a Control Port
+already set keeps its connection, and the launcher's switch means nothing to PhotoCraft.
+
+While the launcher's switch is on, its app list `ArtCraft/mcp/apps.json` (in the per-user local
+configuration folder; `CRAFT_MCP_DIR` moves it) names `photocraft`, read through
+`craft-ai-agents`, the same crate the launcher writes it with and the gateway reads it with.
+PhotoCraft then serves agents on loopback (any free port by default, or the Control Port) with a
+token it keeps in its settings folder, and publishes both in `agent-connection.json` there. The
+app looks at the launcher's files every 2 s, so switching there applies without a restart. Allow
+Agent Control off still refuses agents. Started with `--control`, the app ignores all this and the
+launch flags manage the connection, as before.
+
+**Edit › Preferences › AI Integrations** says whether agents can connect (and on which port), and
+keeps what is PhotoCraft's own: the port, the folders agents can open from and save to, and what
+happens when an agent needs PhotoCraft while it is closed (open it, work without a window, or ask
+the user to open it).
+
+### `photocraft-cli mcp`
+
+Plain `photocraft-cli mcp` works in the open PhotoCraft window when the person lets agents use it,
+and otherwise without a window, as it always did. It reads `agent-connection.json` before every
+tool call, so the client configuration holds no port or token and keeps working when PhotoCraft
+restarts or moves to another port.
+
+- **Agents allowed, PhotoCraft open:** tools work in the window.
+- **Agents allowed, PhotoCraft closed:** When PhotoCraft Is Closed decides (`--when-closed
+  <launch|headless|error>` overrides it): start the app and wait for it, serve a headless
+  session, or say to open it. The headless session takes `--automation-read-root` and
+  `--automation-write-root` when given to `mcp`, each on its own: a given read root replaces the
+  app's read folder, a given write root its write folder, and the app's folder is used for any
+  direction without a flag. The app is started only on a tool
+  call, never when the MCP client starts.
+- **Agents not allowed:** a headless session with only the roots given to `mcp`, exactly as
+  before; the app is never started and its folders aren't used.
+- **`--headless`:** always headless, whatever the switch says.
+- **`--bridge` (or `PHOTOCRAFT_CONTROL_PORT`):** a `photocraft --control` app, as before.
+
+A session that went headless stays headless until the MCP client restarts it, so documents don't
+move under the agent. In the Flatpak the connection needs
+`flatpak override --user --share=network ai.storyteller.photocraft`.
+
+When `mcp` starts the app, macOS goes through LaunchServices (`open -a`) and Windows through
+Explorer, as a double-click would: the app is no child of the CLI, so it keeps running when the
+MCP client ends the CLI's process tree (Claude Code does on Windows), and it stays out of a
+Microsoft Store client's container, where new files under `%APPDATA%` would land in the client's
+package instead of PhotoCraft's settings folder. Linux starts it in its own process group.
+
 ## Install and register
 
 From the repository root, with the [source-build prerequisites](development.md#prerequisites)
@@ -47,10 +108,12 @@ not put the CLI on `PATH`.
 
 ## Start a session
 
-PhotoCraft follows the same conventions as FilmCraft #28. Start a headless session:
+PhotoCraft follows the same conventions as FilmCraft #28. Start a headless session (`--headless`:
+without it, `mcp` works in the open PhotoCraft window while the ArtCraft Launcher's agents switch is
+on, and may start the app; scripts, tests and agents pass it):
 
 ```sh
-photocraft-cli mcp \
+photocraft-cli mcp --headless \
   --automation-read-root /work/project \
   --automation-read-root /library/reference \
   --automation-write-root /work/project

@@ -329,3 +329,101 @@ fn bucket_and_gradient_reject_non_numeric_opacity_without_editing() {
         assert!((px(&s, 5, 5)[0] - 128.0 / 255.0).abs() < 0.01, "{cmd}: null opacity is 100%");
     }
 }
+
+/// #11311: a white layer (the Background made a normal layer), a selection cleared to
+/// transparency, Deselect, then the Paint Bucket clicked in the hole with white at 100 %. Returns
+/// the session after the fill and the layer's pixels right after the clear.
+fn clear_then_bucket(depth: u32, selection: Value, bucket_aa: bool) -> (Session, Vec<[f32; 4]>) {
+    let mut s = Session::new();
+    s.execute("file.new", json!({"width": 120, "height": 100, "depth": depth, "background": "white"})).unwrap();
+    s.execute("layer.new.layerFromBackground", json!({})).unwrap();
+    s.execute("select.rect", selection).unwrap();
+    s.execute("edit.clear", json!({})).unwrap();
+    let cleared = layer_rgba(&s);
+    s.execute("select.deselect", json!({})).unwrap();
+    s.execute("paint.bucket", json!({"x": 60, "y": 50, "color": "#ffffff", "antiAlias": bucket_aa})).unwrap();
+    (s, cleared)
+}
+
+/// The active layer's pixels over the canvas, row by row.
+fn layer_rgba(s: &Session) -> Vec<[f32; 4]> {
+    let d = s.active().unwrap();
+    let surf = d.doc.layer(d.active_layer.unwrap()).unwrap().surface().unwrap();
+    let b = d.doc.bounds();
+    (b.y0..b.y1).flat_map(|y| (b.x0..b.x1).map(move |x| (x, y))).map(|(x, y)| surf.rgba(x, y)).collect()
+}
+
+/// The first `n` pixels (as `x, y, rgba`) that aren't opaque white at 8 bits.
+fn not_white(px: &[[f32; 4]], width: usize, n: usize) -> Vec<(usize, usize, [f32; 4])> {
+    let is_white = |p: &[f32; 4]| p.iter().all(|c| (c.clamp(0.0, 1.0) * 255.0).round() == 255.0);
+    px.iter().enumerate().filter(|(_, p)| !is_white(p)).take(n).map(|(i, p)| (i % width, i / width, *p)).collect()
+}
+
+fn assert_all_white(s: &Session, what: &str) {
+    let doc = &s.active().unwrap().doc;
+    let width = doc.bounds().width() as usize;
+    let layer = layer_rgba(s);
+    assert_eq!(not_white(&layer, width, 8), vec![], "{what}: layer pixels left after the fill");
+    let composite = photocraft_compose::render(doc, doc.bounds()).px.clone();
+    assert_eq!(composite.len(), layer.len());
+    assert_eq!(not_white(&composite, width, 8), vec![], "{what}: composite pixels left after the fill");
+}
+
+/// #11311 / #11354 review: after clearing an anti-aliased selection and bucket-filling the hole
+/// white at 100 %, the hole and the hole's edge are opaque white and the opaque art is untouched.
+/// The soft rim the Clear left (straight white at partial alpha) rises only partly, as in the
+/// reference application: a pixel of the one-pixel ring 8-adjacent to the flood, at alpha `α`,
+/// ends at `α + (1 − α)²`, and pixels further out keep their alpha, so a faint rim stays. Before the first round the hole's own edge stayed semi-transparent (a grey ring);
+/// the first round filled the rim to 255 too, which the reference does not do.
+#[test]
+fn bucket_after_clearing_an_antialiased_selection_fills_the_hole_and_raises_the_rim_partly() {
+    let level = |v: f32| (v.clamp(0.0, 1.0) * 255.0).round() as i32;
+    for depth in [8, 16, 32] {
+        let ellipse = json!({"x": 20, "y": 10, "width": 80, "height": 80, "ellipse": true, "antiAlias": true});
+        let (s, cleared) = clear_then_bucket(depth, ellipse, true);
+        // A transparent hole (its RGB zeroed) inside a rim of straight white at partial alpha,
+        // which the bucket's similarity test (RGB 255 away from the hole's 0) leaves out.
+        assert_eq!(cleared[50 * 120 + 60], [0.0; 4], "depth {depth}: the hole is empty");
+        let rim: Vec<&[f32; 4]> = cleared.iter().filter(|p| p[3] > 0.0 && p[3] < 1.0).collect();
+        assert!(!rim.is_empty(), "depth {depth}: an anti-aliased clear leaves a soft rim");
+        assert!(rim.iter().all(|p| p[..3].iter().all(|c| (c - 1.0).abs() < 1e-3)), "depth {depth}: the rim keeps its white");
+
+        let after = layer_rgba(&s);
+        // The flood is every pixel the 8-bit wand sees as empty; the ring is the pixels 8-adjacent to it.
+        let empty = |x: i64, y: i64| (0..120).contains(&x) && (0..100).contains(&y) && level(cleared[(y * 120 + x) as usize][3]) == 0;
+        let mut raised = 0;
+        for (i, (was, now)) in cleared.iter().zip(&after).enumerate() {
+            let at = (i % 120, i / 120);
+            let (x, y) = (at.0 as i64, at.1 as i64);
+            let next_to_flood = (-1..=1).any(|dy| (-1..=1).any(|dx| (dx, dy) != (0, 0) && empty(x + dx, y + dy)));
+            if level(was[3]) == 0 || was[3] >= 1.0 {
+                assert_eq!(level(now[3]), 255, "depth {depth} at {at:?}: hole, hole edge and opaque art end opaque: {now:?}");
+            } else if next_to_flood {
+                raised += 1;
+                let want = was[3] + (1.0 - was[3]).powi(2);
+                assert!((now[3] - want).abs() < 1.5 / 255.0, "depth {depth} at {at:?}: rim {was:?} -> {now:?}, want alpha {want}");
+            } else {
+                assert_eq!(now, was, "depth {depth} at {at:?}: a rim pixel beyond the ring next to the flood stays");
+            }
+            assert!(now[..3].iter().all(|c| (c - 1.0).abs() < 1e-3), "depth {depth} at {at:?}: white: {now:?}");
+        }
+        assert!(raised > 0, "depth {depth}: the fill reaches the rim");
+        assert!(after.iter().any(|p| level(p[3]) < 255), "depth {depth}: a faint rim stays, as in the reference");
+    }
+}
+
+/// Controls for #11311: a hard-edged selection leaves no soft rim, but the bucket's own
+/// anti-aliasing used to leave the hole's edge pixels partly transparent too, so hard edges end
+/// white as well; with neither anti-aliased (the case that was always right) it stays white.
+#[test]
+fn bucket_after_clearing_a_hard_selection_leaves_no_ring() {
+    let hard_ellipse = json!({"x": 20, "y": 10, "width": 80, "height": 80, "ellipse": true, "antiAlias": false});
+    let rect = json!({"x": 30, "y": 20, "width": 60, "height": 60});
+    for depth in [8, 16, 32] {
+        for (selection, bucket_aa) in [(hard_ellipse.clone(), true), (rect.clone(), true), (rect.clone(), false)] {
+            let (s, cleared) = clear_then_bucket(depth, selection.clone(), bucket_aa);
+            assert!(cleared.iter().all(|p| p[3] == 0.0 || p[3] == 1.0), "depth {depth} {selection}: a hard clear leaves no rim");
+            assert_all_white(&s, &format!("depth {depth} {selection}, bucket antiAlias {bucket_aa}"));
+        }
+    }
+}

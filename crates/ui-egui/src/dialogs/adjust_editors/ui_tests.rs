@@ -1348,3 +1348,41 @@ fn selective_color_properties_method_radios_commit() {
     assert!(matches!(layer(&h).1, Adjustment::SelectiveColor { relative: true, .. }));
     assert_eq!(steps(&h), start + 2);
 }
+
+/// #9269: Black & White's Auto button sets the layer's weights from the image under it, as one
+/// history step.
+#[test]
+fn black_white_auto_button_sets_the_weights() {
+    let mut h = app_harness("blackWhite", "rgb", 8);
+    // A red and a blue the default mix turns into the same grey, under the adjustment layer.
+    h.state_mut()
+        .session
+        .edit("setup", |doc, _| {
+            let b = doc.bounds();
+            let bg = doc.layers.first_mut().and_then(|l| l.surface_mut()).unwrap();
+            let fmt = bg.format();
+            let mut data = Vec::new();
+            for _ in b.y0..b.y1 {
+                for x in b.x0..b.x1 {
+                    let c = if x < b.x1 / 2 { [0.776, 0.2, 0.2, 1.0] } else { [0.29, 0.29, 1.0, 1.0] };
+                    data.extend(photocraft_raster::from_rgba(&fmt, c));
+                }
+            }
+            bg.write_region(b, &data);
+            Ok(())
+        })
+        .unwrap();
+    h.run_steps(2);
+    let (_, before) = layer(&h);
+    let steps = h.state().session.active().unwrap().history.past_len();
+    let auto = h.query_all_by_label("Auto").last().map(|n| n.rect().center()).expect("an Auto button");
+    click(&mut h, auto);
+    let (_, after) = layer(&h);
+    let Adjustment::BlackWhite { weights, .. } = &after else { panic!("{after:?}") };
+    let id = layer(&h).0;
+    let expected = h.state_mut().run("image.adjustments.blackWhite.auto", json!({"layer": id.0})).unwrap();
+    let want: Vec<f32> = photocraft_engine::adjust_params::HUE_RANGES.iter().map(|k| expected[*k].as_f64().unwrap() as f32).collect();
+    assert_eq!(weights.to_vec(), want);
+    assert_ne!(after, before, "the red and blue are told apart");
+    assert_eq!(h.state().session.active().unwrap().history.past_len(), steps + 1);
+}

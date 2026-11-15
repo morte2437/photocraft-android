@@ -1,10 +1,14 @@
 //! UI for the Eraser group's colour-aware tools: Magic Eraser (click → `paint.magicEraser`) and
 //! Background Eraser (stroke → `paint.backgroundEraser`), with their options bars.
+//!
+//! A Magic Eraser press in an Indexed Color or Bitmap document shows the reference's alert (message
+//! + OK) and runs nothing: the document keeps its pixels and its History (#12032).
 
+use photocraft_engine::eraser_cmds::{MAGIC_ERASER_BITMAP_ERROR, MAGIC_ERASER_INDEXED_ERROR};
 use serde_json::{Value, json};
 
 use crate::PhotocraftApp;
-use crate::state::Tool;
+use crate::state::{DialogKind, Tool};
 use crate::theme::Tokens;
 use crate::{icons, widgets};
 
@@ -15,10 +19,49 @@ fn report(app: &mut PhotocraftApp, r: Result<Value, String>) {
     }
 }
 
+/// The alert this document gets instead of a Magic Eraser click (#12032): `Some(text)` means the
+/// click is refused. The check is the engine's, so the press and `paint.magicEraser` can never
+/// disagree about what is erased.
+fn document_alert(app: &PhotocraftApp) -> Option<&'static str> {
+    app.session.active().and_then(|st| photocraft_engine::eraser_cmds::magic_eraser_refusal(&st.doc))
+}
+
+/// A `paint.magicEraser` error as the alert it was meant to be (#12032), so a click that reaches
+/// the command shows the same dialog the press shows rather than only the status bar.
+fn error_alert(error: &str) -> Option<&'static str> {
+    [MAGIC_ERASER_INDEXED_ERROR, MAGIC_ERASER_BITMAP_ERROR].into_iter().find(|text| *text == error)
+}
+
+/// Opens the alert: the message and one OK button, as a refused Move press does
+/// (`move_lock::prompt`).
+fn refuse(app: &mut PhotocraftApp, message: &str) {
+    app.ui.open_dialog(DialogKind::Error, json!({"message": alert_text(message)}).as_object().cloned().unwrap_or_default());
+}
+
+/// The alert in the UI language. Literal keys, so the translation report lists both alerts for the
+/// translators; `alert_keys_match_the_engine_texts` keeps them equal to the engine's texts.
+fn alert_text(message: &str) -> &str {
+    match message {
+        MAGIC_ERASER_INDEXED_ERROR => {
+            tl!("Could not use the magic eraser because it does not work with Indexed Color images (convert image to RGB Color mode to edit).")
+        }
+        MAGIC_ERASER_BITMAP_ERROR => {
+            tl!("Could not use the magic eraser because it does not work with Bitmap images (convert image to Grayscale mode to edit).")
+        }
+        other => tl!(other),
+    }
+}
+
 /// Magic Eraser click at document `(x, y)`. Returns false for other tools.
 pub fn click(app: &mut PhotocraftApp, tool: Tool, x: f64, y: f64) -> bool {
     if tool != Tool::MagicEraser {
         return false;
+    }
+    // An Indexed Color or Bitmap document (#12032): the reference answers the click with its alert
+    // and erases nothing, so the command is never reached - and the document keeps its History.
+    if let Some(message) = document_alert(app) {
+        refuse(app, message);
+        return true;
     }
     let o = &app.ui.tool_options;
     let p = json!({
@@ -31,6 +74,11 @@ pub fn click(app: &mut PhotocraftApp, tool: Tool, x: f64, y: f64) -> bool {
         "opacity": o.magic_eraser_opacity,
     });
     let r = app.run("paint.magicEraser", p);
+    if let Err(e) = &r
+        && let Some(message) = error_alert(e)
+    {
+        refuse(app, message);
+    }
     report(app, r);
     true
 }
@@ -325,5 +373,91 @@ pub(crate) fn open_range_alert(app: &mut PhotocraftApp) {
     let shown = app.ui.dialogs.iter().any(|d| d.kind == crate::state::DialogKind::Error && d.fields.get("message").and_then(|m| m.as_str()) == Some(&message));
     if !shown {
         app.ui.open_dialog(crate::state::DialogKind::Error, json!({ "message": message }).as_object().cloned().unwrap_or_default());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use photocraft_doc::{Color, ColorMode, Document, SampleType, Size};
+
+    /// #12032: the literal translation keys are the engine's alert texts, so an English UI shows
+    /// exactly what `paint.magicEraser` answers and the catalogs translate the right string.
+    #[test]
+    fn alert_keys_match_the_engine_texts() {
+        crate::i18n::with_language(crate::i18n::Lang::EN, || {
+            for text in [MAGIC_ERASER_INDEXED_ERROR, MAGIC_ERASER_BITMAP_ERROR] {
+                assert_eq!(alert_text(text), text);
+            }
+        });
+    }
+
+    /// The message of every open error dialog, in the order they were opened.
+    fn alerts(app: &PhotocraftApp) -> Vec<&str> {
+        app.ui.dialogs.iter().filter(|d| d.kind == DialogKind::Error).filter_map(|d| d.fields.get("message").and_then(|m| m.as_str())).collect()
+    }
+
+    /// The app with a white 64x48 document in `mode` open and the Magic Eraser picked: a click on
+    /// it would wipe the flat canvas out.
+    fn app_in(mode: ColorMode) -> PhotocraftApp {
+        let mut s = photocraft_engine::Session::new();
+        s.add_document(Document::with_background("p", Size::new(64, 48), mode, SampleType::U8, Color::WHITE), None);
+        let mut app = PhotocraftApp::new(s, crate::Services::default());
+        app.ui.tool = Tool::MagicEraser;
+        app
+    }
+
+    /// #12032: the press in an Indexed Color or a Bitmap document shows the reference's alert - the
+    /// measured text and an OK button - and runs nothing: no History step, no erase, the Background
+    /// stays a Background, and the alert rather than the status bar carries the message.
+    #[test]
+    fn a_press_in_an_indexed_or_bitmap_document_shows_the_alert_and_erases_nothing() {
+        for (case, mode, want) in [("Indexed", ColorMode::Indexed, MAGIC_ERASER_INDEXED_ERROR), ("Bitmap", ColorMode::Bitmap, MAGIC_ERASER_BITMAP_ERROR)] {
+            let mut app = app_in(mode);
+            let st = app.session.active().unwrap();
+            let (doc, steps) = (st.doc.clone(), st.history.past_len());
+            let id = st.active_layer.unwrap();
+            assert!(click(&mut app, Tool::MagicEraser, 2.0, 2.0), "{case}: the Magic Eraser takes the click");
+            assert_eq!(alerts(&app), [want], "{case}: one alert with the reference's text");
+            let st = app.session.active().unwrap();
+            assert!(std::sync::Arc::ptr_eq(&doc, &st.doc), "{case}: the command never ran");
+            assert_eq!(st.history.past_len(), steps, "{case}: no History step");
+            assert_eq!(st.doc.layer(id).unwrap().name, "Background", "{case}: still a Background");
+            assert!(st.doc.layer(id).unwrap().surface().unwrap().rgba(2, 2)[3] > 0.0, "{case}: nothing erased");
+            assert!(!app.ui.status_error, "{case}: the alert is the answer, not the status bar");
+            // OK closes it (`DialogKind::Error` asks for nothing else), and the next press answers
+            // the same way: the document is no more erasable than it was.
+            let open: Vec<u64> = app.ui.dialogs.iter().map(|d| d.id).collect();
+            for dialog in open {
+                app.ui.close_dialog(dialog);
+            }
+            click(&mut app, Tool::MagicEraser, 10.0, 10.0);
+            assert_eq!(alerts(&app), [want], "{case}: the next press is refused too");
+            assert_eq!(app.session.active().unwrap().history.past_len(), steps, "{case}: still no History step");
+        }
+    }
+
+    /// #12032: the new press check leaves every document the tool can edit exactly as it was: the
+    /// click erases, no alert opens.
+    #[test]
+    fn a_press_in_an_editable_document_still_erases() {
+        for (case, mode) in [
+            ("RGB", ColorMode::Rgb),
+            ("Grayscale", ColorMode::Grayscale),
+            ("CMYK", ColorMode::Cmyk),
+            ("Lab", ColorMode::Lab),
+            ("Duotone", ColorMode::Duotone),
+            ("Multichannel", ColorMode::Multichannel),
+        ] {
+            let mut app = app_in(mode);
+            let steps = app.session.active().unwrap().history.past_len();
+            assert!(click(&mut app, Tool::MagicEraser, 2.0, 2.0), "{case}");
+            assert!(app.ui.dialogs.iter().all(|d| d.kind != DialogKind::Error), "{case}: no alert");
+            let st = app.session.active().unwrap();
+            let id = st.active_layer.unwrap();
+            assert_eq!(st.doc.layer(id).unwrap().name, "Layer 0", "{case}: the Background became a layer");
+            assert_eq!(st.doc.layer(id).unwrap().surface().unwrap().rgba(2, 2)[3], 0.0, "{case}: erased to transparency");
+            assert_eq!(st.history.past_len(), steps + 1, "{case}: one undo step");
+        }
     }
 }

@@ -81,7 +81,7 @@ fn from_center_and_the_other_tools() {
     press(&mut app, Tool::Triangle, [5.0, 6.0], [5.0, 6.0]);
     let id = only_dialog(&app);
     crate::dialogs::confirm(&mut app, id).unwrap();
-    let LiveShape::Polygon { sides: 3, .. } = live(&app) else { panic!("a triangle") };
+    assert_eq!(live(&app), LiveShape::Triangle { rect: [5.0, 6.0, 100.0, 100.0], corner_radius: 0.0 });
 }
 
 #[test]
@@ -174,7 +174,7 @@ fn a_click_with_jitter_opens_the_dialog_on_hidpi() {
     let i = app.session.active_index().unwrap();
     app.ui.views[i].zoom = 1.0;
     let before = layers(&app);
-    press(&mut app, Tool::Rectangle, [20.0, 30.0], [24.0, 30.0]);
+    press(&mut app, Tool::Rectangle, [20.0, 30.0], [22.0, 30.0]);
     only_dialog(&app);
     assert_eq!(layers(&app), before, "a jittery click draws nothing");
 }
@@ -347,7 +347,7 @@ fn right_click_picks_the_unit_of_that_field_only_and_it_is_not_remembered() {
     set(&mut app, id, json!({"widthUnit": "mm", "width": 50}));
     crate::dialogs::confirm(&mut app, id).unwrap();
     app.run("prefs.set", json!({"path": "unitsAndRulers.rulers", "value": "cm"})).unwrap();
-    press(&mut app, Tool::Rectangle, [40.0, 40.0], [40.0, 40.0]);
+    press(&mut app, Tool::Rectangle, [140.0, 140.0], [140.0, 140.0]);
     let id = only_dialog(&app);
     let mut f = app.ui.dialog_mut(id).unwrap().fields.clone();
     assert_eq!((f.get("widthUnit"), f["width"].as_f64()), (None, Some(50.0)), "the size is remembered, the unit isn't");

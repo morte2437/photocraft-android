@@ -534,6 +534,20 @@ fn preflight_keys(app: &mut PhotocraftApp, ctx: &egui::Context) -> bool {
     if app.ui.canvas_tool_menu.as_ref().is_some_and(|m| m.text || m.crop.is_some()) {
         return false;
     }
+    // The Space-Hand view menu (the menu of a view tool opened over another tool, #11271) takes a
+    // plain Esc and ↵ too: they don't cancel or commit a pending crop under it. Esc closes the
+    // menu here and both keys are withheld from the dispatch below; every other key, modified ↵
+    // and tool keys included, dispatches as usual.
+    if app.ui.canvas_tool_menu.as_ref().is_some_and(|m| m.under.is_some() && crate::canvas_tool_menu::is_view_tool(m.tool)) {
+        let plain = |e: &egui::Event, k: egui::Key| matches!(e, egui::Event::Key { key, pressed: true, modifiers, .. } if *key == k && modifiers.is_none());
+        let (esc, enter) = ctx.input(|i| (i.events.iter().any(|e| plain(e, egui::Key::Escape)), i.events.iter().any(|e| plain(e, egui::Key::Enter))));
+        if esc {
+            app.ui.canvas_tool_menu = None;
+        }
+        if esc || enter {
+            ctx.input_mut(|i| i.events.retain(|e| !plain(e, egui::Key::Escape) && !plain(e, egui::Key::Enter)));
+        }
+    }
     let symmetry_editing = app.ui.symmetry_transform.is_some();
     crate::symmetry_ui::track(app, ctx);
     if symmetry_editing && (app.ui.symmetry_transform.is_none() || egui::Popup::is_any_open(ctx)) {
@@ -724,19 +738,23 @@ fn handle_pen_and_work_path_keys(app: &mut PhotocraftApp, ctx: &egui::Context, f
         crate::shape_bounds_box::cancel(app);
         return true;
     }
-    // An anchor selected with the Add Anchor Point tool: ⌫/Delete removes it and its two segments,
-    // as in Photoshop (#12703), never the active layer.
+    // An anchor selected with Direct Selection or the Add / Delete Anchor Point tool: ⌫/Delete
+    // removes it and its two segments (#12703, #13203); a segment selected with Direct Selection
+    // goes on its own (#13203). As in Photoshop, never the active layer.
     if focus != crate::shortcut_dispatch::Focus::DeletingWidget
-        && let Some((target, [s, k])) = crate::vector_ui::delete_key_deletes_anchor(app)
+        && let Some((target, cmd, mut params)) = crate::vector_ui::delete_key_deletes_anchor(app)
+            .map(|(target, [s, k])| (target, "path.deleteAnchor", json!({"subpath": s, "knot": k, "segments": true})))
+            .or_else(|| {
+                crate::vector_ui::delete_key_deletes_segment(app).map(|(target, [s, k])| (target, "path.deleteSegment", json!({"subpath": s, "knot": k})))
+            })
     {
         let mods = ctx.input(|i| i.modifiers);
         if !mods.command && !mods.ctrl && !mods.shift && !mods.alt && ctx.input_mut(|i| i.consume_key(mods, Key::Backspace) || i.consume_key(mods, Key::Delete))
         {
-            let mut params = json!({"subpath": s, "knot": k, "segments": true});
             if let (Some(p), Some(t)) = (params.as_object_mut(), target.params(app).as_object()) {
                 p.extend(t.clone());
             }
-            match app.run("path.deleteAnchor", params) {
+            match app.run(cmd, params) {
                 // The anchors shift: the selection would point at the wrong ones.
                 Ok(_) => app.ui.direct_selection = crate::direct_select::DirectSelection::default(),
                 Err(e) => {
@@ -747,13 +765,16 @@ fn handle_pen_and_work_path_keys(app: &mut PhotocraftApp, ctx: &egui::Context, f
             return true;
         }
     }
-    // A finished work path shown by the Pen or Path Selection: ⌫/Delete deletes it, as in
-    // Photoshop (#5702), never Edit › Clear on the pixels under it.
-    if focus != crate::shortcut_dispatch::Focus::DeletingWidget && crate::vector_ui::delete_key_deletes_work_path(app) {
+    // A finished work path shown by the Pen or Path Selection (#5702), or the path Direct
+    // Selection targets with nothing selected on it (#13203): ⌫/Delete deletes it, as in
+    // Photoshop, never Edit › Clear on the pixels under it or the active layer.
+    if focus != crate::shortcut_dispatch::Focus::DeletingWidget
+        && let Some((cmd, params)) = crate::vector_ui::delete_key_deletes_path(app)
+    {
         let mods = ctx.input(|i| i.modifiers);
         if !mods.command && !mods.ctrl && !mods.shift && !mods.alt && ctx.input_mut(|i| i.consume_key(mods, Key::Backspace) || i.consume_key(mods, Key::Delete))
         {
-            if let Err(e) = app.run("path.delete", json!({"name": "work"})) {
+            if let Err(e) = app.run(cmd, params) {
                 app.ui.status = e;
                 app.ui.status_error = true;
             }
@@ -839,7 +860,7 @@ fn handle_registry_and_tool_keys(app: &mut PhotocraftApp, ctx: &egui::Context, f
         }
     }
     if app.ui.frame_tool.drag.is_some() && pressed(Key::Escape) {
-        crate::frame_tool::cancel(app);
+        crate::frame_tool::escape(app);
         return true;
     }
     // Enter / Escape commit or cancel in-progress tool state (polygonal lasso, crop).
@@ -910,6 +931,17 @@ fn handle_escape_and_view_keys(app: &mut PhotocraftApp, ctx: &egui::Context) {
         || ctx.any_popup_open()
         || ctx.data(|d| d.get_temp::<(egui::Id, egui::Rect)>(egui::Id::unique("tool-flyout")).is_some())
         || crate::panels::toolbar::more_flyout_open(ctx);
+    // Active operations and popups have already had priority. Reset a rotated view before
+    // idle Escape actions such as leaving full screen or deselecting; Rotate View handles its
+    // own Escape later, where it also clears an in-progress rotation drag.
+    if !esc_taken
+        && let Some(view) = app.session.active_index().and_then(|i| app.ui.views.get_mut(i))
+        && view.rotation != 0.0
+        && pressed(Key::Escape)
+    {
+        view.rotation = 0.0;
+        return;
+    }
     // Both full screen modes (with and without the menu bar) return to Standard, as in Photoshop
     // (#4116), through the menu command so the window and the Screen Mode check follow.
     if !esc_taken && app.ui.view.screen_mode != "standard" && pressed(Key::Escape) {
@@ -951,6 +983,39 @@ fn handle_escape_and_view_keys(app: &mut PhotocraftApp, ctx: &egui::Context) {
             } else {
                 app.ui.selected_path = None;
                 app.ui.direct_selection.escape_hidden = None;
+            }
+            return;
+        }
+    }
+    // Path Selection (#13287): with components of the saved path targeted in the Paths panel
+    // selected, Esc deselects the components and keeps the path targeted and drawn, while a plain
+    // Enter deselects the components and also untargets the path (its Paths panel row and outline
+    // go). Neither adds a History step. Free Transform Path and ⌘↩ (Make Selection) took their
+    // keys earlier; with no component selected both keys keep today's behaviour. Not while the
+    // path's name is typed in the panel. Only the bare keys: `consume_key` would also take them with
+    // ⇧ or ⌥, which were not measured.
+    let bare = |k: Key| {
+        ctx.input_mut(|i| {
+            let n = i.events.len();
+            i.events.retain(|e| !matches!(e, egui::Event::Key { key, pressed: true, modifiers, .. } if *key == k && modifiers.is_none()));
+            i.events.len() != n
+        })
+    };
+    if !esc_taken
+        && app.ui.tool == Tool::PathSelection
+        && !crate::vector_ui::path_renaming(app, ctx)
+        && let Some((index, _)) = crate::vector_ui::selected_saved_path_index(app)
+        && let Some((crate::direct_select::PathRef::Saved(i), ..)) = crate::path_components::selected(app)
+        && i == index
+    {
+        if bare(Key::Escape) {
+            crate::path_components::deselect_components(app);
+            return;
+        }
+        if bare(Key::Enter) {
+            crate::path_components::deselect_components(app);
+            if let Some(name) = app.ui.selected_path.clone() {
+                crate::vector_ui::deselect_loaded_path(app, &name);
             }
             return;
         }

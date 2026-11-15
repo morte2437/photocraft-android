@@ -156,7 +156,7 @@ fn click_creates_placeholder_selected_and_typing_replaces_it() {
     assert_eq!(layer_text(&app), "Héllo world");
     // Creating and typing share the session key: one step after the initial snapshot.
     let steps = app.session.active().unwrap().history.entries();
-    assert_eq!(steps, ["Open", "New Type Layer"]);
+    assert_eq!(steps, ["New", "New Type Layer"]);
     commit(&mut app);
     let doc = &app.session.active().unwrap().doc;
     assert_eq!(doc.layers.last().unwrap().name, "Héllo world");

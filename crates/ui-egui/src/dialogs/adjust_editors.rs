@@ -36,8 +36,8 @@ pub(crate) use basic::PHOTO_FILTER_MODE;
 pub(crate) use basic::row_value;
 #[cfg(test)]
 use basic::track_stops;
+pub use basic::{apply_auto, reset_adjustment_editor, reset_color_balance};
 use basic::{black_white, brightness_contrast, channel_mixer, color_balance, photo_filter, sliders, threshold};
-pub use basic::{reset_adjustment_editor, reset_color_balance};
 use curves::curves;
 #[cfg(test)]
 use curves::{CURVE_HANDLE_SIZE, curve_graph};
@@ -96,6 +96,8 @@ pub struct Edit {
     pub commit: bool,
     /// Open the host's gradient-file dialog without changing adjustment parameters.
     pub import_gradients: bool,
+    /// Black & White's Auto: the host fills in the weights for its image ([`apply_auto`]).
+    pub auto: bool,
 }
 
 impl Edit {
@@ -103,6 +105,7 @@ impl Edit {
         self.changed |= o.changed;
         self.commit |= o.commit;
         self.import_gradients |= o.import_gradients;
+        self.auto |= o.auto;
     }
     fn discrete(changed: bool) -> Self {
         Edit { changed, commit: changed, ..Default::default() }

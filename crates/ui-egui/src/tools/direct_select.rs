@@ -76,6 +76,9 @@ pub struct DirectSelection {
     pub anchors: Vec<[usize; 2]>,
     /// A clicked segment (`[subpath, knot]` it leaves): its two handles show.
     pub segment: Option<[usize; 2]>,
+    /// The subpaths of `target` whose anchors are drawn (Delete Anchor Point on a saved path, #12769);
+    /// `None` draws all of them, as right after the path is targeted.
+    pub shown: Option<Vec<usize>>,
     #[serde(skip)]
     pub drag: Option<Drag>,
     /// The history step the drag's commit joins (`coalesce`): a Curvature Pen click on a segment
@@ -279,15 +282,19 @@ pub enum Edit {
 }
 
 impl Edit {
-    /// The drag's end with ⇧ held: moving anchors locks to multiples of 45°, as in Photoshop (#5475).
+    /// The drag's end with ⇧ held: moving anchors locks to multiples of 45°, as in Photoshop (#5475),
+    /// with the measured (+60, -25) drag kept on the axis (#13207).
     fn constrain(&self, start: [f64; 2], p: [f64; 2], shift: bool) -> [f64; 2] {
-        if shift && matches!(self, Edit::Anchors(_)) { crate::stroke_constraint::snap45(start, p) } else { p }
+        if shift && matches!(self, Edit::Anchors(_)) { crate::stroke_constraint::snap45_anchor(start, p) } else { p }
     }
 
     /// The edit for a drag from `start` to `end`, as a command and its params (without target).
     fn command(&self, start: [f64; 2], end: [f64; 2]) -> (&'static str, Value) {
         let d = [end[0] - start[0], end[1] - start[1]];
         match self {
+            // One anchor is "Drag Anchor Point" in History, two or more the default "Drag Anchor
+            // Points", as in Photoshop (#13205).
+            Edit::Anchors(a) if a.len() == 1 => ("path.moveAnchors", json!({"anchors": a, "move": d, "stepName": "Drag Anchor Point"})),
             Edit::Anchors(a) => ("path.moveAnchors", json!({"anchors": a, "move": d})),
             Edit::Curvature(a) => ("path.moveAnchors", json!({"anchors": a, "move": d, "curvature": true})),
             Edit::Handle([s, k], h, from, independent) => {
@@ -316,9 +323,11 @@ impl Edit {
 }
 
 /// Is Direct Selection what the pointer does now: its own tool, or a Pen (the Pen, Freeform Pen
-/// or Curvature Pen), an anchor point tool or Convert Point with ⌘/Ctrl held.
+/// or Curvature Pen), an anchor point tool or Convert Point with ⌘/Ctrl held, or Path Selection
+/// with ⌘/Ctrl alone (#13284; with ⌥ or ⇧ too, the reference was not measured, so as today).
 fn direct(tool: Tool, mods: Modifiers) -> bool {
     tool == Tool::DirectSelection
+        || (tool == Tool::PathSelection && mods.command && !mods.alt && !mods.shift)
         || (matches!(tool, Tool::Pen | Tool::FreeformPen | Tool::CurvaturePen | Tool::AddAnchorPoint | Tool::DeleteAnchorPoint | Tool::ConvertPoint)
             && mods.command)
 }
@@ -362,6 +371,15 @@ pub fn shows(app: &PhotocraftApp, mods: Modifiers) -> bool {
         || ds.drag.is_some()
         || matches!(app.ui.tool, Tool::AddAnchorPoint | Tool::DeleteAnchorPoint | Tool::ConvertPoint)
         || (app.ui.tool == Tool::Pen && app.ui.pen.is_none() && !ds.anchors.is_empty() && still_valid(app, ds))
+}
+
+/// Are the anchors of subpath `s` of `r` drawn now (#12769)?
+pub(crate) fn anchors_shown(app: &PhotocraftApp, r: PathRef, s: usize) -> bool {
+    let ds = &app.ui.direct_selection;
+    if ds.target != Some(r) || !still_valid(app, ds) {
+        return true;
+    }
+    ds.shown.as_ref().is_none_or(|shown| shown.contains(&s))
 }
 
 /// The active paths, front first: the targeted vector mask, the active shape layer's path or the
@@ -642,6 +660,7 @@ fn press(app: &mut PhotocraftApp, p: [f64; 2], mods: Modifiers, convert: bool) -
         let _ = app.run("layer.select", json!({"layer": id}));
     }
     let owner = Owner::current(app);
+    let tool_is_path_selection = app.ui.tool == Tool::PathSelection;
     let ds = &mut app.ui.direct_selection;
     if ds.target.as_ref() != Some(&target) {
         *ds = DirectSelection { target: Some(target), ..Default::default() };
@@ -688,7 +707,9 @@ fn press(app: &mut PhotocraftApp, p: [f64; 2], mods: Modifiers, convert: bool) -
                     return true;
                 }
                 ds.anchors.push(k);
-            } else if !ds.anchors.contains(&k) {
+            } else if !ds.anchors.contains(&k) || tool_is_path_selection {
+                // Path Selection's ⌘/Ctrl moves the anchor pressed alone, not the selected
+                // component it belongs to (#13284).
                 ds.anchors = vec![k];
             }
             Edit::Anchors(ds.anchors.clone())
@@ -962,7 +983,7 @@ pub fn draw_overlay(app: &PhotocraftApp, painter: &egui::Painter, to_scr: &dyn F
                 crate::vector_ui::draw_handle(painter, to_scr([kn.anchor.x, kn.anchor.y]), to_scr([c.x, c.y]), accent);
             }
         }
-        for (s, sp) in path.subpaths.iter().enumerate() {
+        for (s, sp) in path.subpaths.iter().enumerate().filter(|(s, _)| !ours || anchors_shown(app, r, *s)) {
             for (k, kn) in sp.knots.iter().enumerate() {
                 crate::vector_ui::draw_anchor(painter, to_scr([kn.anchor.x, kn.anchor.y]), ours && ds.anchors.contains(&[s, k]), accent);
             }
@@ -988,6 +1009,18 @@ mod convert_point_tolerance_tests;
 
 #[cfg(test)]
 mod convert_point_drag_segment_tests;
+
+#[cfg(test)]
+mod delete_key_tests;
+
+#[cfg(test)]
+mod history_names_tests;
+
+#[cfg(test)]
+mod shift_angle_tests;
+
+#[cfg(test)]
+mod options_bar_tests;
 
 #[cfg(test)]
 mod freeform_command_tests {

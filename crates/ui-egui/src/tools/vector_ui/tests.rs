@@ -491,7 +491,7 @@ fn shape_drag_creates_layers_with_modifiers() {
     finish_shape(&mut app, Tool::Rectangle, [10.0, 10.0], [60.0, 30.0], egui::Modifiers::SHIFT);
     let st = app.session.active().unwrap();
     let b = st.doc.layer(st.active_layer.unwrap()).unwrap().surface().unwrap().content_bounds();
-    assert_eq!((b.width(), b.height()), (50, 50), "shift = square");
+    assert_eq!((b.width(), b.height()), (20, 20), "shift = square of the shorter side (#13222)");
     finish_shape(&mut app, Tool::EllipseShape, [100.0, 100.0], [120.0, 110.0], egui::Modifiers::ALT);
     let st = app.session.active().unwrap();
     let b = st.doc.layer(st.active_layer.unwrap()).unwrap().surface().unwrap().content_bounds();
@@ -539,7 +539,8 @@ fn path_mode_custom_shape_joins_its_hole_to_it() {
     app.ui.presets_ui.custom_shape = "Ring".into();
     finish_shape(&mut app, Tool::CustomShape, [20.0, 20.0], [70.0, 70.0], egui::Modifiers::NONE);
     let ops: Vec<PathOp> = app.session.active().unwrap().doc.work_path.as_ref().unwrap().subpaths.iter().map(|s| s.op).collect();
-    assert_eq!(ops, [PathOp::Combine, PathOp::Combine, PathOp::Join], "the rectangle, the ring and its hole");
+    // The ring takes Path mode's default operation, Exclude Overlapping Shapes (#13235).
+    assert_eq!(ops, [PathOp::Combine, PathOp::Exclude, PathOp::Join], "the rectangle, the ring and its hole");
     assert_eq!(work_covered(&app, 45, 45), 0.0, "the ring's hole");
     assert_eq!(work_covered(&app, 22, 45), 1.0, "the ring");
 }
@@ -693,9 +694,9 @@ fn shift_pressed_during_a_shape_drag_constrains_it() {
         let l = st.doc.layer(st.active_layer.unwrap()).unwrap();
         assert!(matches!(l.content, LayerContent::Shape(_)), "{tool:?} ({sides} sides): a shape layer");
         let b = l.surface().unwrap().content_bounds();
-        // The drag is 60 × 30; constrained, the shape's box is 60 × 60 (a hexagon is narrower
-        // than its box, so the height tells).
-        assert!(b.height().abs_diff(60) <= 1 && b.width() <= 61, "{tool:?}: ⇧ mid-drag keeps proportions: {b:?}");
+        // The drag is 60 × 30; constrained, the shape's box is 30 × 30, the shorter side (#13222)
+        // (a hexagon is narrower than its box, so the height tells).
+        assert!(b.height().abs_diff(30) <= 1 && b.width() <= 31, "{tool:?}: ⇧ mid-drag keeps proportions: {b:?}");
     }
 }
 

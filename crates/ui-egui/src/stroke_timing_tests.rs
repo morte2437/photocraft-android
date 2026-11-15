@@ -545,8 +545,10 @@ fn a_shift_click_dodge_line_commits_its_live_pixels_unsmoothed() {
 fn pressure_sized_smudge_release_matches_replay_and_undo_redo() {
     use crate::stylus::PenSample;
 
+    // The spacing is set too: the Smudge tool starts with its own tip (#12964), the replay's
+    // fresh session with the default brush.
     let setup = |run: &mut dyn FnMut(&str, Value)| {
-        run("tools.setBrush", json!({"brush": {"size":40,"hardness":0.7,"pressureSize":true,"smoothing":{"amount":0.4}}}));
+        run("tools.setBrush", json!({"brush": {"size":40,"hardness":0.7,"spacing":0.1,"pressureSize":true,"smoothing":{"amount":0.4}}}));
         run("paint.stroke", json!({"points":[[10,20],[190,80]],"size":30,"color":"#2060c0"}));
     };
     let mut h = harness();

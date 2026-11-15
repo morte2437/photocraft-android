@@ -90,12 +90,16 @@ impl PhotocraftApp {
             return Ok(Vec::new());
         }
         let import = self.services.import.as_ref().ok_or("no importer configured")?;
-        let opts = photocraft_engine::jobs::import_options(self.session.prefs());
+        let opts = photocraft_io::ImportOptions {
+            keep_raw: self.session.prefs().raw_defaults.open_in_camera_raw,
+            ..photocraft_engine::jobs::import_options(self.session.prefs())
+        };
         // A PSD and a magic-detected TIFF both go through the typed IO path: only it carries
         // `PsdApprovalRequired` (and, for a PSD, the structured damaged flag), so a layered
         // TIFF's high-memory decision can raise its prompt instead of becoming a terminal
-        // string. Every other format keeps the shell's import service.
-        let typed_open = photocraft_io::is_psd(bytes) || photocraft_codecs::detect(bytes) == Some(photocraft_codecs::Format::Tiff);
+        // string. Every other format keeps the shell's import service. `detect` gets no name:
+        // given one it falls back to the extension, and a `.tif` name alone is no TIFF.
+        let typed_open = photocraft_io::is_psd(bytes) || photocraft_formats::detect("", bytes) == Some(photocraft_formats::Format::Tiff);
         let (mut doc, warnings, damaged) = if typed_open {
             // Read PSD damage as structured information in the same decode, not by
             // retrying an error or matching the text of a compatibility warning. A TIFF never
@@ -231,12 +235,12 @@ impl PhotocraftApp {
         let holds_ora = st.path.as_deref().is_some_and(|p| photocraft_engine::file_cmds::holds_at(&st.doc, p));
         // A JPEG whose lone layer has transparency it can't keep is offered as a PNG, as
         // Photoshop's Save does once pixels are deleted (#2223).
-        let transparent_jpeg = ext.as_deref().and_then(photocraft_codecs::from_extension) == Some(photocraft_codecs::Format::Jpeg)
+        let transparent_jpeg = ext.as_deref().and_then(photocraft_formats::from_extension) == Some(photocraft_formats::Format::Jpeg)
             && plain_raster(&st.doc).is_some_and(|l| !crate::opaque_layer(&st.doc, l));
         let writable = ext.is_some_and(|e| {
             matches!(e.as_str(), photocraft_format::EXTENSION | "psd" | "psb" | "tif" | "tiff")
                 || (e == "ora" && holds_ora)
-                || (flat && photocraft_codecs::from_extension(&e).is_some_and(|f| f.caps().write))
+                || (flat && photocraft_formats::from_extension(&e).is_some_and(|f| f.capabilities().write == photocraft_formats::Availability::Available))
         });
         let suggested = match &st.path {
             Some(p) if transparent_jpeg => std::path::Path::new(p).with_extension("png").to_string_lossy().into_owned(),
@@ -493,7 +497,9 @@ impl PhotocraftApp {
                 !photocraft_engine::file_cmds::saves_in_place(p)
                     && plain_raster(&st.doc).is_some()
                     && st.doc.file_encoding.source_images.is_none()
-                    && photocraft_engine::file_cmds::extension(p).is_some_and(|e| photocraft_codecs::from_extension(&e).is_some_and(|f| f.caps().write))
+                    && photocraft_engine::file_cmds::extension(p).is_some_and(|e| {
+                        photocraft_formats::from_extension(&e).is_some_and(|f| f.capabilities().write == photocraft_formats::Availability::Available)
+                    })
             };
             let path = st.path.clone().filter(|p| photocraft_engine::file_cmds::holds_at(&st.doc, p) || flat_own(p)).ok_or(
                 "Save writes back only to the document's own PSD, PSB, .pcraft or OpenRaster file (OpenRaster only when it holds everything), or to its own flat file while the document is a single plain layer and the file held only that image",

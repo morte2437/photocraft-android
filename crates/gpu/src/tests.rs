@@ -359,11 +359,12 @@ fn sixteen_and_thirty_two_bit_fast_paths_match_the_general_one() {
 /// the built-in CMYK profile and with a document's own (which the worker threads enter).
 #[test]
 fn colour_managed_tiles_match_the_per_pixel_conversion() {
-    use photocraft_cms::synth::{CmykParams, cmyk_profile};
+    use craft_cms::synth::{CmykParams, cmyk_profile};
     use photocraft_color::ColorMode;
     use photocraft_color::convert::{CmykSpace, with_cmyk_space};
     let icc = Arc::new(
         cmyk_profile(&CmykParams { description: "GPU test CMYK".into(), tvi: [0.26, 0.26, 0.26, 0.3], grid_a2b: 5, grid_b2a: 9, ..Default::default() })
+            .unwrap()
             .to_bytes(),
     );
     let own = CmykSpace::for_profile(Some(&icc));

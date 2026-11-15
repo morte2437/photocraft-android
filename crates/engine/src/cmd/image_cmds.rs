@@ -318,7 +318,13 @@ fn image_size(s: &mut Session, p: &Value) -> Result<Value> {
             Method::Automatic if nw > ow || nh > oh => Resample::PreserveDetails,
             Method::Automatic => Resample::BicubicSharper,
         };
-        resample_doc_with_styles(doc, "image.imageSize", nw, nh, filter, scale_styles)
+        // Resampling to a new pixel size drops the selection rather than scaling it, as Photoshop
+        // does (#13856); undo brings it back with the old size. Taken before the resample so it
+        // isn't scaled for nothing. A resolution-only change (returned above) keeps it.
+        if (nw, nh) != (ow, oh) {
+            doc.selection = None;
+        }
+        crate::canvas_geom::keeping_count_points(doc, |doc| resample_doc_with_styles(doc, "image.imageSize", nw, nh, filter, scale_styles))
     })?;
     // The size the document has now: without resampling `width`/`height` are ignored (#1815).
     let size = s.active().ok_or(EngineError::NoDocument)?.doc.size;
@@ -714,7 +720,7 @@ fn canvas_size(s: &mut Session, p: &Value) -> Result<Value> {
     let ext = extension_color(s, p);
     s.set_sampler_map(photocraft_geom::Affine::translate(f64::from(dx), f64::from(dy)));
     s.edit("Canvas Size", |doc, _| {
-        translate_doc(doc, "image.canvasSize", dx, dy)?;
+        crate::canvas_geom::keeping_count_points(doc, |doc| translate_doc(doc, "image.canvasSize", dx, dy))?;
         doc.size = Size::new(nw, nh);
         if nw > ow as u32 || nh > oh as u32 {
             drop_fill_caches(&mut doc.layers);
@@ -1049,7 +1055,7 @@ fn rotated_crop(s: &mut Session, r: Rect, angle: f64, delete: bool, content_awar
                 Ok(())
             })?;
         }
-        crate::mode_cmds::rotate_arbitrary(s, &json!({"angle": angle, "direction": "ccw"}))?;
+        crate::mode_cmds::rotate_arbitrary_with(s, &json!({"angle": angle, "direction": "ccw"}), false)?;
         // Color Sampler points follow the crop's origin shift too (the rotation moved them above).
         s.set_sampler_map(crop_target.sampler_map(target));
         let extension = s.tools.background;
@@ -1293,3 +1299,7 @@ pub fn specs() -> Vec<CommandSpec> {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+#[path = "image_size_drops_selection_tests.rs"]
+mod image_size_drops_selection_tests;

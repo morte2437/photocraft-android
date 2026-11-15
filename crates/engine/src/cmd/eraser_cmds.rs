@@ -7,6 +7,10 @@
 //! layers with locked transparency; the Background Eraser erases them to transparency and leaves
 //! the lock on. Both respect the selection, work in the layer's own colour model and depth, and are
 //! one undo step per click / stroke.
+//!
+//! The Magic Eraser refuses Indexed Color and Bitmap documents with the reference's alerts
+//! ([`MAGIC_ERASER_INDEXED_ERROR`] and [`MAGIC_ERASER_BITMAP_ERROR`], #12032), before it samples
+//! anything, so a refused click leaves the document exactly as it was.
 
 use photocraft_algo::selection as sel;
 use photocraft_color::{ColorMode, SampleType};
@@ -79,6 +83,28 @@ fn damage(s: &mut Session, dmg: Rect, erased: bool) -> Value {
     json!({ "erased": erased, "damage": [dmg.x0, dmg.y0, dmg.width(), dmg.height()] })
 }
 
+/// The reference's alert for a Magic Eraser click in an Indexed Color document (#12032), measured:
+/// one alert with an OK button. The UI shows this text through `tl!` (English is the catalog
+/// source); the command returns it as its error.
+pub const MAGIC_ERASER_INDEXED_ERROR: &str =
+    "Could not use the magic eraser because it does not work with Indexed Color images (convert image to RGB Color mode to edit).";
+/// The same alert for a Bitmap document (#12032), which points at Grayscale instead.
+pub const MAGIC_ERASER_BITMAP_ERROR: &str =
+    "Could not use the magic eraser because it does not work with Bitmap images (convert image to Grayscale mode to edit).";
+
+/// The alert `doc` gets instead of a Magic Eraser click, or `None` when the click may erase
+/// (#12032). Indexed Color and Bitmap are the two measured refusals, at every bit depth; Duotone
+/// and Multichannel are not measured and keep erasing, as do RGB, Grayscale, CMYK and Lab.
+/// The text is exactly what `paint.magicEraser` answers with, so the tool can refuse the press with
+/// what the command would refuse.
+pub fn magic_eraser_refusal(doc: &Document) -> Option<&'static str> {
+    match doc.mode {
+        ColorMode::Indexed => Some(MAGIC_ERASER_INDEXED_ERROR),
+        ColorMode::Bitmap => Some(MAGIC_ERASER_BITMAP_ERROR),
+        _ => None,
+    }
+}
+
 /// `paint.magicEraser`: erase the wand region around `(x, y)`.
 fn magic_eraser(s: &mut Session, p: &Value) -> Result<Value> {
     const CMD: &str = "paint.magicEraser";
@@ -89,6 +115,13 @@ fn magic_eraser(s: &mut Session, p: &Value) -> Result<Value> {
     let tolerance = number(p, CMD, "tolerance", 32.0, 0.0..=255.0)? as f32;
     let opacity = number(p, CMD, "opacity", 100.0, 1.0..=100.0)? as f32 / 100.0;
     let (anti_alias, contiguous, sample_all) = (flag(p, "antiAlias", true), flag(p, "contiguous", true), flag(p, "sampleAllLayers", false));
+    // #12032: an Indexed Color or a Bitmap document gets the reference's alert before anything is
+    // sampled or edited, so the click changes nothing: no pixels, no selection, no History step,
+    // and the Background stays a Background. The tool refuses the press with this same text
+    // (`eraser_ui::click`), which is why the check belongs to the command.
+    if let Some(msg) = s.active().and_then(|st| magic_eraser_refusal(&st.doc)) {
+        return Err(EngineError::Other(msg.into()));
+    }
     let id = active_pixel_layer(s, p, CMD)?;
     {
         let d = s.active().ok_or(EngineError::NoDocument)?;
@@ -280,7 +313,7 @@ pub fn specs() -> Vec<CommandSpec> {
             label: "Magic Eraser",
             menu: &[],
             shortcut: None,
-            params: r##"{"x":px,"y":px,"tolerance":0..255=32,"antiAlias":bool=true,"contiguous":bool=true,"sampleAllLayers":bool=false,"opacity":1..100=100}"##,
+            params: r##"{"x":px,"y":px,"tolerance":0..255=32,"antiAlias":bool=true,"contiguous":bool=true,"sampleAllLayers":bool=false,"opacity":1..100=100} (one undo step; a click off the canvas erases nothing and records no step; refused with the tool's alert and nothing changes: an Indexed Color document answers "Could not use the magic eraser because it does not work with Indexed Color images (convert image to RGB Color mode to edit).", a Bitmap document "Could not use the magic eraser because it does not work with Bitmap images (convert image to Grayscale mode to edit)."; Duotone and Multichannel erase as before)"##,
             enabled: has_pixel_layer,
             run: magic_eraser,
             journal: true,
@@ -298,6 +331,8 @@ pub fn specs() -> Vec<CommandSpec> {
     ]
 }
 
+#[cfg(test)]
+mod magic_eraser_mode_refusal_tests;
 #[cfg(test)]
 mod magic_eraser_tolerance_tests;
 #[cfg(test)]

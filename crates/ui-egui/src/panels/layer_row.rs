@@ -165,6 +165,26 @@ pub(super) fn paint_clipping_indicator(painter: &egui::Painter, at: Pos2, color:
     painter.add(egui::Shape::line(vec![at + vec2(2.0, 0.0), tip, at + vec2(8.0, 0.0)], stroke));
 }
 
+/// Where the row's disclosure triangle starts (after the eye column and the depth's indentation) and
+/// the layer thumbnail's size, for a row `rect` with thumbnails of `base` (0 when off). The painted
+/// row and an off-screen group's widget-only triangle share it, so the hit area is the same (#13117).
+fn triangle_x_and_thumb_size(l: &Layer, depth: usize, rect: Rect, base: f32) -> (f32, f32) {
+    // Everything but the thumbnails, the indentation and the name, so a narrow panel squeezes
+    // the indentation first, then the thumbnails (a layer with two masks has three).
+    let others = 6.0
+        + 28.0
+        + if l.is_group() { crate::layer_tree_ui::TRIANGLE_W } else { 0.0 }
+        + if l.clipped { 12.0 } else { 0.0 }
+        + crate::layer_row_ui::reserved_width(l);
+    let ts = if base == 0.0 { 0.0 } else { crate::mask_thumbs_ui::thumb_size(l, base, rect.width() - others) };
+    let fixed = others + if ts == 0.0 { 0.0 } else { ts + 6.0 + crate::mask_thumbs_ui::width(l, ts) };
+    // A layer inside a group (or an artboard) indents one step more than its depth, past the
+    // triangle's column, so it sits right of its parent: with only its depth its thumbnail lined
+    // up under the group's, hiding the hierarchy. Top-level rows don't move.
+    let steps = if !l.is_group() && depth > 0 { depth + 1 } else { depth };
+    (rect.left() + 6.0 + 28.0 + crate::layer_row_ui::indent(steps, rect.width(), fixed), ts)
+}
+
 /// Height of an artboard's row. Photoshop sets artboards apart from layers and groups in the
 /// Layers panel: a shorter row with the name in bold and no thumbnail (a board is a canvas, not a
 /// folder), so the boards read as headings over their layers (#10218).
@@ -215,9 +235,14 @@ pub(super) fn layer_row(
     // Rows are painted: name them for screen readers and UI tests.
     resp.widget_info(|| egui::WidgetInfo::selected(egui::Role::Button, true, selected, &l.name));
     // A row scrolled out of view only keeps its place (#125): a layout's hundreds of rows would
-    // otherwise lay out names, icons and thumbnails every frame. Group rows stay whole: their
-    // disclosure triangle is a widget (accessibility, scroll-to).
-    if !ui.is_rect_visible(rect) && !l.is_group() && !resp.context_menu_opened() && crate::layer_row_ui::renaming(ctx) != Some(l.id.0) {
+    // otherwise lay out names, icons and thumbnails every frame. An off-screen group row keeps only
+    // its disclosure widget (accessibility, scroll-to) and paints nothing (#13117). A row whose
+    // menu (its own or the eye column's) is open, or that is being renamed, stays whole.
+    if !ui.is_rect_visible(rect) && !resp.context_menu_opened() && !eye_menu_open(ui, l) && crate::layer_row_ui::renaming(ctx) != Some(l.id.0) {
+        if l.is_group() {
+            let (x, _) = triangle_x_and_thumb_size(l, depth, rect, base);
+            crate::layer_tree_ui::disclosure_widget(ui, rect, x, l, actions);
+        }
         return rect;
     }
     let painter = ui.painter_at(rect.expand(1.0));
@@ -226,22 +251,8 @@ pub(super) fn layer_row(
         app.hover_layer = Some(l.id);
     }
     paint_row_background(&painter, &t, l, rect, selected, is_hovered);
-    let mut x = rect.left() + 6.0;
     let eye_resp = eye_column(app, ui, l, row, rect, actions);
-    // Everything but the thumbnails, the indentation and the name, so a narrow panel squeezes
-    // the indentation first, then the thumbnails (a layer with two masks has three).
-    let others = 6.0
-        + 28.0
-        + if l.is_group() { crate::layer_tree_ui::TRIANGLE_W } else { 0.0 }
-        + if l.clipped { 12.0 } else { 0.0 }
-        + crate::layer_row_ui::reserved_width(l);
-    let ts = if base == 0.0 { 0.0 } else { crate::mask_thumbs_ui::thumb_size(l, base, rect.width() - others) };
-    let fixed = others + if ts == 0.0 { 0.0 } else { ts + 6.0 + crate::mask_thumbs_ui::width(l, ts) };
-    // A layer inside a group (or an artboard) indents one step more than its depth, past the
-    // triangle's column, so it sits right of its parent: with only its depth its thumbnail lined
-    // up under the group's, hiding the hierarchy. Top-level rows don't move.
-    let steps = if !l.is_group() && depth > 0 { depth + 1 } else { depth };
-    x += 28.0 + crate::layer_row_ui::indent(steps, rect.width(), fixed);
+    let (mut x, ts) = triangle_x_and_thumb_size(l, depth, rect, base);
     let toggled = crate::layer_tree_ui::disclosure(ui, rect, &mut x, l, actions);
     if l.clipped {
         paint_clipping_indicator(&painter, pos2(x, rect.center().y), t.text_faint);
@@ -387,6 +398,18 @@ fn paint_row_background(painter: &egui::Painter, t: &Tokens, l: &Layer, rect: Re
     }
 }
 
+/// The eye column's widget id.
+fn eye_id(ui: &egui::Ui, l: &Layer) -> egui::Id {
+    ui.scope_id().with(("eye", l.id.0))
+}
+
+/// Whether the eye column's colour menu is open. It is the eye response's own context menu (egui
+/// keys it `Popup::default_response_id`: the widget id with "popup"), not the row's, and egui closes
+/// a popup that isn't shown in a frame, so a row with it open must not be culled.
+fn eye_menu_open(ui: &egui::Ui, l: &Layer) -> bool {
+    egui::Popup::is_id_open(ui.ctx(), eye_id(ui, l).with("popup"))
+}
+
 /// The eye column: visibility toggle (⌥ shows only this layer), sweep-drag and its colour menu.
 fn eye_column(app: &mut PhotocraftApp, ui: &mut egui::Ui, l: &Layer, row: RowSel, rect: Rect, actions: &mut Vec<(String, Value)>) -> egui::Response {
     let ctx = &ui.ctx().clone();
@@ -395,7 +418,7 @@ fn eye_column(app: &mut PhotocraftApp, ui: &mut egui::Ui, l: &Layer, row: RowSel
     let eye_cell = eye_cell(rect);
     // The whole eye column takes drags too (so a drag starting on it never reorders the row): dragging down
     // the eyes gives every row swept over the visibility the first eye toggled to (#8467).
-    let eye_resp = ui.interact(eye_cell, ui.scope_id().with(("eye", l.id.0)), Sense::click_and_drag());
+    let eye_resp = ui.interact(eye_cell, eye_id(ui, l), Sense::click_and_drag());
     // A hidden layer's eye box is left empty (still clickable; the whole column takes the click, #8467).
     if l.visible {
         // Centre the drawing in the column while preserving the visibility hit area.

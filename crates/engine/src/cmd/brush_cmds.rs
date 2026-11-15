@@ -12,7 +12,7 @@ use photocraft_paint::mixer::{MixerSettings, MixerState};
 use photocraft_paint::replace::{Limits, ReplaceMode, ReplaceSettings, Sampling, apply_color_replacement, color_replacement_effect};
 use photocraft_paint::tile::PREVIEW_SIDE;
 use photocraft_paint::{
-    BrushPreset, BrushSettings, GrayTile, Pattern, PresetCaptures, StoredTile, Stroke, StrokePoint, StrokeRenderer, TipShape, render_stroke,
+    BrushPreset, BrushSettings, GrayTile, Pattern, PresetCaptures, StoredTile, Stroke, StrokePoint, StrokeRenderer, TipShape, render_stroke_clipped,
 };
 use photocraft_raster::Surface;
 use serde_json::{Value, json};
@@ -88,6 +88,12 @@ pub(crate) fn check_coords(pts: &[StrokePoint], cmd: &str) -> Result<()> {
         return Err(bad(cmd, format!("point coordinates must be finite and within ±{MAX_COORD}")));
     }
     Ok(())
+}
+
+/// Where a stroke can change pixels: the canvas plus any pixels the layer already holds past its
+/// edge (a moved layer keeps them, #5067). Dabs that reach neither are not rasterized.
+fn paintable_area(canvas: Rect, surf: &Surface) -> Rect {
+    canvas.union(&surf.tile_bounds())
 }
 
 /// Deep-merge `patch` into `base` (objects merge key by key; anything else replaces).
@@ -291,7 +297,9 @@ fn stroke_with(s: &mut Session, cmd: &str, p: &Value, label: &str, brush: BrushS
             }
             let sel = doc.selection.clone();
             let table = crate::mode_cmds::paint_color_table(doc, p);
+            let canvas = doc.bounds();
             let (surf, lock) = crate::channel_cmds::target_surface(doc, id, p)?;
+            let clip = paintable_area(canvas, surf);
             let mut brush = brush;
             erase_locked(&mut brush, lock, bg);
             if auto_erase {
@@ -307,23 +315,23 @@ fn stroke_with(s: &mut Session, cmd: &str, p: &Value, label: &str, brush: BrushS
                     .iter()
                     .filter(|p| crate::symmetry_cmds::SymmetryAxis::has_distinct_mirror(&pts, p))
                     .map(|p| {
-                        let mut renderer = StrokeRenderer::new(&brush, Some(surf.format()), zoom);
+                        let mut renderer = StrokeRenderer::new(&brush, Some(surf.format()), zoom).with_clip(clip);
                         renderer.push(p);
                         renderer.finish();
                         renderer
                     })
                     .collect();
                 if copies.is_empty() {
-                    render_stroke(surf, &brush, &pts, sel.as_ref(), lock, zoom)
+                    render_stroke_clipped(surf, &brush, &pts, sel.as_ref(), lock, zoom, Some(clip))
                 } else {
                     let pre = surf.clone();
-                    let mut original = StrokeRenderer::new(&brush, Some(surf.format()), zoom);
+                    let mut original = StrokeRenderer::new(&brush, Some(surf.format()), zoom).with_clip(clip);
                     original.push(&pts);
                     original.finish();
                     original.composite_union_many(&copies, &pre, surf, sel.as_ref(), lock)
                 }
             } else {
-                render_stroke(surf, &brush, &pts, sel.as_ref(), lock, zoom)
+                render_stroke_clipped(surf, &brush, &pts, sel.as_ref(), lock, zoom, Some(clip))
             };
             if let (Some(table), Some(pre)) = (&table, &unpainted) {
                 crate::mode_cmds::keep_in_color_table(table, pre, surf, damage);
@@ -341,12 +349,23 @@ fn stroke_with(s: &mut Session, cmd: &str, p: &Value, label: &str, brush: BrushS
 /// Pencil Auto Erase: a stroke that starts on a pixel of the foreground colour paints the
 /// background colour instead (Photoshop). The match is exact (#11966): the foreground as the
 /// layer would store it (its mode and depth) against the pixel, its alpha aside, so one level
-/// off paints the foreground.
+/// off paints the foreground. In a CMYK layer a foreground picked as CMYK is probed as the inks
+/// the stroke paints (#13060), not as its RGB stand-in converted back.
 fn apply_auto_erase(brush: &mut BrushSettings, surf: &Surface, start: Option<&StrokePoint>, fg: [f32; 4], bg: [f32; 4]) {
     let Some(p0) = start else { return };
     let c = surf.rgba(p0.x.floor() as i32, p0.y.floor() as i32);
-    let mut probe = Surface::new(surf.format());
-    probe.write_pixel(0, 0, &photocraft_raster::from_rgba(&surf.format(), [fg[0], fg[1], fg[2], 1.0]));
+    let format = surf.format();
+    let mut px = photocraft_raster::from_rgba(&format, [fg[0], fg[1], fg[2], 1.0]);
+    // The renderer's condition for painting the picked inks (`StrokeRenderer::composite`), keyed
+    // on the foreground being probed.
+    if let (photocraft_color::ColorMode::Cmyk, Some((rgb, inks))) = (format.mode, brush.color_cmyk)
+        && rgb == [fg[0], fg[1], fg[2]]
+        && let Some(channels) = px.get_mut(..4)
+    {
+        channels.copy_from_slice(&inks);
+    }
+    let mut probe = Surface::new(format);
+    probe.write_pixel(0, 0, &px);
     let stored = probe.rgba(0, 0);
     // Far below one 8-bit level: only the float noise of the conversion.
     if c[3] > 0.0 && (0..3).all(|i| (c[i] - stored[i]).abs() < 1e-5) {
@@ -626,16 +645,19 @@ impl LiveStroke {
         let mut doc = (*st.doc).clone();
         let sel = doc.selection.clone();
         let table = crate::mode_cmds::paint_color_table(&doc, p);
+        let canvas = doc.bounds();
         let (surf, lock) = crate::channel_cmds::target_surface(&mut doc, layer, p)?;
+        let clip = paintable_area(canvas, surf);
         let bg = crate::color_cmds::swatch_in_doc(s, s.tools.background);
         erase_locked(&mut brush, lock, bg);
         if pencil && flag(p, "autoErase", false) {
             let fg = table.as_ref().map_or(fg, |t| crate::mode_cmds::table_color(t, fg));
             apply_auto_erase(&mut brush, surf, pts.first(), fg, s.tools.background);
         }
-        let renderer = StrokeRenderer::new(&brush, Some(surf.format()), zoom);
+        let renderer = StrokeRenderer::new(&brush, Some(surf.format()), zoom).with_clip(clip);
         let symmetry = s.active().and_then(|st| st.symmetry.clone());
-        let mirrors: Vec<_> = (0..symmetry.as_ref().map_or(0, |s| s.mirror_count())).map(|_| StrokeRenderer::new(&brush, Some(surf.format()), zoom)).collect();
+        let mirrors: Vec<_> =
+            (0..symmetry.as_ref().map_or(0, |s| s.mirror_count())).map(|_| StrokeRenderer::new(&brush, Some(surf.format()), zoom).with_clip(clip)).collect();
         let mirror_distinct = vec![false; mirrors.len()];
         let pre = surf.clone();
         let mut live = Self {

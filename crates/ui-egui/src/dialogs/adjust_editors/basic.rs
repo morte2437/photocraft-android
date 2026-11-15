@@ -181,6 +181,9 @@ pub(super) fn black_white(ui: &mut egui::Ui, v: &mut Value, cx: &EditorCx) -> Ed
             v["tintColor"] = json!(adjust_params::hex(c));
         }
         e.add(r);
+        if widgets::secondary_button(ui, tl!("Auto"), 0.0).on_hover_text(tl!("A grey mix that spreads the image's tones")).clicked() {
+            e.auto = true;
+        }
         if widgets::secondary_button(ui, tl!("Default"), 0.0).clicked() {
             for (i, key) in HUE_RANGES.iter().enumerate() {
                 v[*key] = json!(adjust_params::BW_DEFAULTS[i]);
@@ -189,6 +192,27 @@ pub(super) fn black_white(ui: &mut egui::Ui, v: &mut Value, cx: &EditorCx) -> Ed
         }
     });
     e
+}
+
+/// Black & White's Auto (#9269): the weights `image.adjustments.blackWhite.auto` finds for
+/// `layer` (an adjustment layer: the image under it; a pixel layer: its pixels; with `filter`, the
+/// smart object's pixels below that smart filter) into `v`, as
+/// one discrete edit of `e`.
+pub fn apply_auto(app: &mut crate::PhotocraftApp, v: &mut Value, layer: Option<photocraft_doc::LayerId>, filter: Option<u64>, e: &mut Edit) {
+    let mut p = layer.map_or(json!({}), |id| json!({"layer": id.0}));
+    if let Some(i) = filter {
+        p["filter"] = json!(i);
+    }
+    match app.run("image.adjustments.blackWhite.auto", p) {
+        Ok(Value::Object(w)) => {
+            for (k, x) in w {
+                v[k] = x;
+            }
+            e.add(Edit::discrete(true));
+        }
+        Ok(_) => {}
+        Err(err) => app.ui.status = err,
+    }
 }
 
 // ---------------------------------------------------------------------------------------------

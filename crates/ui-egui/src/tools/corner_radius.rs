@@ -5,7 +5,7 @@
 //! of every selected shape to the same radius; ⌥/Alt changes that corner only on rectangles
 //! (a triangle or polygon has one radius for all its corners, as in Photoshop). The drag previews
 //! the new outlines and commits one `shape.edit` per changed layer on release (`radii` for a
-//! rectangle, `cornerRadius` for a polygon), as one history step; a click without movement
+//! rectangle, `cornerRadius` for a polygon or a triangle), as one history step; a click without movement
 //! changes nothing.
 
 use egui::{Color32, Modifiers, Pos2, Stroke};
@@ -26,9 +26,9 @@ const MIN_INSET: f64 = 10.0;
 enum Geom {
     /// `[x, y, w, h]` with a positive size.
     Rect([f64; 4]),
-    /// The polygon's parameters, its sharp vertices in path order, and the indices of those
-    /// that take the radius (a star's outer points only).
-    Polygon { rect: [f64; 4], sides: u32, star_ratio: f64, vertices: Vec<[f64; 2]>, rounded: Vec<usize> },
+    /// A polygon, star or triangle: its live shape, its sharp vertices in path order, and the
+    /// indices of those that take the radius (a star's outer points only).
+    Polygon { live: LiveShape, vertices: Vec<[f64; 2]>, rounded: Vec<usize> },
 }
 
 /// A selected live shape with corners: its layer, its geometry, and its radii (a rectangle's four
@@ -126,8 +126,12 @@ impl Target {
     fn path(&self, radii: [f64; 4]) -> photocraft_doc::Path {
         match &self.geom {
             Geom::Rect([x, y, w, h]) => shapes::rounded_rect(*x, *y, *w, *h, radii),
-            Geom::Polygon { rect, sides, star_ratio, .. } => {
-                shapes::live_path(&LiveShape::Polygon { rect: *rect, sides: *sides, star_ratio: *star_ratio, corner_radius: radii[0] })
+            Geom::Polygon { live, .. } => {
+                let mut live = live.clone();
+                if let LiveShape::Polygon { corner_radius, .. } | LiveShape::Triangle { corner_radius, .. } = &mut live {
+                    *corner_radius = radii[0];
+                }
+                shapes::live_path(&live)
             }
         }
     }
@@ -178,12 +182,26 @@ fn target(layer: u64, live: &LiveShape) -> Option<Target> {
                 return None;
             }
             let sharp = shapes::polygon(rect[0], rect[1], rect[2], rect[3], sides, star_ratio);
-            let vertices: Vec<[f64; 2]> = sharp.subpaths.first()?.knots.iter().map(|k| [k.anchor.x, k.anchor.y]).collect();
-            let rounded = (0..vertices.len()).filter(|&i| shapes::polygon_rounds_vertex(star_ratio, i)).collect();
-            Some(Target { layer, geom: Geom::Polygon { rect, sides, star_ratio, vertices, rounded }, radii: [corner_radius.max(0.0); 4] })
+            polygon_target(layer, live, &sharp, corner_radius, |i| shapes::polygon_rounds_vertex(star_ratio, i))
+        }
+        LiveShape::Triangle { rect, corner_radius } => {
+            positive(rect)?;
+            if !finite(&[corner_radius]) {
+                return None;
+            }
+            let sharp = shapes::triangle(rect[0], rect[1], rect[2], rect[3]);
+            polygon_target(layer, live, &sharp, corner_radius, |_| true)
         }
         LiveShape::Ellipse { .. } | LiveShape::Line { .. } | LiveShape::ArrowLine { .. } => None,
     }
+}
+
+/// A polygon, star or triangle as a target: the vertices of its sharp outline, and which of them
+/// take the radius.
+fn polygon_target(layer: u64, live: &LiveShape, sharp: &photocraft_doc::Path, corner_radius: f64, rounds: impl Fn(usize) -> bool) -> Option<Target> {
+    let vertices: Vec<[f64; 2]> = sharp.subpaths.first()?.knots.iter().map(|k| [k.anchor.x, k.anchor.y]).collect();
+    let rounded = (0..vertices.len()).filter(|&i| rounds(i)).collect();
+    Some(Target { layer, geom: Geom::Polygon { live: live.clone(), vertices, rounded }, radii: [corner_radius.max(0.0); 4] })
 }
 
 /// The selected layers that are live shapes with corners, front first.

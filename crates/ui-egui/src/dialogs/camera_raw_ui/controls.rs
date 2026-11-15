@@ -197,14 +197,13 @@ pub fn show(app: &mut PhotocraftApp, ctx: &egui::Context) {
         app.ui.status_error = true;
     }
     let Some(d) = app.camera_raw.as_ref() else { return };
-    // Where the platform has no extra windows (the web build), draw over the main window.
-    if ctx.embed_viewports() {
+    if draws_over_main_window(ctx, app.services.is_wayland) {
         draw(app, ctx, false);
         return;
     }
     let window_title = d.window_title();
     // Camera Raw is modal, as in Photoshop: the main window is dimmed and takes no input while it
-    // is open (in a separate window, or drawn over it where there are no extra windows).
+    // is open (in a separate window, or drawn over it: see `draws_over_main_window`).
     let main = ctx.content_rect();
     let scrim = egui::Area::new(egui::Id::unique("camera-raw-modal")).order(egui::Order::Foreground).fixed_pos(main.min).show(ctx, |ui| {
         let (r, response) = ui.allocate_exact_size(main.size(), Sense::click_and_drag());
@@ -236,6 +235,21 @@ pub fn show(app: &mut PhotocraftApp, ctx: &egui::Context) {
     if close && app.camera_raw.is_some() {
         cancel(app);
     }
+}
+
+/// Whether the dialog is drawn over the main window instead of in a window of its own: where the
+/// platform has no extra windows (the web build), while the main window is full screen, and on
+/// Wayland while it is maximized.
+///
+/// The dialog's window is an immediate viewport, so it takes input and redraws only while the
+/// main window draws a frame. A window opened over a full-screen or maximized one can cover it
+/// (Hyprland hands the new window the full screen or the maximized state), the compositor then
+/// sends the hidden main window no frame callbacks, and the dialog freezes: its sliders don't
+/// move and nothing else responds. Elsewhere a maximized main window keeps Camera Raw in its own
+/// window, as in Photoshop.
+fn draws_over_main_window(ctx: &egui::Context, wayland: bool) -> bool {
+    let (fullscreen, maximized) = ctx.input(|i| (i.viewport().fullscreen == Some(true), i.viewport().maximized == Some(true)));
+    ctx.embed_viewports() || fullscreen || (wayland && maximized)
 }
 
 /// Whether to bring Camera Raw's window to the front: when the main window has just gained focus

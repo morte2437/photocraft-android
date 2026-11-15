@@ -298,7 +298,7 @@ fn shape_reach(l: &photocraft_doc::Layer, canvas: Rect) -> Option<Rect> {
 }
 
 /// `ids` and every layer inside them (groups move their contents).
-fn with_descendants(doc: &Document, ids: &[LayerId]) -> Vec<LayerId> {
+pub(crate) fn with_descendants(doc: &Document, ids: &[LayerId]) -> Vec<LayerId> {
     let walk = doc.walk();
     let roots: Vec<_> = walk.iter().filter(|(_, _, l)| ids.contains(&l.id)).map(|(p, _, _)| p.as_slice()).collect();
     walk.iter().filter(|(p, _, _)| roots.iter().any(|r| p.starts_with(r))).map(|(_, _, l)| l.id).collect()

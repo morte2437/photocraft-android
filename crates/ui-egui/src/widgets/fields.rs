@@ -23,7 +23,8 @@ pub fn value_field_whole(ui: &mut Ui, value: &mut f32, range: std::ops::RangeInc
 /// (Photoshop's "Closest value inserted" alerts, #11938): it stores the closest whole number in
 /// range, and returns true once the field is left after such a value was typed, so the caller
 /// shows its alert. While the field has the keyboard it keeps the typed text (a `0` on the way to
-/// `05` stays). A scrub past the ends just stops there and says nothing.
+/// `05` stays). A scrub, an arrow-key or a wheel step past the ends just stops there and says
+/// nothing.
 pub fn value_field_whole_alerting(
     ui: &mut Ui,
     name: &str,
@@ -32,8 +33,34 @@ pub fn value_field_whole_alerting(
     suffix: &str,
     width: f32,
 ) -> (Response, bool) {
+    value_field_alerting_in(ui, name, value, range, suffix, width, true)
+}
+
+/// [`value_field_whole_alerting`] for a field that takes decimals (a corner radius, #13336): a
+/// typed value past `range` becomes the closest end, unrounded.
+pub fn value_field_alerting(ui: &mut Ui, name: &str, value: &mut f32, range: std::ops::RangeInclusive<f32>, suffix: &str, width: f32) -> (Response, bool) {
+    value_field_alerting_in(ui, name, value, range, suffix, width, false)
+}
+
+fn value_field_alerting_in(
+    ui: &mut Ui,
+    name: &str,
+    value: &mut f32,
+    range: std::ops::RangeInclusive<f32>,
+    suffix: &str,
+    width: f32,
+    whole: bool,
+) -> (Response, bool) {
     let (lo, hi) = (*range.start(), *range.end());
-    let fit = |v: f32| if v.is_finite() { v.round().clamp(lo, hi) } else { lo };
+    let fit = |v: f32| {
+        if !v.is_finite() {
+            lo
+        } else if whole {
+            v.round().clamp(lo, hi)
+        } else {
+            v.clamp(lo, hi)
+        }
+    };
     *value = fit(*value);
     let draft_id = ui.make_persistent_id(egui::IdSalt::new(("whole-alerting-typed", name)));
     // Typed text only while its field still has the keyboard: one left without being drawn (a
@@ -43,13 +70,17 @@ pub fn value_field_whole_alerting(
     let mut typed = draft.map_or(*value, |(typed, _, _)| typed);
     // The field's own range is wide, so the typed value reaches here unclamped.
     let r = value_field_named(ui, name, &mut typed, -1.0e9..=1.0e9, suffix, width);
+    // A step past the ends is no typed value (#13304). Only a step the field took counts: a wheel
+    // event that moves less than a notch (or not at all) steps nothing, and must not drop what was
+    // typed.
+    let stepped = stepped_this_pass(ui.ctx(), r.id);
     let out_id = r.id.with("out-of-range");
     if r.gained_focus() {
         ui.ctx().data_mut(|d| d.remove_temp::<bool>(out_id));
     }
     if r.changed() && typed.is_finite() {
         *value = fit(typed);
-        let typing = (r.has_focus() || r.lost_focus()) && ui.ctx().dragged_id().is_none();
+        let typing = (r.has_focus() || r.lost_focus()) && ui.ctx().dragged_id().is_none() && !stepped;
         let out = typing && !(lo..=hi).contains(&typed);
         ui.ctx().data_mut(|d| d.insert_temp(out_id, out));
         if typing && r.has_focus() {
@@ -320,12 +351,25 @@ fn value_field_box(
             // The text stays selected, as in Photoshop: typing after a step replaces the value.
             crate::field_tab::select_all(ui.ctx(), resp.id, &if fine { fmt_num2(f64::from(*value)) } else { fmt_num(f64::from(*value)) });
         }
+        let pass = ui.ctx().cumulative_pass_nr();
+        ui.data_mut(|d| d.insert_temp(stepped_id(resp.id), pass));
         resp.mark_changed();
     }
     if ui.memory(|m| m.has_focus(resp.id)) {
         crate::field_wheel::set_focused(ui.ctx(), resp.id, slot.id);
     }
     (resp, rect)
+}
+
+/// Where a value field records the pass in which an arrow key or wheel notch last stepped it.
+fn stepped_id(field: egui::Id) -> egui::Id {
+    field.with("stepped-pass")
+}
+
+/// Whether the value field `field` was stepped this pass by an arrow key or a wheel notch.
+fn stepped_this_pass(ctx: &egui::Context, field: egui::Id) -> bool {
+    let pass = ctx.cumulative_pass_nr();
+    ctx.data(|d| d.get_temp::<u64>(stepped_id(field))) == Some(pass)
 }
 
 /// Width of the ▾ that opens a [`popup_value_field`]'s slider, inside the field's box.

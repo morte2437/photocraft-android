@@ -94,6 +94,10 @@ fn active(s: &Session) -> &Layer {
     d.doc.layer(d.active_layer.unwrap()).unwrap()
 }
 
+fn layer_of(s: &Session, id: u64) -> &Layer {
+    doc(s).layer(LayerId(id)).unwrap()
+}
+
 fn pixel(s: &Session, x: i32, y: i32) -> Vec<f32> {
     active(s).surface().unwrap().pixel(x, y)
 }
@@ -1163,6 +1167,54 @@ fn rasterize_fill_and_all_in_one_step() {
     assert_eq!(s.execute("layer.rasterize.allLayers", json!({})).unwrap()["rasterized"], 1);
     assert_eq!(s.active().unwrap().history.past_len(), steps + 1);
     assert!(doc(&s).walk().iter().all(|(_, _, l)| !matches!(l.content, LayerContent::Fill(_))));
+}
+
+/// #4974: Rasterize converts its layers as one step, so a layer that fails after another was
+/// converted leaves the document, history, journal and dirty state as they were.
+#[test]
+fn a_later_layer_failing_takes_back_the_rasterized_ones() {
+    let mut s = session(8);
+    let a = s.execute("layer.newFillLayer.solidColor", json!({"color": "#00ff00"})).unwrap()["layer"].as_u64().unwrap();
+    let b = s.execute("layer.newFillLayer.solidColor", json!({"color": "#0000ff"})).unwrap()["layer"].as_u64().unwrap();
+    let st = s.active_mut().unwrap();
+    st.saved_revision = st.revision;
+    let before = s.active().unwrap().doc.clone();
+    let steps = s.active().unwrap().history.past_len();
+    let journal = s.journal.len();
+
+    let ids = vec![LayerId(a), LayerId(b)];
+    let r = rasterize_layers(&mut s, ids.clone(), None, |s, id, only, key| {
+        if id.0 == b { Err(EngineError::Other("second layer failed".into())) } else { rasterize_one(s, id, only, key) }
+    });
+    assert!(r.is_err());
+    assert!(matches!(layer_of(&s, a).content, LayerContent::Fill(_)));
+    assert!(matches!(layer_of(&s, b).content, LayerContent::Fill(_)));
+    assert!(std::sync::Arc::ptr_eq(&s.active().unwrap().doc, &before));
+    assert_eq!(s.active().unwrap().history.past_len(), steps);
+    assert!(!s.active().unwrap().history.can_redo());
+    assert_eq!(s.journal.len(), journal);
+    assert!(!s.active().unwrap().is_dirty());
+
+    // Without the failure both are converted in a single step.
+    rasterize_layers(&mut s, ids, None, rasterize_one).unwrap();
+    assert!(matches!(layer_of(&s, a).content, LayerContent::Raster(_)));
+    assert!(matches!(layer_of(&s, b).content, LayerContent::Raster(_)));
+    assert_eq!(s.active().unwrap().history.past_len(), steps + 1);
+}
+
+/// A refused Rasterize starts no step: the revision and the saved state do not move.
+#[test]
+fn rasterize_with_nothing_to_convert_changes_nothing() {
+    let mut s = session(8);
+    let st = s.active_mut().unwrap();
+    st.saved_revision = st.revision;
+    let (revision, steps) = (s.active().unwrap().revision, s.active().unwrap().history.past_len());
+    assert!(s.execute("layer.rasterize.layer", json!({})).is_err());
+    assert!(s.execute("layer.rasterize.type", json!({})).is_err());
+    assert_eq!(s.execute("layer.rasterize.allLayers", json!({})).unwrap()["rasterized"], 0);
+    assert_eq!(s.active().unwrap().revision, revision);
+    assert_eq!(s.active().unwrap().history.past_len(), steps);
+    assert!(!s.active().unwrap().is_dirty());
 }
 
 #[test]

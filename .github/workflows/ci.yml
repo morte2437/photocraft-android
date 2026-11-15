@@ -68,6 +68,12 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  # Git dependencies come from github.com/storytold, and Cargo.lock is complete and up to date.
+  git-sources:
+    if: github.event.action != 'labeled' || github.event.label.name == 'full-ci'
+    # Tracks @main so suite-wide CI fixes reach every app without a PR in each repository.
+    uses: storytold/craft-common-actions/.github/workflows/git-sources.yml@main
+
   # Whether the Windows legs and the web build run. main, manual runs and PRs labelled `full-ci`
   # get both. Other PRs get Windows when they touch code whose behaviour differs by platform: the
   # app shell, UI, text and fonts, GPU, pen input, native saves, build scripts or the lockfile.
@@ -90,37 +96,6 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
-      - name: Git dependencies come from storytold
-        run: |
-          set -euo pipefail
-          test -f Cargo.lock || { echo "Cargo.lock is missing"; exit 1; }
-          # Source replacement, patches and path overrides in cargo config never show up
-          # in Cargo.lock. Parsed rather than grepped: TOML has many spellings of one key.
-          # Cargo still reads the legacy .cargo/config.
-          python3 - <<'PY'
-          import os, sys, tomllib
-          for path in (".cargo/config", ".cargo/config.toml"):
-              if not os.path.exists(path):
-                  continue
-              config = tomllib.load(open(path, "rb"))
-              replaced = [name for name, source in config.get("source", {}).items()
-                          if isinstance(source, dict) and "replace-with" in source]
-              if replaced or "patch" in config or "paths" in config:
-                  print(f"{path} replaces, patches or overrides a source")
-                  sys.exit(1)
-          PY
-          # Fails when Cargo.lock is out of date with the manifests.
-          cargo metadata --locked --format-version 1 > /dev/null
-          python3 - <<'PY'
-          import sys, tomllib
-          lock = tomllib.load(open("Cargo.lock", "rb"))
-          bad = sorted({p["source"] for p in lock.get("package", [])
-                        if p.get("source", "").startswith("git+")
-                        and not p["source"].startswith("git+https://github.com/storytold/")})
-          if bad:
-              print("Git dependencies outside github.com/storytold:", *bad, sep="\n")
-              sys.exit(1)
-          PY
       - id: pick
         env:
           EVENT: ${{ github.event_name }}
@@ -174,8 +149,8 @@ jobs:
   # Windows tests run as two legs in parallel: the unit tests and the integration tests. As one job
   # they took ~28 min on the Windows runner; the legs take ~13 and ~15. Splitting the integration
   # tests over a third runner (nextest --partition) saved ~2 min of wall time but cost ~7
-  # runner-minutes and one more Windows slot per PR. They stay outside the shared gate for sccache,
-  # which needs its own action step.
+  # runner-minutes and one more Windows slot per PR. Moving these legs into the shared gate is
+  # tracked by storytold/craft-common-actions#212.
   windows:
     needs: platforms
     if: needs.platforms.outputs.windows == 'true'
@@ -187,10 +162,17 @@ jobs:
       matrix:
         part: [unit, integration]
     env:
+      # Released sccache expands Cargo's response files and exceeds Windows' rustc spawn limit
+      # (#13543). Let Cargo handle long commands until a release includes mozilla/sccache#3026.
+      # The dependency rust-cache below stays enabled; only compiler caching is disabled.
+      RUSTC_WRAPPER: ""
       # No debuginfo on Windows: writing PDBs for ~200 test binaries cost 2.2 of ~21 build minutes.
       # A panic still names its file and line; only backtrace frames lose theirs (Linux keeps
       # line-tables-only, so a backtrace with lines is one OS away).
       CARGO_PROFILE_DEV_DEBUG: "0"
+      # The Windows compiler command line carries one -L path per built dependency; keep each
+      # target path short enough for CreateProcess when the graph is large.
+      CARGO_TARGET_DIR: 'D:\t'
       # The all-language UI tests shape real Japanese, Chinese, Korean and Devanagari labels
       # with kittest's strict `MissingGlyphPolicy::Panic`. A hosted Windows image has no
       # guaranteed Japanese or Simplified Chinese system font, and egui 0.37 panics on a
@@ -235,24 +217,6 @@ jobs:
         with:
           save-if: ${{ github.ref == 'refs/heads/main' && matrix.part == 'integration' }}
           cache-on-failure: true
-
-      # sccache caches the workspace crates' compiled libraries, which rust-cache leaves out:
-      # warm, each Windows leg built 4.5 min faster. Like rust-cache, only main writes (PRs read
-      # main's entries); a full set is ~90 MB, so it barely touches the 10 GB budget (#2688).
-      # Test executables can't be cached, so a PR still links its tests.
-      - name: Install sccache
-        uses: step-security/sccache-action@ae2d64c53dbae979f387673f0aae7ebb52087f6b # v0.0.11
-        with:
-          version: v0.18.0
-
-      - name: Use sccache
-        env:
-          MAIN: ${{ github.ref == 'refs/heads/main' }}
-        run: |
-          echo "SCCACHE_GHA_ENABLED=true" >> "$GITHUB_ENV"
-          echo "RUSTC_WRAPPER=sccache" >> "$GITHUB_ENV"
-          if [ "$MAIN" != true ]; then echo "SCCACHE_GHA_RW_MODE=READ_ONLY" >> "$GITHUB_ENV"; fi
-        shell: bash
 
       - name: Clippy
         if: matrix.part == 'integration'
@@ -335,7 +299,7 @@ jobs:
           tool: cargo-nextest@0.9.150
 
       - name: Test without heif
-        run: cargo nextest run -p photocraft-codecs -p photocraft-io --locked --profile ci
+        run: cargo nextest run -p photocraft-io --locked --profile ci
 
   corpus:
     if: github.event.action != 'labeled' || github.event.label.name == 'full-ci'
@@ -412,11 +376,11 @@ jobs:
           key: ci-web
           save-if: ${{ github.ref == 'refs/heads/main' }}
           cache-on-failure: true
+      # Checksum-verified, as in release.yml's web build.
       - name: Install trunk
-        run: |
-          curl --proto '=https' -fsSL "https://github.com/trunk-rs/trunk/releases/download/v${TRUNK_VERSION}/trunk-x86_64-unknown-linux-gnu.tar.gz" \
-            | tar -xz -C "$HOME/.cargo/bin" trunk
-          trunk --version
+        uses: storytold/craft-common-actions/actions/install-trunk@main
+        with:
+          trunk-version: ${{ env.TRUNK_VERSION }}
       # package.sh runs Trunk's release builds, validates relative URLs, cuts the wasm into
       # parts, checks the 24 MiB per-file limit and exercises the packaging step release.yml uses.
       - name: Build and verify browser release

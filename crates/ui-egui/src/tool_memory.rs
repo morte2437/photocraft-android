@@ -361,7 +361,7 @@ pub(crate) fn sanitize(o: &mut ToolOptions) {
     fit(&mut o.exposure, 1.0, 100.0, d.exposure);
     fit(&mut o.strength, 1.0, 100.0, d.strength);
     fit(&mut o.stroke_width, 0.0, 288.0, d.stroke_width);
-    fit(&mut o.corner_radius, 0.0, 10000.0, d.corner_radius);
+    fit(&mut o.corner_radius, *crate::shape_options::RADIUS_RANGE.start(), *crate::shape_options::RADIUS_RANGE.end(), d.corner_radius);
     fit(&mut o.line_weight, 1.0, 1000.0, d.line_weight);
     fit(&mut o.curve_fit, 0.5, 10.0, d.curve_fit);
     // The marquee's and the Slice tool's Width and Height are a ratio or a size in px, as their

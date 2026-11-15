@@ -10,11 +10,6 @@ fn alpha(image: &CustomCursorImage, x: u16, y: u16) -> u8 {
     image.rgba[(usize::from(y) * usize::from(image.size[0]) + usize::from(x)) * 4 + 3]
 }
 
-fn rgba_at(image: &CustomCursorImage, x: u16, y: u16) -> [u8; 4] {
-    let offset = (usize::from(y) * usize::from(image.size[0]) + usize::from(x)) * 4;
-    image.rgba[offset..offset + 4].try_into().unwrap()
-}
-
 fn frame(ctx: &egui::Context, draw: impl FnMut(&mut egui::Ui)) -> egui::FullOutput {
     let mut output = ctx.run_ui(Default::default(), draw);
     // These tests inspect cursor output without a renderer.
@@ -67,36 +62,19 @@ fn precise_and_tip_centre_crosshairs_have_distinct_hotspots() {
 }
 
 #[test]
-fn bucket_bitmap_keeps_the_svg_above_left_of_its_exact_crosshair_hotspot() {
-    for scale in [1.0, 1.25, 2.0] {
+fn bucket_bitmap_keeps_the_svg_below_right_of_its_arrow_tip_hotspot() {
+    for (scale, hotspot) in [(1.0, [1, 1]), (1.25, [1, 1]), (2.0, [2, 2])] {
         let image = super::bucket::rasterize(scale).unwrap();
-        let expected_x = (26.0 / 24.0 * 22.0 * scale).round() + (scale + 1.0).ceil();
-        let expected_y = (25.0 / 24.0 * 22.0 * scale).round() + (scale + 1.0).ceil();
-        assert_eq!(image.hotspot, [expected_x as u16, expected_y as u16], "bucket box target at {scale}x");
-        let gradient_cross = rasterize(&STANDARD_CROSSHAIR, scale).unwrap();
-        assert_eq!(alpha(&image, image.hotspot[0], image.hotspot[1]), 0, "Gradient-style open center at {scale}x");
+        assert_eq!(image.hotspot, hotspot, "the arrow tip sits one halo in from the top left at {scale}x");
+        assert!(alpha(&image, image.hotspot[0], image.hotspot[1]) > 128, "the antialiased tip itself is drawn at {scale}x");
 
         let side = usize::from(image.size[0]);
         let has_bucket_art = image.rgba.as_chunks::<4>().0.iter().enumerate().any(|(i, p)| {
             let x = (i % side) as u16;
             let y = (i / side) as u16;
-            p[3] > 200 && x + 2 < image.hotspot[0] && y + 2 < image.hotspot[1]
+            p[0] > 200 && p[3] > 200 && x > image.hotspot[0] + 10 && y > image.hotspot[1] + 10
         });
-        assert!(has_bucket_art, "opaque bucket art remains above-left of the hotspot at {scale}x");
-
-        for arm in [1, 5, 8] {
-            let arm = (arm as f32 * scale).round() as u16;
-            assert_eq!(
-                rgba_at(&image, image.hotspot[0] + arm, image.hotspot[1]),
-                rgba_at(&gradient_cross, gradient_cross.hotspot[0] + arm, gradient_cross.hotspot[1]),
-                "right arm matches the Gradient crosshair at {scale}x"
-            );
-            assert_eq!(
-                rgba_at(&image, image.hotspot[0], image.hotspot[1] + arm),
-                rgba_at(&gradient_cross, gradient_cross.hotspot[0], gradient_cross.hotspot[1] + arm),
-                "lower arm matches the Gradient crosshair at {scale}x"
-            );
-        }
+        assert!(has_bucket_art, "opaque white bucket art below-right of the hotspot at {scale}x");
     }
 }
 
@@ -196,7 +174,7 @@ fn scaled_wayland_bucket_uses_one_cached_image_area_without_a_split_crosshair() 
     let (first, first_images) = run(1.25, first_at);
     assert!(first.platform_output.cursor_image.is_none(), "scaled Wayland does not send a bitmap to winit");
     assert_eq!(first.platform_output.cursor_icon, CursorIcon::None, "the image replaces the system arrow");
-    assert_eq!(first_images.len(), 1, "bucket and fill crosshair are one Image primitive");
+    assert_eq!(first_images.len(), 1, "bucket and arrow are one Image primitive");
     let image = super::bucket::rasterize(1.25).unwrap();
     let image_bounds = first_images[0].1;
     let image_hotspot = image_bounds.min + egui::vec2((f32::from(image.hotspot[0]) + 0.5) / 1.25, (f32::from(image.hotspot[1]) + 0.5) / 1.25);

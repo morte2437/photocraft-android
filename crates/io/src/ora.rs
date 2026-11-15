@@ -12,32 +12,38 @@
 #[cfg(test)]
 mod tests;
 
-use craft_ora::{Archive, Props};
 use photocraft_codecs::{self as codecs, ChannelLayout, Format, Image, SampleType as CSample};
 use photocraft_color::{BlendMode, ColorMode, PixelFormat, SampleType};
 use photocraft_doc::{Document, Layer, LayerContent};
+#[cfg(test)]
+use photocraft_format::zip::ZipWriter;
 use photocraft_geom::{Rect, Size};
 use photocraft_raster::{Interrupt, Surface};
 
 use crate::{ExportResult, ImportResult, IoError};
 
-use craft_ora::{MAX_ENTRY, MAX_SIDE};
-pub(crate) use craft_ora::{MAX_PIXEL_BYTES, is_ora};
-
 type Result<T> = std::result::Result<T, IoError>;
 
+/// The `mimetype` entry of an OpenRaster archive (test-only fixture helper).
+#[cfg(test)]
+pub(crate) const MIMETYPE: &[u8] = b"image/openraster";
+/// Decoded pixels across every layer (and the stack.xml) are capped, as for PDN.
+pub(crate) const MAX_PIXEL_BYTES: usize = 1 << 30;
+/// Canvas side limit (Photoshop's PSB limit).
+pub(crate) const MAX_SIDE: u32 = 300_000;
+/// Layers and groups in one document.
+pub(crate) const MAX_NODES: usize = 8192;
+const MAX_ENTRY: usize = 512 << 20;
 const THUMBNAIL_SIDE: u32 = 256;
 
 fn invalid(message: impl Into<String>) -> IoError {
     IoError::Ora(message.into())
 }
 
-/// The format crate's error as this crate's.
-fn ora_err(e: craft_ora::Error) -> IoError {
-    match e {
-        craft_ora::Error::Invalid(m) => invalid(m),
-        craft_ora::Error::Write(m) => IoError::Ora(format!("the archive could not be written: {m}")),
-    }
+/// `true` for an OpenRaster archive (by its `mimetype` entry).
+#[cfg(test)]
+pub(crate) fn is_ora(bytes: &[u8]) -> bool {
+    craft_ora::is_ora(bytes)
 }
 
 /// Blend modes by Krita composite-op id: Krita's `.kra` `compositeop` attribute and the
@@ -198,22 +204,22 @@ impl Warnings {
     }
 }
 
-/// Shared node properties: name, visibility, opacity and composite operation.
-fn props(p: &Props, layer: &mut Layer, index: usize, warnings: &mut Warnings) {
-    layer.name = p.name.as_deref().filter(|name| !name.trim().is_empty()).map_or_else(|| format!("Layer {index}"), str::to_string);
-    layer.visible = p.visible;
-    layer.opacity = p.opacity.clamp(0.0, 1.0);
-    layer.blend = composite_op(p.composite_op.as_deref().unwrap_or("svg:src-over"), &layer.name, warnings);
-    if p.edit_locked {
-        layer.locks.all = true;
-    }
-    if p.alpha_preserve {
-        layer.locks.transparency = true;
+/// A number attribute; a missing one is `default`, an unparsable one an error.
+/// OpenRaster 0.0.6 defaults to isolated groups and makes `auto` explicitly pass-through.
+/// Older files used inference from the group's blend mode; keep that behavior when the
+/// version is absent or unrecognized, too. Compare the numeric core, not version strings.
+fn uses_explicit_group_isolation(version: Option<&str>) -> bool {
+    let Some(core) = version.and_then(|v| v.trim().split(['-', '+']).next()) else { return false };
+    let mut parts = core.split('.');
+    let number = |part: Option<&str>| part.and_then(|s| s.parse::<u32>().ok());
+    match (number(parts.next()), number(parts.next()), number(parts.next()), parts.next()) {
+        (Some(major), Some(minor), Some(patch), None) => [major, minor, patch] >= [0, 0, 6],
+        _ => false,
     }
 }
 
 struct Reader<'a, 'c> {
-    archive: Archive<'a>,
+    archive: craft_ora::Archive<'a>,
     ctl: &'c Interrupt<'c>,
     explicit_group_isolation: bool,
     nodes: usize,
@@ -231,7 +237,7 @@ enum Node {
 
 impl Reader<'_, '_> {
     fn png(&mut self, src: &str, layer: &str) -> Result<Option<usize>> {
-        let Some(data) = self.archive.entry(src, MAX_ENTRY).map_err(ora_err)? else {
+        let Some(data) = self.archive.entry(src, MAX_ENTRY).map_err(|e| invalid(format!("{src}: {e}")))? else {
             self.warnings.layer(layer, "the layer's image is missing from the archive; the layer opens empty");
             return Ok(None);
         };
@@ -258,24 +264,37 @@ impl Reader<'_, '_> {
         for child in stack {
             self.ctl.check().map_err(|_| IoError::Cancelled)?;
             self.nodes += 1;
+            if self.nodes > MAX_NODES {
+                return Err(invalid(format!("more than {MAX_NODES} layers")));
+            }
             let index = self.nodes;
             match child {
-                craft_ora::Node::Layer(l) => {
+                craft_ora::Node::Layer(record) => {
                     let mut layer = Layer::raster("", PixelFormat::RGBA8);
-                    props(&l.props, &mut layer, index, &mut self.warnings);
-                    let image = match &l.src {
+                    layer.name = record.props.name.as_deref().filter(|s| !s.trim().is_empty()).map_or_else(|| format!("Layer {index}"), str::to_string);
+                    layer.visible = record.props.visible;
+                    layer.opacity = record.props.opacity.clamp(0.0, 1.0);
+                    layer.blend = composite_op(record.props.composite_op.as_deref().unwrap_or("svg:src-over"), &layer.name, &mut self.warnings);
+                    layer.locks.all = record.props.edit_locked;
+                    layer.locks.transparency = record.props.alpha_preserve;
+                    let image = match record.src.as_deref() {
                         Some(src) => self.png(src, &layer.name.clone())?,
                         None => {
                             self.warnings.layer(&layer.name, "the layer has no image; it opens empty");
                             None
                         }
                     };
-                    out.push(Node::Raster { layer, image, x: l.x, y: l.y });
+                    out.push(Node::Raster { layer, image, x: record.x, y: record.y });
                 }
-                craft_ora::Node::Stack(st) => {
+                craft_ora::Node::Stack(record) => {
                     let mut layer = Layer::group("", Vec::new());
-                    props(&st.props, &mut layer, index, &mut self.warnings);
-                    let isolation = st.isolation.as_deref();
+                    layer.name = record.props.name.as_deref().filter(|s| !s.trim().is_empty()).map_or_else(|| format!("Layer {index}"), str::to_string);
+                    layer.visible = record.props.visible;
+                    layer.opacity = record.props.opacity.clamp(0.0, 1.0);
+                    layer.blend = composite_op(record.props.composite_op.as_deref().unwrap_or("svg:src-over"), &layer.name, &mut self.warnings);
+                    layer.locks.all = record.props.edit_locked;
+                    layer.locks.transparency = record.props.alpha_preserve;
+                    let isolation = record.isolation.as_deref();
                     let pass_through = if self.explicit_group_isolation {
                         // Since 0.0.6 only explicit `auto` passes through, ignoring the
                         // group's composite-op. An omitted isolation means `isolate`.
@@ -286,7 +305,7 @@ impl Reader<'_, '_> {
                     if pass_through {
                         layer.blend = BlendMode::PassThrough;
                     }
-                    let children = self.stack(&st.children, depth + 1)?;
+                    let children = self.stack(&record.children, depth + 1)?;
                     out.push(Node::Group { layer, children });
                 }
                 craft_ora::Node::Other { tag, name } => {
@@ -356,12 +375,19 @@ fn build(nodes: Vec<Node>, images: &[Image], fmt: PixelFormat, budget: &mut usiz
 }
 
 pub(crate) fn import(name: &str, bytes: &[u8], ctl: &Interrupt<'_>) -> Result<ImportResult> {
-    let archive = Archive::open(bytes).map_err(ora_err)?;
+    let archive = craft_ora::Archive::open(bytes).map_err(|e| invalid(e.to_string()))?;
     let image = archive.image().clone();
+    let (w, h) = (image.width, image.height);
+    if w > MAX_SIDE || h > MAX_SIDE {
+        return Err(invalid(format!("image size {w}×{h} exceeds {MAX_SIDE} pixels per side")));
+    }
+    if (w as usize).saturating_mul(h as usize).saturating_mul(8) > MAX_PIXEL_BYTES {
+        return Err(invalid("the canvas exceeds the 1 GiB pixel limit"));
+    }
     let mut reader = Reader {
         archive,
         ctl,
-        explicit_group_isolation: image.explicit_group_isolation(),
+        explicit_group_isolation: uses_explicit_group_isolation(image.version.as_deref()),
         nodes: 0,
         budget: MAX_PIXEL_BYTES,
         warnings: Warnings::default(),
@@ -374,9 +400,10 @@ pub(crate) fn import(name: &str, bytes: &[u8], ctl: &Interrupt<'_>) -> Result<Im
         reader.warnings.note("float layer images open as a 32-bit float document");
     }
     let fmt = PixelFormat::new(ColorMode::Rgb, depth, true);
-    let mut document = Document::new(name, Size::new(image.width, image.height), ColorMode::Rgb, depth);
+    let mut document = Document::new(name, Size::new(w, h), ColorMode::Rgb, depth);
     document.layers = build(nodes, &reader.images, fmt, &mut reader.budget, ctl)?;
-    let (xres, yres) = (image.xres, image.yres);
+    let xres = image.xres;
+    let yres = image.yres;
     if xres > 0.0 && xres < 1.0e6 {
         document.resolution_dpi = xres as f32;
         reader.warnings.general.extend(crate::unequal_resolution_warning(xres, yres));
@@ -402,7 +429,7 @@ fn op_name(mode: BlendMode) -> Option<String> {
 
 struct Writer<'a> {
     doc: &'a Document,
-    zip: craft_ora::Writer,
+    archive: craft_ora::Writer,
     next: usize,
     sample: CSample,
     warnings: Warnings,
@@ -465,28 +492,11 @@ fn crop(rect: Rect, mut px: Vec<[f32; 4]>) -> (Rect, Vec<[f32; 4]>) {
 }
 
 impl Writer<'_> {
-    fn common(&mut self, layer: &Layer) -> Props {
+    fn common(&mut self, layer: &Layer) -> craft_ora::Props {
         let op = op_name(layer.blend).unwrap_or_else(|| {
             self.warnings.layer(&layer.name, &format!("the {} blend mode has no OpenRaster equivalent; it was saved as Normal", layer.blend.label()));
-            "svg:src-over".into()
+            "svg:src-over".to_string()
         });
-        let props = Props {
-            // Control characters other than tab and newline are not kept, as before the
-            // attribute writer moved to craft-ora.
-            name: Some(layer.name.chars().filter(|c| matches!(c, '\t' | '\n') || !c.is_control()).collect()),
-            visible: layer.visible,
-            // OpenRaster has only one opacity for groups. For ordinary isolated groups,
-            // fold fill opacity into that attribute; groups have no pixel payload in which
-            // to bake it as raster layers do (#3048).
-            opacity: if matches!(&layer.content, LayerContent::Group(_)) {
-                (layer.opacity * layer.fill_opacity).clamp(0.0, 1.0)
-            } else {
-                layer.opacity.clamp(0.0, 1.0)
-            },
-            composite_op: Some(op),
-            edit_locked: layer.locks.all || layer.locks.pixels,
-            alpha_preserve: layer.locks.transparency,
-        };
         // OpenRaster's one edit lock reopens as Lock All; it has no position lock (#7018).
         if layer.locks.pixels && !layer.locks.all {
             self.warnings.layer(&layer.name, "Lock Image Pixels was saved as OpenRaster's edit lock; it reopens as Lock All");
@@ -512,7 +522,20 @@ impl Writer<'_> {
                 self.warnings.layer(&layer.name, "fill opacity was applied to the saved layer pixels");
             }
         }
-        props
+        craft_ora::Props {
+            name: Some(layer.name.clone()),
+            visible: layer.visible,
+            // OpenRaster has one opacity for groups; fold fill opacity into it because groups
+            // have no pixel payload in which to bake it.
+            opacity: if matches!(&layer.content, LayerContent::Group(_)) {
+                (layer.opacity * layer.fill_opacity).clamp(0.0, 1.0)
+            } else {
+                layer.opacity.clamp(0.0, 1.0)
+            },
+            composite_op: Some(op),
+            edit_locked: layer.locks.all || layer.locks.pixels,
+            alpha_preserve: layer.locks.transparency,
+        }
     }
 
     /// What saving a non-group layer's pixels loses: a type, shape, fill or smart object layer
@@ -568,13 +591,12 @@ impl Writer<'_> {
         Ok(crop(rect, buf))
     }
 
-    /// `layers` (bottom-to-top) as stack nodes, topmost first as stack.xml lists them; each
-    /// layer's image is added to the archive as it is written.
     fn layers(&mut self, layers: &[Layer], depth: usize) -> Result<Vec<craft_ora::Node>> {
         if depth > photocraft_doc::MAX_GROUP_DEPTH {
             return Err(IoError::Unsupported(format!("layer groups nested deeper than {}", photocraft_doc::MAX_GROUP_DEPTH)));
         }
-        let mut out = Vec::new();
+        let mut nodes = Vec::new();
+        // stack.xml lists the topmost layer first.
         for layer in layers.iter().rev() {
             match &layer.content {
                 LayerContent::Group(g) => {
@@ -583,8 +605,11 @@ impl Writer<'_> {
                     if layer.mask.as_ref().is_some_and(|m| m.enabled) {
                         self.warnings.layer(&layer.name, "group masks are not saved to OpenRaster");
                     }
-                    let children = self.layers(&g.children, depth + 1)?;
-                    out.push(craft_ora::Node::Stack(craft_ora::Stack { props, isolation: Some(isolation.into()), children }));
+                    nodes.push(craft_ora::Node::Stack(craft_ora::Stack {
+                        props,
+                        isolation: Some(isolation.to_string()),
+                        children: self.layers(&g.children, depth + 1)?,
+                    }));
                 }
                 LayerContent::Adjustment(_) => {
                     self.warnings.layer(&layer.name, "adjustment layers cannot be saved to OpenRaster and were left out (the merged image keeps their look)");
@@ -600,12 +625,12 @@ impl Writer<'_> {
                     let src = format!("data/layer{}.png", self.next);
                     self.next += 1;
                     let data = png(rect.width(), rect.height(), &px, self.sample)?;
-                    self.zip.add(&src, &data).map_err(ora_err)?;
-                    out.push(craft_ora::Node::Layer(craft_ora::Layer { props, x: rect.x0, y: rect.y0, src: Some(src) }));
+                    self.archive.add(&src, &data).map_err(|e| IoError::Ora(e.to_string()))?;
+                    nodes.push(craft_ora::Node::Layer(craft_ora::Layer { props, x: rect.x0, y: rect.y0, src: Some(src) }));
                 }
             }
         }
-        Ok(out)
+        Ok(nodes)
     }
 }
 
@@ -617,19 +642,27 @@ pub(crate) fn export(doc: &Document) -> Result<ExportResult> {
         SampleType::U8 => CSample::U8,
         _ => CSample::U16,
     };
-    let mut w = Writer { doc, zip: craft_ora::Writer::new(), next: 0, sample, warnings: Warnings::default(), dry: false };
+    let mut w = Writer { doc, archive: craft_ora::Writer::new(), next: 0, sample, warnings: Warnings::default(), dry: false };
     document_warnings(doc, &mut w.warnings);
     let stack = w.layers(&doc.layers, 1)?;
-    let Writer { mut zip, warnings, .. } = w;
-    let dpi = f64::from(doc.resolution_dpi.round().max(1.0));
-    let image = craft_ora::Image { version: None, width: doc.size.width, height: doc.size.height, xres: dpi, yres: dpi, stack };
-    zip.add_stack(&image).map_err(ora_err)?;
+    w.archive
+        .add_stack(&craft_ora::Image {
+            version: Some("0.0.6".into()),
+            width: doc.size.width,
+            height: doc.size.height,
+            xres: f64::from(doc.resolution_dpi.round().max(1.0)),
+            yres: f64::from(doc.resolution_dpi.round().max(1.0)),
+            stack,
+        })
+        .map_err(|e| IoError::Ora(e.to_string()))?;
     let merged = photocraft_compose::flatten(doc);
-    zip.add("mergedimage.png", &png(doc.size.width, doc.size.height, &merged.px, sample)?).map_err(ora_err)?;
+    w.archive.add("mergedimage.png", &png(doc.size.width, doc.size.height, &merged.px, sample)?).map_err(|e| IoError::Ora(e.to_string()))?;
     let thumb = photocraft_compose::thumbnail(doc, THUMBNAIL_SIDE);
     let thumb = Image::from_raw(thumb.width, thumb.height, ChannelLayout::Rgba, CSample::U8, thumb.pixels)?;
-    zip.add("Thumbnails/thumbnail.png", &codecs::encode(&thumb, Format::Png, &codecs::EncodeOptions::default())?).map_err(ora_err)?;
-    Ok(ExportResult { bytes: zip.finish().map_err(ora_err)?, warnings: warnings.finish() })
+    w.archive
+        .add("Thumbnails/thumbnail.png", &codecs::encode(&thumb, Format::Png, &codecs::EncodeOptions::default())?)
+        .map_err(|e| IoError::Ora(e.to_string()))?;
+    Ok(ExportResult { bytes: w.archive.finish().map_err(|e| IoError::Ora(e.to_string()))?, warnings: w.warnings.finish() })
 }
 
 /// What saving `doc` to OpenRaster loses that isn't in a layer.
@@ -644,7 +677,7 @@ fn document_warnings(doc: &Document, warnings: &mut Warnings) {
         warnings.note("metadata (XMP, EXIF, text) is not saved to OpenRaster");
     }
     // Readers assume sRGB, so an sRGB document loses nothing by the missing tag.
-    let srgb = |bytes: &[u8]| photocraft_cms::Profile::parse(bytes).is_ok_and(|p| p.same_colors(photocraft_cms::Builtin::Srgb.profile()));
+    let srgb = |bytes: &[u8]| craft_cms::Profile::parse(bytes).is_ok_and(|p| p.same_colors(craft_cms::Builtin::Srgb.profile()));
     if doc.icc_profile.as_deref().is_some_and(|b| !srgb(b)) {
         warnings.note("the colour profile is not saved to OpenRaster; readers assume sRGB");
     }
@@ -660,7 +693,7 @@ pub fn losses(doc: &Document) -> Vec<String> {
     if !matches!(doc.mode, ColorMode::Rgb | ColorMode::Grayscale) {
         return vec!["OpenRaster holds RGB layers; convert the document to RGB or Grayscale first".into()];
     }
-    let mut w = Writer { doc, zip: craft_ora::Writer::new(), next: 0, sample: CSample::U8, warnings: Warnings::default(), dry: true };
+    let mut w = Writer { doc, archive: craft_ora::Writer::new(), next: 0, sample: CSample::U8, warnings: Warnings::default(), dry: true };
     document_warnings(doc, &mut w.warnings);
     if let Err(e) = w.layers(&doc.layers, 1) {
         w.warnings.note(&e.to_string());

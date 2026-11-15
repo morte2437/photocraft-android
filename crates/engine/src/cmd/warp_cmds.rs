@@ -560,7 +560,40 @@ pub fn split_warp(w: &Warp, at: Option<[f64; 2]>, how: Split) -> Option<Warp> {
             }
         }
     };
+    if ok && matches!(how, Split::Remove) {
+        restore_default_grid(&mut mesh);
+    }
     ok.then(|| Warp::custom(mesh, w.bounds))
+}
+
+/// After a split is removed: when what is left is the Default grid's thirds that a one-way split
+/// made real (`commit_default_sections`) and nothing else, merge them back into the Default grid's
+/// one patch, which draws them as guides again (#12912). Only when that loses nothing: splitting
+/// the merged patch at the thirds must give back the same points, so thirds whose anchors or
+/// handles were moved, or any other grid, stay as they are. The mesh doesn't record where its
+/// sections came from, so a straight 3 x 1 (or 1 x 3) grid at exactly the thirds made another way
+/// merges too; nothing is lost, as the Default grid draws the same lines as guides.
+fn restore_default_grid(mesh: &mut BezierMesh) {
+    const THIRDS: [f64; 4] = [0.0, 1.0 / 3.0, 2.0 / 3.0, 1.0];
+    let is = |k: &[f64], want: &[f64]| k.len() == want.len() && k.iter().zip(want).all(|(a, b)| (a - b).abs() < 1e-9);
+    let columns = is(&mesh.us, &THIRDS) && is(&mesh.vs, &[0.0, 1.0]);
+    let rows = is(&mesh.vs, &THIRDS) && is(&mesh.us, &[0.0, 1.0]);
+    if !(columns || rows) {
+        return;
+    }
+    let mut merged = mesh.clone();
+    let removed = if columns { merged.remove_split_u(2) && merged.remove_split_u(1) } else { merged.remove_split_v(2) && merged.remove_split_v(1) };
+    if !removed {
+        return;
+    }
+    let mut again = merged.clone();
+    let split = if columns { again.split_u(1.0 / 3.0) && again.split_u(2.0 / 3.0) } else { again.split_v(1.0 / 3.0) && again.split_v(2.0 / 3.0) };
+    let same = split
+        && again.points.len() == mesh.points.len()
+        && again.points.iter().zip(&mesh.points).all(|(a, b)| (a[0] - b[0]).abs() < 1e-6 && (a[1] - b[1]).abs() < 1e-6);
+    if same {
+        *mesh = merged;
+    }
 }
 
 fn param_rect(p: &Value) -> [f64; 4] {
@@ -761,3 +794,7 @@ mod tests;
 #[cfg(test)]
 #[path = "warp_split_default_grid_tests.rs"]
 mod warp_split_default_grid_tests;
+
+#[cfg(test)]
+#[path = "warp_remove_split_default_grid_tests.rs"]
+mod warp_remove_split_default_grid_tests;

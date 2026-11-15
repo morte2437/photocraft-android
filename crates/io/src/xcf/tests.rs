@@ -3,7 +3,6 @@
 
 use super::*;
 use craft_xcf::{Compression, MAX_STRING, TILE};
-use photocraft_codecs::f16;
 use photocraft_raster::Interrupt;
 
 /// A small XCF writer for tests: version 11+ layout (64-bit pointers) by default.
@@ -495,7 +494,7 @@ fn sixteen_bit_and_float_samples_are_big_endian() {
     assert!(d.layers[0].locks.transparency, "no alpha channel in the file: the layer is opaque");
 
     // 16-bit float (500) and 64-bit float (700) decode too.
-    for (precision, bytes) in [(500u32, f16::from_f32(0.75).to_bits().to_be_bytes().to_vec()), (700, 0.75f64.to_be_bytes().to_vec())] {
+    for (precision, bytes) in [(500u32, 0x3a00u16.to_be_bytes().to_vec()), (700, 0.75f64.to_be_bytes().to_vec())] {
         let mut img = TestImage::rgb8(1, 1);
         img.base_type = 1;
         img.precision = precision;

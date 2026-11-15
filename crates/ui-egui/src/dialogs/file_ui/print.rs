@@ -553,7 +553,7 @@ pub(super) fn print_body(app: &mut PhotocraftApp, ui: &mut egui::Ui, f: &mut Map
                 // (output class) profile by its description.
                 let installed: Vec<_> = photocraft_engine::installed_profiles::installed()
                     .into_iter()
-                    .filter(|p| p.is_destination() && p.class == photocraft_cms::ProfileClass::Output)
+                    .filter(|p| p.is_destination() && p.class == craft_cms::ProfileClass::Output)
                     .collect();
                 let mut profiles: Vec<(&str, &str)> = vec![
                     ("coated-cmyk", tl!("Coated CMYK")),

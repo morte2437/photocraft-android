@@ -22,7 +22,7 @@ fn hue_tracks_run_between_the_neighbouring_bands() {
 #[test]
 fn preview_texture_uses_linear_document_display_encoding() {
     let mut doc = photocraft_doc::Document::new("test", photocraft_geom::Size::new(1, 1), photocraft_doc::ColorMode::Rgb, photocraft_doc::SampleType::F32);
-    doc.icc_profile = Some(photocraft_cms::Builtin::LinearSrgb.profile().to_bytes());
+    doc.icc_profile = Some(craft_cms::Builtin::LinearSrgb.profile().to_bytes());
     let mut color = photocraft_engine::color_cmds::ColorState::default();
     color.settings.monitor_profile = "srgb".into();
     let display = color.canvas_display(&doc).unwrap();
@@ -89,6 +89,56 @@ fn closing_the_camera_raw_window_cancels() {
     frame(&mut app, true);
     assert!(app.camera_raw.is_none(), "closing the window is Cancel");
     assert_eq!(app.session.active().unwrap().history.past_len(), steps);
+}
+
+/// Over a full-screen main window (or a maximized one on Wayland) the dialog is drawn in that
+/// window, not in a window of its own: a separate window would cover the main one, which then
+/// draws no frames, and the dialog drawn inside those frames would freeze.
+#[test]
+fn camera_raw_stays_in_a_full_screen_or_wayland_maximized_window() {
+    let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), Default::default());
+    let ctx = egui::Context::default();
+    PhotocraftApp::setup_context(&ctx, crate::theme::ThemeKind::Pro);
+    ctx.set_embed_viewports(false);
+    // Stands in for the desktop backend: records each window the dialog asks for and draws it,
+    // as eframe does, in a frame of its own.
+    let windows = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+    let seen = std::rc::Rc::clone(&windows);
+    egui::Context::set_immediate_viewport_renderer(move |ctx, mut viewport| {
+        seen.borrow_mut().push(viewport.ids.this);
+        let mut input = egui::RawInput { viewport_id: viewport.ids.this, ..Default::default() };
+        input.viewports.insert(viewport.ids.this, egui::ViewportInfo::default());
+        ctx.run_ui(input, |ui| (viewport.viewport_ui_cb)(ui)).textures_delta.clear();
+    });
+    app.run("file.new", json!({"width": 64, "height": 48})).unwrap();
+    app.run("layer.new.layer", json!({})).unwrap();
+    open(&mut app, &ctx).unwrap();
+    let window = egui::ViewportId::from_hash_of("camera-raw-window");
+
+    // (Wayland, full screen, maximized, a window of its own)
+    for (wayland, fullscreen, maximized, own_window) in [
+        (false, false, false, true),
+        (true, false, false, true),
+        (false, true, false, false),
+        (true, true, false, false),
+        (false, false, true, true),
+        (true, false, true, false),
+    ] {
+        app.services.is_wayland = wayland;
+        windows.borrow_mut().clear();
+        app.camera_raw.as_mut().unwrap().viewport = None;
+        let mut input = egui::RawInput::default();
+        let root = input.viewports.entry(egui::ViewportId::ROOT).or_default();
+        (root.fullscreen, root.maximized) = (Some(fullscreen), Some(maximized));
+        ctx.run_ui(input, |ui| show(&mut app, ui.ctx())).textures_delta.clear();
+        let case = format!("wayland {wayland}, full screen {fullscreen}, maximized {maximized}");
+        if own_window {
+            assert_eq!(*windows.borrow(), [window], "a window of its own ({case})");
+        } else {
+            assert!(windows.borrow().is_empty(), "no window of its own ({case})");
+        }
+        assert!(app.camera_raw.as_ref().unwrap().viewport.is_some(), "the dialog is drawn ({case})");
+    }
 }
 
 /// Coming back to PhotoCraft (⌘Tab, the Dock) can put the main window over Camera Raw's, or
@@ -378,9 +428,26 @@ fn dialog_drives_the_engine() {
     assert!(menu(&mut app, &ctx, "filter.cameraRaw", &json!({"ui": {"set": {"exposure": "x"}}})).unwrap().is_err());
 }
 
+std::thread_local! {
+    /// Held by a test's thread from its first `raw_app` to the test's end.
+    static RAW_OPEN_TURN: std::cell::RefCell<Option<std::sync::MutexGuard<'static, ()>>> = const { std::cell::RefCell::new(None) };
+}
+
 /// An app whose importer is the real one, opening a synthetic DNG.
+///
+/// Raw opens keep their decode in one process-wide list of two (`photocraft_io::raw`), so tests
+/// that open raws take turns: a parallel test's open would otherwise evict the decode another
+/// test is about to take. The turn is held until the test's thread ends (nextest runs each test
+/// in its own process, where this costs nothing).
 fn raw_app() -> (PhotocraftApp, Vec<u8>) {
     use photocraft_raw::testgen::{DngSpec, mosaic, scene};
+    static TURN: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    RAW_OPEN_TURN.with(|held| {
+        let mut held = held.borrow_mut();
+        if held.is_none() {
+            *held = Some(TURN.lock().unwrap_or_else(std::sync::PoisonError::into_inner));
+        }
+    });
     let services = crate::Services {
         import: Some(Box::new(|name: &str, b: &[u8], opts: &photocraft_io::ImportOptions| {
             photocraft_io::import_with_options(name, b, opts).map(|r| (r.document, r.warnings)).map_err(|e| e.to_string())
@@ -436,6 +503,41 @@ fn pixels(app: &PhotocraftApp) -> Vec<f32> {
     (0..32).flat_map(|y| (0..48).map(move |x| (x, y))).flat_map(|(x, y)| s.rgba(x, y)).collect()
 }
 
+/// #9432: a raw open decodes the file once. The dialog's preview curve and Open's re-develop
+/// reuse the open's sensor data and look, give the pixels of decoding again, and let go of
+/// the sensor data when the dialog closes.
+#[test]
+fn a_raw_open_decodes_the_file_once_and_frees_it_with_the_dialog() {
+    use photocraft_io::raw::decodes_on_this_thread;
+    let ctx = egui::Context::default();
+    let develop = |reuse: bool, commit: bool| {
+        let (mut app, mut dng) = raw_app();
+        // Kept decodes are found by file contents: other tests open the same synthetic DNG.
+        dng.extend_from_slice(b"a_raw_open_decodes_the_file_once");
+        let before = decodes_on_this_thread();
+        app.open_bytes("IMG_0007.dng", &dng).unwrap();
+        let raw = take_queued(&mut app).unwrap();
+        open_raw(&mut app, &ctx, raw).unwrap();
+        let raw_open = app.camera_raw.as_mut().unwrap().raw_open.as_mut().unwrap();
+        let sensor = raw_open.decoded.as_ref().map(std::sync::Arc::downgrade).expect("the dialog holds the open's decode");
+        if !reuse {
+            raw_open.decoded = None;
+        }
+        assert!(sensor.upgrade().is_some() || !reuse);
+        let ui = if commit { json!({"set": {"exposure": 1.0, "temperature": 30}, "commit": true}) } else { json!({"cancel": true}) };
+        menu(&mut app, &ctx, "filter.cameraRaw", &json!({"ui": ui})).unwrap().unwrap();
+        assert!(app.camera_raw.is_none());
+        assert!(sensor.upgrade().is_none(), "the sensor data is freed when the dialog is closed");
+        (decodes_on_this_thread() - before, if commit { pixels(&app) } else { Vec::new() })
+    };
+    let (decodes, reused) = develop(true, true);
+    assert_eq!(decodes, 1, "open, dialog and commit share one decode");
+    let (decodes, again) = develop(false, true);
+    assert_eq!(decodes, 2, "without the kept decode the commit decodes again");
+    assert_eq!(reused, again, "the same pixels either way");
+    assert_eq!(develop(true, false).0, 1, "Cancel decodes nothing more");
+}
+
 #[test]
 fn the_demosaic_method_is_chosen_at_open() {
     let (mut app, dng) = raw_app();
@@ -476,7 +578,7 @@ fn the_demosaic_method_is_chosen_at_open() {
     take_queued(&mut app);
     app.run("prefs.set", json!({"path": "rawDefaults.demosaic", "value": "ahd"})).unwrap();
     let document = app.session.active().unwrap().doc.id;
-    queue_open_dialog(&mut app, document, "IMG_0004.dng", None, Some(&dng), &warnings).unwrap();
+    queue_open_dialog(&mut app, document, "IMG_0004.dng", None, Some(&std::sync::Arc::new(dng.clone())), &warnings).unwrap();
     let raw = take_queued(&mut app).unwrap();
     use photocraft_io::raw::Demosaic;
     assert_eq!((raw.developed_with, raw.demosaic), (Demosaic::Bilinear, Demosaic::Bilinear));
@@ -754,7 +856,7 @@ fn auto_tone_of_a_never_shown_raw_matches_the_dialogs() {
         }
     }
     let method = photocraft_io::raw::Demosaic::Ahd;
-    let raw = RawOpen { document, name: "pattern.dng".into(), path: None, bytes: None, developed_with: method, demosaic: method, crop: None };
+    let raw = RawOpen { document, name: "pattern.dng".into(), path: None, bytes: None, decoded: None, developed_with: method, demosaic: method, crop: None };
     let (unshown, _) = filmstrip::first_settings(&app, &raw);
     open_raw(&mut app, &ctx, raw).unwrap();
     let shown = &app.camera_raw.as_ref().unwrap().params;
@@ -795,6 +897,7 @@ fn cancel_closes_the_raw_and_the_preference_skips_the_dialog() {
                 bytes: None,
                 developed_with: Default::default(),
                 demosaic: Default::default(),
+                decoded: None,
                 crop: None
             }
         )
@@ -927,7 +1030,7 @@ fn camera_raw_defaults_apply_when_a_raw_opens() {
     let st = app.session.active().unwrap();
     assert_eq!(st.doc.depth, photocraft_color::SampleType::U8, "Bit depth 8");
     assert_eq!(st.doc.resolution_dpi, 240.0, "Resolution");
-    let profile = st.doc.icc_profile.as_deref().and_then(|p| photocraft_cms::Profile::parse(p).ok()).map(|p| p.description).unwrap_or_default();
+    let profile = st.doc.icc_profile.as_deref().and_then(|p| craft_cms::Profile::parse(p).ok()).map(|p| p.description).unwrap_or_default();
     assert!(profile.to_lowercase().contains("srgb"), "Color space: {profile}");
     let layer = st.doc.layer(st.active_layer.unwrap()).unwrap();
     assert!(matches!(layer.content, photocraft_doc::LayerContent::Smart(_)), "Open as Smart Object");
@@ -1167,7 +1270,7 @@ fn open_with_settings(app: &mut PhotocraftApp, ctx: &egui::Context, dng: &[u8], 
 
 fn profile_name(app: &PhotocraftApp) -> String {
     let st = app.session.active().unwrap();
-    st.doc.icc_profile.as_deref().and_then(|p| photocraft_cms::Profile::parse(p).ok()).map(|p| p.description).unwrap_or_default()
+    st.doc.icc_profile.as_deref().and_then(|p| craft_cms::Profile::parse(p).ok()).map(|p| p.description).unwrap_or_default()
 }
 
 /// Camera Raw renders in its own space and converts to the workflow space last, so Open gives

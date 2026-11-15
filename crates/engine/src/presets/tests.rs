@@ -817,9 +817,8 @@ fn clone_source_flip_scale_rotation() {
     let px = layer_px(&s, 42, 24);
     assert!((px[0] - 18.0 / 63.0).abs() < 0.02, "{px:?}");
     s.execute("cloneSource.resetTransform", json!({})).unwrap();
-    s.execute("cloneSource.set", json!({"source": [20, 20], "width": 200, "height": 200})).unwrap();
     let mut s2 = clone_doc(16);
-    s2.presets.clone = s.presets.clone.clone();
+    s2.execute("cloneSource.set", json!({"source": [20, 20], "width": 200, "height": 200})).unwrap();
     s2.execute("paint.cloneStamp", json!({"points": [[40, 24]], "size": 21, "hardness": 100})).unwrap();
     // 200 %: 4 px right of the anchor samples 2 px right of the source.
     let px = layer_px(&s2, 44, 24);

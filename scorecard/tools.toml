@@ -59,7 +59,7 @@ id = "TOOL-213-8"
 target = "Clone Source: W/H link, drawn overlay (opacity/blend/clip/auto-hide), Alt target cursor"
 status = "partial"
 issue = 213
-note = "Clone Source overlay drawn with opacity, inversion, circular clipping, auto-hide and the Normal/Darken/Lighten/Difference blend against the image under the brush (canvas.rs draw_clone_preview, clone_source::overlay_blend); a shaped tip (sampled bitmap, rotation, roundness) clips the overlay to its outline (brush_cursor::tip_mask, #4372); W/H link (cloneSource.set linked, panel chain button, #3298)"
+note = "Clone Source overlay drawn with opacity, inversion, circular clipping, auto-hide and the Normal/Darken/Lighten/Difference blend against the image under the brush (canvas.rs draw_clone_preview, clone_source::overlay_blend); a shaped tip (sampled bitmap, rotation, roundness) clips the overlay to its outline (brush_cursor::tip_mask, #4372); W/H link (cloneSource.set linked, panel chain button, #3298); a source ⌥-clicked in one open document is cloned (Clone Stamp, Healing Brush, the live stroke and the overlay) into another, using compatible document colour modes and ICC profile conversion (Clone Stamp requires matching modes; Healing Brush also permits Grayscale on either side), from the layer it was set on (cloneSource.set document; retouch_cmds/tests.rs clone_stamp_paints_from_the_document_the_source_was_set_in, ui alt_click_tests.rs alt_click_in_one_document_clones_into_another)"
 
 [[item]]
 id = "TOOL-213-9"

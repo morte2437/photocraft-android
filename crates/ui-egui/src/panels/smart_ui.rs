@@ -124,6 +124,12 @@ pub fn filter_rows(app: &mut PhotocraftApp, ui: &mut egui::Ui, doc: &Document, l
     let rows = std::iter::once(None).chain((0..sm.smart_filters.len()).rev().map(Some));
     for index in rows {
         let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), if index.is_none() { header_height } else { SUB_ROW_H }), Sense::click_and_drag());
+        // Off screen: keep the row's place but skip its painting, widgets and drop (#13118), as
+        // effect rows do. The drawn marker below still records `l`, so a selected filter that
+        // scrolled away stays selected.
+        if !ui.is_rect_visible(rect) {
+            continue;
+        }
         if let Some((to, action)) = reorder_drop(ui, l, sm.smart_filters.len(), index, rect) {
             // The moved filter ends up selected, with its smart object active, as after a click.
             ui.ctx().data_mut(|d| d.insert_temp::<FilterDrag>(selected_key(doc.id), (l.id.0, Some(to))));
@@ -411,7 +417,9 @@ fn reorder_drop(ui: &egui::Ui, l: &Layer, n: usize, row: Option<usize>, rect: Re
     let ctx = ui.ctx();
     let (from, src) = ctx.data(|d| d.get_temp::<FilterDrag>(drag_key()))?;
     let (src, p) = (src?, ctx.input(|i| i.pointer.interact_pos())?);
-    if from != l.id.0 || !rect.contains(p) {
+    // Only the part of the row the list shows: one half scrolled under the panel's header takes
+    // no drop there (#13118, as masks since #10485).
+    if from != l.id.0 || !rect.intersect(ui.clip_rect()).contains(p) {
         return None;
     }
     let above = p.y < rect.center().y;

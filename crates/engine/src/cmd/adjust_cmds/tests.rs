@@ -222,7 +222,7 @@ LUT_3D_SIZE 2
     assert!(s.execute("image.adjustments.colorLookup", json!({"data": "LUT_3D_SIZE 3\n0 0 0\n"})).is_err());
     assert!(s.execute("layer.newAdjustmentLayer.colorLookup", json!({"file": "/nonexistent/x.cube"})).is_err());
     let looks = s.execute("image.adjustments.colorLookup.list", json!({})).unwrap();
-    assert_eq!(looks.as_array().unwrap().len(), photocraft_cms::lutfile::BUILTIN.len());
+    assert_eq!(looks.as_array().unwrap().len(), craft_cms::lutfile::BUILTIN.len());
 }
 
 #[test]
@@ -263,7 +263,7 @@ fn color_lookup_file_round_trips_psd_in_its_own_format() {
             }
         }
     }
-    let hex: String = photocraft_cms::lutfile::LutFile::identity(2).data.iter().flat_map(|v| v.to_le_bytes()).map(|b| format!("{b:02X}")).collect();
+    let hex: String = craft_cms::lutfile::LutFile::identity(2).unwrap().data.iter().flat_map(|v| v.to_le_bytes()).map(|b| format!("{b:02X}")).collect();
     let look = format!("<look><LUT><size>2</size><data>{hex}</data></LUT></look>");
     for (text, file_name, format, psd_format) in
         [(threedl.as_str(), "Invert.3dl", LutFormat::ThreeDl, "LUTFormat3DL"), (look.as_str(), "Grade.look", LutFormat::Look, "LUTFormatLOOK")]
@@ -578,7 +578,7 @@ fn locked_smart_objects_refuse_adjustment_smart_filters() {
 }
 
 /// A wrong-typed value errors before anything is recorded (never a panic), and the adjustments
-/// that can't re-render from a source (Replace Color, Match Color) stay off a smart object.
+/// that can't re-render from a source (Match Color) stays off a smart object.
 #[test]
 fn a_bad_adjustment_param_on_a_smart_object_is_an_error() {
     let mut s = smart_session();
@@ -588,8 +588,61 @@ fn a_bad_adjustment_param_on_a_smart_object_is_an_error() {
     assert_eq!(smart_filters_of(&s).len(), filters, "nothing recorded");
     assert_eq!(s.active().unwrap().history.past_len(), steps, "no history step");
     assert_eq!(flatten(&s), flat, "pixels untouched");
-    assert!(!s.is_enabled("image.adjustments.replaceColor"), "only adjustments that re-render become smart filters");
     assert!(!s.is_enabled("image.adjustments.matchColor"), "only adjustments that re-render become smart filters");
+}
+
+/// Add/Subtract from Sample edit through Color Range's matcher, which the one-colour smart filter
+/// cannot replay: refused on a smart object instead of recording a filter that drops the samples.
+#[test]
+fn multi_sample_replace_color_is_refused_on_a_smart_object() {
+    let mut s = smart_session();
+    let (filters, steps) = (smart_filters_of(&s).len(), s.active().unwrap().history.past_len());
+    for p in [json!({"points": [[1, 1], [2, 2]]}), json!({"subtractPoints": [[1, 1]]})] {
+        let e = s.execute("image.adjustments.replaceColor", p).unwrap_err();
+        assert!(e.to_string().contains("smart filter"), "{e}");
+    }
+    assert_eq!(smart_filters_of(&s).len(), filters, "nothing recorded");
+    assert_eq!(s.active().unwrap().history.past_len(), steps, "no history step");
+}
+
+/// Localized Replace Color is refused only for the smart object's own pixels: an alpha channel,
+/// or an explicit `layer` that is not a smart object, edits as usual while a smart object is active.
+#[test]
+fn localized_replace_color_is_refused_only_for_the_smart_objects_pixels() {
+    let mut s = smart_session();
+    let (filters, steps) = (smart_filters_of(&s).len(), s.active().unwrap().history.past_len());
+    let own = json!({"localized": true, "points": [[3, 3]]});
+    let e = s.execute("image.adjustments.replaceColor", own).unwrap_err();
+    assert!(e.to_string().contains("smart filter"), "{e}");
+    assert_eq!(smart_filters_of(&s).len(), filters);
+    s.execute("channel.new", json!({"name": "Alpha", "fill": "white"})).unwrap();
+    let channel = json!({"localized": true, "points": [[3, 3]], "target": {"channel": 0}});
+    s.execute("image.adjustments.replaceColor", channel).expect("a channel under a smart object is not refused");
+    assert_eq!(smart_filters_of(&s).len(), filters, "no smart filter for a channel edit");
+    assert!(s.active().unwrap().history.past_len() > steps);
+    // The smart object is active, but the command names the Background.
+    let background = doc(&s).layers.iter().find(|l| !matches!(l.content, LayerContent::Smart(_))).unwrap().id;
+    let other = json!({"localized": true, "points": [[3, 3]], "layer": background.0});
+    s.execute("image.adjustments.replaceColor", other).expect("an explicit pixel layer is not refused");
+    assert_eq!(smart_filters_of(&s).len(), filters);
+}
+
+/// Equalize Entire Image Based On Selected Area needs the selection for the histogram only, which
+/// a smart filter's output mask cannot express: refused rather than recorded as "selected area only".
+#[test]
+fn equalize_entire_image_is_refused_on_a_smart_object_with_a_selection() {
+    let mut s = smart_session();
+    s.execute("select.rect", json!({"x": 0, "y": 0, "width": 24, "height": 32})).unwrap();
+    let steps = s.active().unwrap().history.past_len();
+    let e = s.execute("image.adjustments.equalize", json!({"selectedAreaOnly": false})).unwrap_err();
+    assert!(e.to_string().contains("smart object"), "{e}");
+    assert!(smart_filters_of(&s).is_empty(), "nothing recorded");
+    assert_eq!(s.active().unwrap().history.past_len(), steps);
+    s.execute("image.adjustments.equalize", json!({"selectedAreaOnly": true})).unwrap();
+    assert_eq!(smart_filters_of(&s).len(), 1, "the selected area itself still records a filter");
+    s.execute("select.deselect", json!({})).unwrap();
+    s.execute("image.adjustments.equalize", json!({"selectedAreaOnly": false})).unwrap();
+    assert_eq!(smart_filters_of(&s).len(), 2, "without a selection it is plain Equalize");
 }
 
 /// #780: a targeted mask enables Invert (and filters) on layers without pixels, such as an
@@ -623,6 +676,67 @@ fn a_targeted_mask_enables_editing_it_on_any_layer() {
     assert!(!s.is_enabled_with("image.adjustments.invert", &mask));
     assert!(s.execute("image.adjustments.invert", mask).is_err());
     assert_eq!(rgba(&s, 23, 3), pixels);
+}
+
+/// Desaturate, Equalize and Replace Color on a smart object record a smart filter that renders
+/// what the destructive command bakes into the same pixels (they used to be refused).
+#[test]
+fn desaturate_equalize_and_replace_color_record_smart_filters() {
+    let replace = json!({"color": "#ff0000", "fuzziness": 120, "hue": 90});
+    for (id, params) in [("image.adjustments.desaturate", json!({})), ("image.adjustments.equalize", json!({})), ("image.adjustments.replaceColor", replace)] {
+        let mut plain = session(8, "rgb");
+        let original = flatten(&plain);
+        plain.execute(id, params.clone()).unwrap();
+        let baked = flatten(&plain);
+        assert!(max_diff(&original, &baked) > 0.02, "{id}: the control changes the pixels");
+
+        let mut s = smart_session();
+        assert!(s.is_enabled(id), "{id} runs on a smart object");
+        s.execute(id, params).unwrap();
+        let sf = smart_filters_of(&s);
+        assert_eq!(sf.len(), 1, "{id}");
+        assert_eq!(sf[0].command, id);
+        assert_eq!(max_diff(&flatten(&s), &baked), 0.0, "{id}: the smart filter renders the destructive result");
+        s.undo();
+        assert!(smart_filters_of(&s).is_empty(), "{id}: undo removes the filter");
+    }
+}
+
+/// Replace Color without `color` samples the foreground: the smart filter records that colour, so
+/// changing the foreground afterwards and re-rendering the filter leaves its result unchanged.
+#[test]
+fn replace_color_smart_filter_keeps_the_foreground_it_was_run_with() {
+    let picked = [0.27, 0.6, 0.52, 1.0];
+    let params = json!({"fuzziness": 60, "hue": 90});
+    let mut plain = session(8, "rgb");
+    plain.tools.foreground = picked;
+    plain.execute("image.adjustments.replaceColor", params.clone()).unwrap();
+    let baked = flatten(&plain);
+
+    let mut s = smart_session();
+    let original = flatten(&s);
+    s.tools.foreground = picked;
+    s.execute("image.adjustments.replaceColor", params).unwrap();
+    assert!(smart_filters_of(&s)[0].params.get("color").is_some(), "the foreground colour is recorded");
+    assert_eq!(max_diff(&flatten(&s), &baked), 0.0, "the filter replaces the foreground colour");
+    assert!(max_diff(&original, &baked) > 0.02, "the control changes the pixels");
+    // A new foreground, then a re-render (hide and show the filter): the result stays put.
+    s.tools.foreground = [1.0, 0.0, 0.0, 1.0];
+    s.execute("layer.smartFilter.setVisible", json!({"index": 0})).unwrap();
+    s.execute("layer.smartFilter.setVisible", json!({"index": 0})).unwrap();
+    assert!(smart_filters_of(&s)[0].visible);
+    assert_eq!(max_diff(&flatten(&s), &baked), 0.0, "changing the foreground leaves the filter unchanged");
+}
+
+/// Lab bounds edit pixels in place; a smart object keeps its pixels, so they are refused there.
+#[test]
+fn replace_color_lab_bounds_are_refused_on_a_smart_object() {
+    let mut s = smart_session();
+    let before = flatten(&s);
+    let r = s.execute("image.adjustments.replaceColor", json!({"labMinimum": [0, -128, -128], "labMaximum": [100, 127, 127], "hue": 90}));
+    assert!(r.is_err(), "Lab bounds on a smart object must be refused");
+    assert!(smart_filters_of(&s).is_empty());
+    assert_eq!(max_diff(&flatten(&s), &before), 0.0);
 }
 
 /// #5335: Curves (⌘M) edits the targeted layer mask, saved channel or Quick Mask at every depth.
@@ -1043,6 +1157,49 @@ fn invert_turns_the_black_of_quick_mask_and_alpha_channels_white() {
     }
 }
 
+#[test]
+fn equalize_smart_filter_uses_selected_pixels_for_its_histogram() {
+    for depth in DEPTHS {
+        let mut plain = session(depth, "rgb");
+        let mut smart = session(depth, "rgb");
+        smart.execute("layer.smartObjects.convertToSmartObject", json!({})).unwrap();
+        for s in [&mut plain, &mut smart] {
+            s.execute("select.rect", json!({"x": 0, "y": 0, "width": 12, "height": 32})).unwrap();
+            s.execute("image.adjustments.equalize", json!({})).unwrap();
+        }
+        assert!(max_diff(&flatten(&plain), &flatten(&smart)) < 2.0 / 255.0, "depth={depth}");
+        // Disabling the filter mask changes the histogram too: no stale cached stage.
+        let mut full = session(depth, "rgb");
+        full.execute("image.adjustments.equalize", json!({})).unwrap();
+        smart.execute("select.deselect", json!({})).unwrap();
+        smart.execute("layer.smartFilter.disableFilterMask", json!({"enabled": false})).unwrap();
+        assert!(max_diff(&flatten(&full), &flatten(&smart)) < 2.0 / 255.0, "disabled mask, depth={depth}");
+    }
+}
+
+#[test]
+fn replace_color_null_records_foreground_and_bad_color_does_not_edit() {
+    for depth in DEPTHS {
+        let mut plain = session(depth, "rgb");
+        let mut smart = session(depth, "rgb");
+        smart.execute("layer.smartObjects.convertToSmartObject", json!({})).unwrap();
+        let params = json!({"color": null, "fuzziness": 200, "hue": 90});
+        for s in [&mut plain, &mut smart] {
+            s.tools.foreground = [0.27, 0.6, 0.52, 1.0];
+            s.execute("image.adjustments.replaceColor", params.clone()).unwrap();
+        }
+        assert_eq!(max_diff(&flatten(&plain), &flatten(&smart)), 0.0);
+        assert_eq!(smart_filters_of(&smart)[0].params["color"], json!([0.27_f32, 0.6_f32, 0.52_f32, 1.0_f32]));
+        let before = smart.active().unwrap().doc.clone();
+        let steps = smart.active().unwrap().history.past_len();
+        for color in [json!(3), json!("wrong"), json!([1, 2]), json!([1e300, 0, 0]), json!(["red", 0, 0])] {
+            assert!(smart.execute("image.adjustments.replaceColor", json!({"color": color})).is_err());
+            assert!(std::sync::Arc::ptr_eq(&smart.active().unwrap().doc, &before));
+            assert_eq!(smart.active().unwrap().history.past_len(), steps);
+        }
+    }
+}
+
 /// #6558: a LUT folder lists its LUT files by name, case-insensitively, and nothing else.
 #[test]
 fn folder_luts_lists_lut_files_by_name() {
@@ -1061,4 +1218,135 @@ fn folder_luts_lists_lut_files_by_name() {
     assert_eq!(names, want);
     assert!(folder_luts("").is_empty());
     assert!(folder_luts(dir.path().join("missing").to_str().unwrap()).is_empty());
+}
+
+/// #9269: Black & White's Auto spreads an image's greys wider than the default mix, leaves the
+/// weights of colours the image lacks at their defaults, and changes nothing in the document.
+#[test]
+fn black_white_auto_spreads_the_greys() {
+    use crate::adjust_params::{BW_DEFAULTS, HUE_RANGES};
+    // A red and a blue the default mix turns into the same grey (0.43).
+    let (red, blue) = ([0.776, 0.2, 0.2], [0.29, 0.29, 1.0]);
+    let gray = |c: [f32; 3], w: &[f32; 6]| photocraft_compose::adjust::black_white_gray(c, w);
+    let w = auto_black_white(&[red, blue]);
+    let gap = |w: &[f32; 6]| (gray(red, w) - gray(blue, w)).abs();
+    assert!(gap(&BW_DEFAULTS) < 0.01);
+    assert!(gap(&w) > 1.0 / 32.0, "{w:?}: {}", gap(&w));
+    assert!(w.iter().all(|v| (0.0..=150.0).contains(v)), "{w:?}");
+    // Yellows, greens, cyans and magentas aren't in the image: they keep their defaults.
+    for k in [1, 2, 3, 5] {
+        assert_eq!(w[k], BW_DEFAULTS[k], "{}", HUE_RANGES[k]);
+    }
+    // A grey image (and no pixels at all) keeps the default mix.
+    assert_eq!(auto_black_white(&[[0.2; 3], [0.7; 3]]), BW_DEFAULTS);
+    assert_eq!(auto_black_white(&[]), BW_DEFAULTS);
+
+    // The command: an adjustment layer reads the image under it; the document is unchanged.
+    let mut s = Session::new();
+    s.execute("file.new", json!({"width": 20, "height": 10})).unwrap();
+    paint(&mut s, |x, _| if x < 10 { [0.776, 0.2, 0.2, 1.0] } else { [0.29, 0.29, 1.0, 1.0] });
+    let id = s.execute("layer.newAdjustmentLayer.blackWhite", json!({})).unwrap()["layer"].as_u64().unwrap();
+    let rev = s.active().unwrap().revision;
+    let r = s.execute("image.adjustments.blackWhite.auto", json!({"layer": id})).unwrap();
+    let got: Vec<f32> = HUE_RANGES.iter().map(|k| r[*k].as_f64().unwrap() as f32).collect();
+    assert_eq!(got, w.to_vec());
+    assert_eq!(s.active().unwrap().revision, rev, "nothing changes");
+    assert!(s.execute("image.adjustments.blackWhite.auto", json!({"layer": 999})).is_err());
+    assert!(s.execute("image.adjustments.blackWhite.auto", json!({"layer": "x"})).is_err());
+
+    // A layer above the adjustment isn't part of what it adjusts.
+    s.execute("layer.new.layer", json!({})).unwrap();
+    paint(&mut s, |_, _| [0.5, 0.5, 0.5, 1.0]);
+    assert_eq!(s.execute("image.adjustments.blackWhite.auto", json!({"layer": id})).unwrap(), r);
+
+    // Sampling a big canvas still finds a thin painted stripe.
+    let mut s = Session::new();
+    s.execute("file.new", json!({"width": 512, "height": 512, "background": "transparent"})).unwrap();
+    paint(&mut s, |x, y| match (x, y < 256) {
+        (1, true) => [0.776, 0.2, 0.2, 1.0],
+        (1, false) => [0.29, 0.29, 1.0, 1.0],
+        _ => [0.0; 4],
+    });
+    let r = s.execute("image.adjustments.blackWhite.auto", json!({})).unwrap();
+    let got: Vec<f32> = HUE_RANGES.iter().map(|k| r[*k].as_f64().unwrap() as f32).collect();
+    assert_eq!(got, w.to_vec());
+
+    // Columns alternating with a period that divides the sampling stride (4 here): both colours
+    // are still sampled, not only the even columns.
+    let mut s = Session::new();
+    s.execute("file.new", json!({"width": 512, "height": 512})).unwrap();
+    paint(&mut s, |x, _| if x % 2 == 0 { [0.776, 0.2, 0.2, 1.0] } else { [0.29, 0.29, 1.0, 1.0] });
+    let r = s.execute("image.adjustments.blackWhite.auto", json!({})).unwrap();
+    let got: Vec<f32> = HUE_RANGES.iter().map(|k| r[*k].as_f64().unwrap() as f32).collect();
+    assert_ne!(got, BW_DEFAULTS.to_vec(), "only one colour was sampled");
+    assert!(gap(&got.clone().try_into().unwrap()) > 1.0 / 32.0, "{got:?}");
+}
+
+/// #9301 review: as in the reference application, Auto reads the whole canvas whatever the
+/// selection, the adjustment's mask or its clip base; a smart filter's Auto reads the pixels below
+/// that filter, not the filtered result; a canvas too large to analyse is an error, not the
+/// default mix.
+#[test]
+fn black_white_auto_reads_the_whole_input() {
+    use crate::adjust_params::{BW_DEFAULTS, HUE_RANGES};
+    let (red, blue) = ([0.776, 0.2, 0.2, 1.0], [0.29, 0.29, 1.0, 1.0]);
+    let mix = auto_black_white(&[[red[0], red[1], red[2]], [blue[0], blue[1], blue[2]]]);
+    assert_ne!(mix, BW_DEFAULTS);
+    let auto = |s: &mut Session, p: Value| -> Vec<f32> {
+        let r = s.execute("image.adjustments.blackWhite.auto", p).unwrap();
+        HUE_RANGES.iter().map(|k| r[*k].as_f64().unwrap() as f32).collect()
+    };
+    let split = |x: i32, _| if x < 10 { red } else { blue };
+
+    // A selection over the red half doesn't narrow Image › Adjustments' Auto.
+    let mut s = Session::new();
+    s.execute("file.new", json!({"width": 20, "height": 10})).unwrap();
+    paint(&mut s, split);
+    s.execute("select.rect", json!({"x": 0, "y": 0, "width": 10, "height": 10})).unwrap();
+    assert_eq!(auto(&mut s, json!({})), mix.to_vec());
+
+    // Nor does an adjustment layer's mask hiding the blue half.
+    s.execute("select.deselect", json!({})).unwrap();
+    let id = s.execute("layer.newAdjustmentLayer.blackWhite", json!({})).unwrap()["layer"].as_u64().unwrap();
+    s.edit("mask", |doc, _| {
+        let b = doc.bounds();
+        let mut m = photocraft_doc::LayerMask::reveal_all();
+        m.surface.write_region(Rect::new(10, 0, b.x1, b.y1), &vec![0.0; 10 * 10]);
+        doc.layer_mut(photocraft_doc::LayerId(id)).unwrap().mask = Some(m);
+        Ok(())
+    })
+    .unwrap();
+    assert_eq!(auto(&mut s, json!({"layer": id})), mix.to_vec());
+
+    // Nor clipping it to a layer that only covers the red half.
+    let mut s = Session::new();
+    s.execute("file.new", json!({"width": 20, "height": 10})).unwrap();
+    paint(&mut s, |_, _| blue);
+    s.execute("layer.new.layer", json!({})).unwrap();
+    paint(&mut s, |x, _| if x < 10 { red } else { [0.0; 4] });
+    let id = s.execute("layer.newAdjustmentLayer.blackWhite", json!({})).unwrap()["layer"].as_u64().unwrap();
+    s.execute("layer.createClippingMask", json!({})).unwrap();
+    assert!(s.active().unwrap().doc.layer(photocraft_doc::LayerId(id)).unwrap().clipped);
+    assert_eq!(auto(&mut s, json!({"layer": id})), mix.to_vec());
+
+    // A Black & White smart filter: its own result is grey, its input is the colours.
+    let mut s = Session::new();
+    s.execute("file.new", json!({"width": 20, "height": 10})).unwrap();
+    paint(&mut s, split);
+    s.execute("filter.convertForSmartFilters", json!({})).unwrap();
+    s.execute("image.adjustments.blackWhite", json!({})).unwrap();
+    let smart = s.active().unwrap().active_layer.unwrap().0;
+    assert_eq!(auto(&mut s, json!({"layer": smart})), BW_DEFAULTS.to_vec(), "the filtered result is grey");
+    assert_eq!(auto(&mut s, json!({"layer": smart, "filter": 0})), mix.to_vec());
+    for bad in [json!({"layer": smart, "filter": 1}), json!({"layer": smart, "filter": "x"}), json!({"layer": smart, "filter": -1})] {
+        assert!(s.execute("image.adjustments.blackWhite.auto", bad).is_err());
+    }
+    s.execute("file.new", json!({"width": 20, "height": 10})).unwrap();
+    assert!(s.execute("image.adjustments.blackWhite.auto", json!({"filter": 0})).is_err(), "not a smart object");
+
+    // Past the render limit there is nothing to sample.
+    let mut s = Session::new();
+    s.execute("file.new", json!({"width": 40000, "height": 30000, "background": "transparent"})).unwrap();
+    let id = s.execute("layer.newAdjustmentLayer.blackWhite", json!({})).unwrap()["layer"].as_u64().unwrap();
+    assert!(s.execute("image.adjustments.blackWhite.auto", json!({"layer": id})).is_err());
 }

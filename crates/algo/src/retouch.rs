@@ -194,10 +194,22 @@ pub fn local_blur(data: &[f32], w: usize, h: usize, ch: usize, alpha: Option<usi
     out
 }
 
-/// Unsharp-mask sharpen of a window (same layout as [`local_blur`]): `v + amount·(v − blur(v))`.
+/// Gaussian sigma of the Protect Detail sharpen in [`local_sharpen`], in pixels. It reads
+/// `ceil(3·sigma)` pixels around each output pixel.
+pub const PROTECT_DETAIL_SIGMA: f32 = 2.5;
+
+/// Largest change one Protect Detail pass makes to a pixel (6 levels of 255), approached softly.
+const PROTECT_DETAIL_LIMIT: f32 = 6.0 / 255.0;
+
+/// Unsharp-mask sharpen of a window (same layout as [`local_blur`]): `v + amount·d` with
+/// `d = v − blur(v)`, against a Gaussian of sigma 1.
 ///
-/// With `protect_detail`, each result is clamped to the 3×3 neighbourhood's range, which stops
-/// halos and noise from being amplified into new extremes. Alpha is left unchanged.
+/// With `protect_detail` (the Sharpen tool's default) it sharpens gently, as the reference
+/// application does (#12938): the Gaussian is wider ([`PROTECT_DETAIL_SIGMA`]), so an edge gets a
+/// low halo a few pixels wide, and each difference is soft-limited to `L` = 6 levels:
+/// `v + amount·d·L/(L + |d|)`. Fine detail is sharpened about as much as without it, while a
+/// strong edge or a lone bright pixel moves by less than `L` per pass instead of overshooting.
+/// Uniform areas stay exactly as they are. Alpha is left unchanged.
 #[allow(clippy::too_many_arguments)]
 pub fn local_sharpen(
     data: &[f32],
@@ -214,7 +226,7 @@ pub fn local_sharpen(
     if ow == 0 || oh == 0 || ch == 0 {
         return Vec::new();
     }
-    let blur = local_blur(data, w, h, ch, alpha, win, 1.0);
+    let blur = local_blur(data, w, h, ch, alpha, win, if protect_detail { PROTECT_DETAIL_SIGMA } else { 1.0 });
     let mut out = vec![0.0f32; blur.len()];
     let stride = ow * ch;
 
@@ -223,53 +235,18 @@ pub fn local_sharpen(
         let y = y0 + oy;
         let blur_row = &blur[oy * stride..(oy + 1) * stride];
         for ox in 0..ow {
-            let x = x0 + ox;
             let o = ox * ch;
-            let i = (y * w + x) * ch;
-
-            // Precompute 3×3 neighbourhood offsets once per pixel if protecting detail.
-            let offsets: [usize; 8] = if protect_detail {
-                if x > 0 && x + 1 < w && y > 0 && y + 1 < h {
-                    let w_ch = w * ch;
-                    [i - w_ch - ch, i - w_ch, i - w_ch + ch, i - ch, i + ch, i + w_ch - ch, i + w_ch, i + w_ch + ch]
-                } else {
-                    let get_n_idx = |dx: i32, dy: i32| -> usize {
-                        let nx = (x as i32 + dx).clamp(0, w as i32 - 1) as usize;
-                        let ny = (y as i32 + dy).clamp(0, h as i32 - 1) as usize;
-                        (ny * w + nx) * ch
-                    };
-                    [
-                        get_n_idx(-1, -1),
-                        get_n_idx(0, -1),
-                        get_n_idx(1, -1),
-                        get_n_idx(-1, 0),
-                        get_n_idx(1, 0),
-                        get_n_idx(-1, 1),
-                        get_n_idx(0, 1),
-                        get_n_idx(1, 1),
-                    ]
-                }
-            } else {
-                [0; 8]
-            };
-
+            let i = (y * w + x0 + ox) * ch;
             for c in 0..ch {
                 let v = data[i + c];
                 if Some(c) == alpha {
                     dst[o + c] = v;
                     continue;
                 }
-                let mut s = v + amount * (v - blur_row[o + c]);
-                if protect_detail {
-                    let (mut lo, mut hi) = (v, v);
-                    for &n_idx in &offsets {
-                        let nv = data[n_idx + c];
-                        lo = lo.min(nv);
-                        hi = hi.max(nv);
-                    }
-                    s = s.clamp(lo, hi);
-                }
-                dst[o + c] = s;
+                let d = v - blur_row[o + c];
+                // `PROTECT_DETAIL_LIMIT + |d|` is never zero, so this can't divide by zero.
+                let d = if protect_detail { d * PROTECT_DETAIL_LIMIT / (PROTECT_DETAIL_LIMIT + d.abs()) } else { d };
+                dst[o + c] = v + amount * d;
             }
         }
     };
@@ -286,6 +263,10 @@ pub fn local_sharpen(
 
     out
 }
+
+#[cfg(test)]
+#[path = "retouch_sharpen_protect_detail_tests.rs"]
+mod sharpen_protect_detail_tests;
 
 #[cfg(test)]
 mod tests {
@@ -353,10 +334,10 @@ mod tests {
         let s = local_sharpen(&smooth, w, h, ch, None, win, 1.0, false);
         let so: Vec<f32> = (4..12).flat_map(|y| (4..12).map(move |x| (x, y))).map(|(x, y)| smooth[y * w + x]).collect();
         assert!(var(&s) > var(&so));
-        // Protect detail never exceeds the local range.
+        // Protect Detail sharpens too, but moves no pixel by more than its limit per unit of amount.
         let sp = local_sharpen(&smooth, w, h, ch, None, win, 4.0, true);
-        let hi = smooth.iter().cloned().fold(0.0, f32::max);
-        assert!(sp.iter().all(|v| *v <= hi + 1e-6));
+        assert!(var(&sp) > var(&so));
+        assert!(sp.iter().zip(&so).all(|(a, b)| (a - b).abs() < 4.0 * PROTECT_DETAIL_LIMIT));
     }
 
     #[test]

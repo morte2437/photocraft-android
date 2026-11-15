@@ -47,8 +47,39 @@ fn valid(key: &str, v: &Value) -> bool {
 
 /// True for a press and release that never left `start` by more than a few screen pixels.
 pub fn is_click(start: [f64; 2], points: &[[f64; 3]], zoom: f32) -> bool {
-    let slop = 3.0 / f64::from(zoom.max(0.01));
+    within_click_slop(start, points, zoom, 3.0)
+}
+
+pub(crate) fn is_tool_click(tool: Tool, options: &crate::state::ToolOptions, start: [f64; 2], points: &[[f64; 3]], zoom: f32) -> bool {
+    if tool == Tool::Rectangle && options.shape_mode == "shape" { within_click_slop(start, points, zoom, 1.0) } else { is_click(start, points, zoom) }
+}
+
+fn within_click_slop(start: [f64; 2], points: &[[f64; 3]], zoom: f32, pixels: f64) -> bool {
+    let slop = pixels / f64::from(zoom.max(0.01));
     points.iter().all(|p| (p[0] - start[0]).hypot(p[1] - start[1]) <= slop)
+}
+
+/// A Shape-mode Rectangle click inside the active live rectangle leaves the shape alone (#13340).
+pub(crate) fn click_inside_active_rectangle(app: &PhotocraftApp, tool: Tool, at: [f64; 2]) -> bool {
+    use photocraft_doc::{LayerContent, LiveShape};
+
+    if tool != Tool::Rectangle || app.ui.tool_options.shape_mode != "shape" {
+        return false;
+    }
+    let Some(layer) = app.session.active().and_then(|st| st.active_layer.and_then(|id| st.doc.layer(id))) else { return false };
+    let LayerContent::Shape(shape) = &layer.content else { return false };
+    let Some(LiveShape::Rect { rect: [x, y, w, h], radii }) = shape.live else { return false };
+    let (left, top) = (x.min(x + w), y.min(y + h));
+    let (right, bottom) = (x.max(x + w), y.max(y + h));
+    let [px, py] = at;
+    if !((left..=right).contains(&px) && (top..=bottom).contains(&py)) {
+        return false;
+    }
+    let (l, r, t, b) = (px - left, right - px, py - top, bottom - py);
+    [(l, t), (r, t), (r, b), (l, b)]
+        .into_iter()
+        .zip(photocraft_vector::shapes::clamp_radii(w.abs(), h.abs(), radii))
+        .all(|((dx, dy), radius)| dx >= radius || dy >= radius || (radius - dx).hypot(radius - dy) <= radius)
 }
 
 /// Open the creation dialog of `tool` for a click at `at` (document px). `None` for a tool without
@@ -124,7 +155,7 @@ pub fn geometry(f: &Map<String, Value>) -> Result<Value, String> {
             if radii.iter().any(|r| *r > 0.0) { json!({"kind": "roundedRect", "rect": rect, "radii": radii}) } else { json!({"kind": "rect", "rect": rect}) }
         }
         "ellipse" => json!({"kind": "ellipse", "rect": rect}),
-        "triangle" => json!({"kind": "polygon", "rect": rect, "sides": 3}),
+        "triangle" => json!({"kind": "triangle", "rect": rect}),
         "polygon" => {
             let sides = num(f, "sides").map_or(5.0, |s| s.round().clamp(3.0, 100.0));
             let ratio = num(f, "starRatio").map_or(100.0, |r| r.clamp(1.0, 100.0));

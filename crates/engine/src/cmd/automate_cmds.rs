@@ -17,7 +17,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use crate::commands::CommandSpec;
-use crate::file_cmds::{file_name, import, join, list_images, read_file, stem, write_file};
+use crate::file_cmds::{file_name, import, join, list_images, list_images_tree, read_file, stem, write_file};
 use crate::{EngineError, Result, Session};
 
 fn bad(cmd: &str, msg: impl Into<String>) -> EngineError {
@@ -505,14 +505,37 @@ fn units_px(v: f64, unit: &str, res: f64) -> f64 {
     }
 }
 
+/// Contact Sheet II's images, one list per run of sheets. A folder `input` lists its own images by
+/// name and, with `includeSubfolders` (default on), then each subfolder's depth first, each level
+/// by name, bounded as Batch's walk is ([`list_images_tree`]: depth and file limits, a folder
+/// reached twice through a link walked once). `groupByFolder` (default off) makes each folder
+/// that has images its own list, so it starts on a new sheet. An array `input` is one list in its
+/// own order, whatever the two flags say.
+fn contact_sheet_sources(p: &Value, cmd: &str) -> Result<Vec<Vec<String>>> {
+    let flag = |key: &str, default: bool| match p.get(key) {
+        None | Some(Value::Null) => Ok(default),
+        Some(Value::Bool(b)) => Ok(*b),
+        Some(_) => Err(bad(cmd, format!("\"{key}\" must be true or false"))),
+    };
+    let subfolders = flag("includeSubfolders", true)?;
+    let by_folder = flag("groupByFolder", false)?;
+    match p.get("input").or_else(|| p.get("files")) {
+        Some(Value::Array(a)) => Ok(vec![a.iter().filter_map(Value::as_str).map(str::to_string).collect()]),
+        Some(Value::String(dir)) if subfolders => {
+            let tree = list_images_tree(dir, "", cmd)?;
+            let paths = |run: &[crate::file_cmds::BatchInput]| run.iter().map(|i| i.path.clone()).collect::<Vec<_>>();
+            // The walk lists each folder's files together, so a folder is one run of `rel_dir`.
+            Ok(if by_folder { tree.chunk_by(|a, b| a.rel_dir == b.rel_dir).map(paths).collect() } else { vec![paths(&tree)] })
+        }
+        Some(Value::String(dir)) => Ok(vec![list_images(dir)?]),
+        _ => Err(bad(cmd, "missing \"input\" (a folder or an array of files)")),
+    }
+}
+
 fn contact_sheet(s: &mut Session, p: &Value) -> Result<Value> {
     let cmd = "file.automate.contactSheetII";
-    let files: Vec<String> = match p.get("input").or_else(|| p.get("files")) {
-        Some(Value::Array(a)) => a.iter().filter_map(Value::as_str).map(str::to_string).collect(),
-        Some(Value::String(dir)) => list_images(dir)?,
-        _ => return Err(bad(cmd, "missing \"input\" (a folder or an array of files)")),
-    };
-    if files.is_empty() {
+    let groups = contact_sheet_sources(p, cmd)?;
+    if groups.iter().all(Vec::is_empty) {
         return Err(bad(cmd, "no images to place"));
     }
     let f = |k: &str, d: f64| p.get(k).and_then(Value::as_f64).filter(|v| v.is_finite() && *v > 0.0).unwrap_or(d);
@@ -542,8 +565,9 @@ fn contact_sheet(s: &mut Session, p: &Value) -> Result<Value> {
     let mut docs = Vec::new();
     let mut placed = 0usize;
     let mut errors = Vec::new();
-    for (page, chunk) in files.chunks(per_page).enumerate() {
-        let name = if files.len() > per_page { format!("ContactSheet-{:03}", page + 1) } else { "ContactSheet-001".into() };
+    // A full sheet continues on the next one; with `groupByFolder` each folder also starts one.
+    for (page, chunk) in groups.iter().flat_map(|g| g.chunks(per_page)).enumerate() {
+        let name = format!("ContactSheet-{:03}", page + 1);
         s.execute("file.new", json!({"width": pw, "height": ph, "mode": mode, "depth": depth, "background": "white", "name": name}))?;
         let idx = s.active_index().ok_or(EngineError::NoDocument)?;
         if let Some(st) = s.active_mut() {
@@ -623,7 +647,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "file.automate.contactSheetII",
             "Contact Sheet II…",
             &["File", "Automate"],
-            r##"{"input":folder|[paths],"units":"inches|cm|mm|pixels"="inches","width":8,"height":10,"resolution":ppi=300,"mode":"rgb|gray|cmyk|lab"="rgb","depth":8|16=8,"columns":5,"rows":6,"placeAcrossFirst":bool=true,"autoSpacing":bool=true,"horizontal":units?,"vertical":units?,"rotateForBestFit":bool=false,"caption":bool=true (file name as caption),"font":family?,"fontSize":pt=12,"flatten":bool=false} → {documents, pages, images}"##,
+            r##"{"input":folder|[paths],"units":"inches|cm|mm|pixels"="inches","width":8,"height":10,"resolution":ppi=300,"mode":"rgb|gray|cmyk|lab"="rgb","depth":8|16=8,"columns":5,"rows":6,"placeAcrossFirst":bool=true,"autoSpacing":bool=true,"horizontal":units?,"vertical":units?,"rotateForBestFit":bool=false,"caption":bool=true (file name as caption),"font":family?,"fontSize":pt=12,"flatten":bool=false,"includeSubfolders":bool=true (a folder input also takes its subfolders' images, depth first after its own),"groupByFolder":bool=false (with includeSubfolders: each folder starts a new sheet)} → {documents, pages, images}"##,
             native,
             contact_sheet
         ),
@@ -673,3 +697,7 @@ pub fn specs() -> Vec<CommandSpec> {
 #[cfg(test)]
 #[path = "automate_cmds/tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "automate_cmds/contact_sheet_subfolders_tests.rs"]
+mod contact_sheet_subfolders_tests;

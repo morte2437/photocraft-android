@@ -9,6 +9,18 @@ use crate::menus::MenuItem;
 /// Menu ids of installed plug-ins: `plugin.filter.<plug-in id>`.
 const PREFIX: &str = "plugin.filter.";
 
+/// Held by tests that install a plug-in and by tests that compare two builds of the menus. The
+/// plug-in registry is shared by the whole test process, so an install between two builds adds a
+/// Filter › Plug-ins row to the second one only.
+#[cfg(test)]
+pub(crate) fn registry_guard() -> std::sync::MutexGuard<'static, ()> {
+    REGISTRY.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// The mutex [`registry_guard`] holds.
+#[cfg(test)]
+pub(crate) static REGISTRY: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 /// Inserts the installed plug-ins into Filter › Plug-ins, above "Install Plug-in…".
 pub fn insert_menu_items(app: &PhotocraftApp, items: &mut Vec<MenuItem>) {
     let plugins = photocraft_plugins::registry::list();
@@ -76,6 +88,7 @@ mod tests {
 
     #[test]
     fn installed_plugins_appear_under_filter_plugins_and_run() {
+        let _registry = registry_guard();
         let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
         let ctx = egui::Context::default();
         let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../plugins/tests/fixtures/invert.wasm");
@@ -105,6 +118,7 @@ mod tests {
         if !crate::i18n::needs_catalogs() {
             return;
         }
+        let _registry = registry_guard();
         let ja = crate::i18n::Lang::from_code("ja").expect("registered language");
         let _lang = crate::i18n::language_scope(ja);
         let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());

@@ -214,7 +214,7 @@ fn float_linear_opens_as_32_bit_float_with_a_linear_profile() {
     let d = open("float-linear.xcf").document;
     assert_eq!((d.mode, d.depth), (ColorMode::Rgb, SampleType::F32));
     let icc = d.icc_profile.as_ref().expect("a linear-light profile");
-    assert_eq!(**icc, photocraft_cms::Builtin::LinearSrgb.profile().to_bytes().as_ref().clone());
+    assert_eq!(**icc, craft_cms::Builtin::LinearSrgb.profile().to_bytes().as_ref().clone());
     let bg = &d.layers[0];
     for (x, y) in [(0, 0), (39, 29), (5, 21)] {
         let p = px(bg, x as i32, y as i32);

@@ -156,8 +156,16 @@ fn renders_in_object(f: &SmartFilter) -> bool {
 /// requesting session's authority denies the filter's params: callers surface the error instead of
 /// rendering (and caching) unfiltered pixels.
 fn apply_smart_filter(f: &SmartFilter, sm: &SmartObject, cur: &Surface, canvas: Rect, extent: Rect, ctx: &JobCtx) -> Result<Surface> {
+    // Equalize bypasses `apply_filter_to_surface_in` (the gate there), so check the command first.
+    crate::jobs::authorize_render_command(&f.command, &f.params)?;
     let params = crate::distort_cmds::placed_puppet_params(&f.command, &f.params, sm);
-    let out = match crate::filters::apply_filter_to_surface_in(&f.command, &params, cur, canvas, None, extent, ctx)? {
+    let rendered = if f.command == "image.adjustments.equalize" {
+        ctx.check()?;
+        crate::adjust_cmds::adjust_as_filter("equalize", &params, cur, sm.filter_mask.as_ref())?
+    } else {
+        crate::filters::apply_filter_to_surface_in(&f.command, &params, cur, canvas, None, extent, ctx)?
+    };
+    let out = match rendered {
         // Unknown ids (e.g. Photoshop filters we don't implement) leave the pixels alone.
         Some(out) => out,
         None => cur.clone(),
@@ -347,7 +355,7 @@ pub(super) fn render_in(doc: &Document, sm: &SmartObject, ctx: &JobCtx) -> Resul
     let keys: Vec<StageKey> = filters
         .iter()
         .scan(placed_key, |key, f| {
-            *key = stack_cache::filter_key(key, f);
+            *key = stack_cache::filter_key(key, f, sm.filter_mask.as_ref());
             Some(*key)
         })
         .collect();

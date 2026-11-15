@@ -1,56 +1,56 @@
-//! Krita (`.kra`, `.krz`) import. Layout observed from files Krita writes (no Krita code used):
-//! a ZIP whose first, stored entry is `mimetype` = `application/x-krita`, a `maindoc.xml` node
-//! tree, one tiled pixel file per paint layer and mask under `<image name>/layers/`, the
-//! image's ICC profile in `<image name>/annotations/icc`, and Krita's rendering in
-//! `mergedimage.png`.
-//!
-//! Tiled pixel files are a short text header (`VERSION 2`, `TILEWIDTH`, `TILEHEIGHT`,
-//! `PIXELSIZE`, `DATA <tiles>`) followed by, per tile, a `x,y,LZF,<bytes>` line and that many
-//! bytes: a flag (1 = LZF-compressed, 0 = raw) and the tile's pixels stored as byte planes
-//! (every pixel's first byte, then every pixel's second byte, ...). RGB pixels are in
-//! Krita's BGRA order, 16-bit samples little-endian.
-//!
-//! Imported: paint layers (8 and 16-bit RGBA and gray), groups (isolated and pass-through),
-//! names, visibility, opacity, blend modes, locks, layer offsets and transparency masks.
-//! Every other node kind (vector, filter, fill, file and clone layers, filter, transform and
-//! colorize masks) is left out with a warning; Krita's merged image still shows their look.
-//! Documents in a colour space we don't read open as Krita's merged image, flagged as a preview.
+//! Krita import. `craft-kra` owns the archive, XML and tile formats; this module maps its
+//! neutral document representation into PhotoCraft's layer model.
 
 #[cfg(test)]
 mod tests;
-mod tiles;
+
+use std::collections::HashSet;
 
 use craft_kra::tiles::{Space, TileFile};
-use craft_kra::{Archive, Node};
-use photocraft_color::{BlendMode, PixelFormat};
+use photocraft_color::{BlendMode, ColorMode, PixelFormat, SampleType};
 use photocraft_doc::{Document, Layer, LayerContent, LayerMask};
-use photocraft_geom::Size;
+use photocraft_geom::{Size, TILE_SIZE};
 use photocraft_raster::{Interrupt, Surface};
 
-use crate::ora::{MAX_PIXEL_BYTES, Warnings, krita_blend};
+use crate::ora::{MAX_NODES, MAX_PIXEL_BYTES, Warnings, krita_blend};
 use crate::{ImportResult, IoError};
-use tiles::SpaceExt;
-
-pub(crate) use craft_kra::{EXTENSIONS, is_kra};
 
 type Result<T> = std::result::Result<T, IoError>;
+
+/// The `mimetype` entry of a Krita archive.
+#[cfg(test)]
+const MIMETYPE: &[u8] = craft_kra::MIMETYPE;
+pub(crate) const EXTENSIONS: [&str; 2] = craft_kra::EXTENSIONS;
 
 fn invalid(message: impl Into<String>) -> IoError {
     IoError::Kra(message.into())
 }
 
-/// The format crate's error as this crate's.
-fn kra_err(e: craft_kra::Error) -> IoError {
-    match e {
-        craft_kra::Error::Invalid(m) => invalid(m),
-        craft_kra::Error::Unsupported(m) => IoError::Unsupported(m),
+fn map_error(error: craft_kra::Error) -> IoError {
+    match error {
+        craft_kra::Error::Invalid(message) => invalid(message),
+        craft_kra::Error::Unsupported(message) => IoError::Unsupported(message),
+    }
+}
+
+/// `true` for a Krita archive (by its `mimetype` entry).
+#[cfg(test)]
+pub(crate) fn is_kra(bytes: &[u8]) -> bool {
+    craft_kra::is_kra(bytes)
+}
+
+fn model(space: Space) -> (ColorMode, SampleType) {
+    match space {
+        Space::Rgba8 => (ColorMode::Rgb, SampleType::U8),
+        Space::Rgba16 => (ColorMode::Rgb, SampleType::U16),
+        Space::Gray8 | Space::Alpha8 => (ColorMode::Grayscale, SampleType::U8),
+        Space::Gray16 => (ColorMode::Grayscale, SampleType::U16),
     }
 }
 
 struct Reader<'a, 'c> {
-    archive: Archive<'a>,
+    archive: craft_kra::Archive<'a>,
     ctl: &'c Interrupt<'c>,
-    /// The document's pixel format (layers in another supported space are converted to it).
     fmt: PixelFormat,
     nodes: usize,
     budget: usize,
@@ -58,25 +58,80 @@ struct Reader<'a, 'c> {
 }
 
 impl Reader<'_, '_> {
-    /// A tiled pixel file in `space` as a surface in `fmt`, offset by (`dx`, `dy`).
+    /// Reserve for decoded pixels and the raster backing tiles they occupy.
+    fn decoded_bytes(file: &TileFile<'_>, bpp: usize, dx: i32, dy: i32) -> Result<usize> {
+        let overflow = || invalid("tile size overflow");
+        let logical =
+            file.tiles().len().checked_mul(file.width).and_then(|n| n.checked_mul(file.height)).and_then(|n| n.checked_mul(bpp)).ok_or_else(overflow)?;
+        let (w, h) = (i32::try_from(file.width).map_err(|_| overflow())?, i32::try_from(file.height).map_err(|_| overflow())?);
+        let mut backing = HashSet::new();
+        let side = TILE_SIZE;
+        for tile in file.tiles() {
+            let (x, y) = (tile.x.checked_add(dx).ok_or_else(overflow)?, tile.y.checked_add(dy).ok_or_else(overflow)?);
+            let (x1, y1) = (x.checked_add(w - 1).ok_or_else(overflow)?, y.checked_add(h - 1).ok_or_else(overflow)?);
+            for col in x.div_euclid(side)..=x1.div_euclid(side) {
+                for row in y.div_euclid(side)..=y1.div_euclid(side) {
+                    backing.insert((col, row));
+                }
+            }
+        }
+        let tile_bytes = (side as usize).checked_mul(side as usize).and_then(|n| n.checked_mul(bpp)).ok_or_else(overflow)?;
+        Ok(logical.max(backing.len().checked_mul(tile_bytes).ok_or_else(overflow)?))
+    }
+
     fn surface(&mut self, name: &str, space: Space, fmt: PixelFormat, dx: i32, dy: i32) -> Result<Option<Surface>> {
-        let Some(bytes) = self.archive.layer_file(name).map_err(kra_err)? else { return Ok(None) };
-        let file = TileFile::parse(&bytes).map_err(kra_err)?;
+        let Some(bytes) = self.archive.layer_file(name).map_err(map_error)? else { return Ok(None) };
+        let file = TileFile::parse(&bytes).map_err(map_error)?;
         if file.pixel_size != space.pixel_size() {
             return Err(invalid(format!("{name}: pixel size {} does not match its colour space", file.pixel_size)));
         }
-        let cost = tiles::decoded_bytes(&file, fmt.bytes_per_pixel(), dx, dy)?;
-        self.budget = self.budget.checked_sub(cost).ok_or_else(|| invalid("decoded layers exceed the 1 GiB limit"))?;
-        let mut surface = match self.archive.default_pixel(name, space).map_err(kra_err)? {
-            Some(px) if px.iter().any(|v| *v != 0.0) => Surface::with_default(fmt, &space.to_format(&px, fmt)),
+        self.budget = self
+            .budget
+            .checked_sub(Self::decoded_bytes(&file, fmt.bytes_per_pixel(), dx, dy)?)
+            .ok_or_else(|| invalid("decoded layers exceed the 1 GiB limit"))?;
+
+        let mut surface = match self.archive.default_pixel(name, space).map_err(map_error)? {
+            Some(rgba) if rgba.iter().any(|v| *v != 0.0) => Surface::with_default(fmt, &photocraft_raster::from_rgba(&fmt, rgba)),
             _ => Surface::new(fmt),
         };
-        tiles::decode_into(&file, &mut surface, space, dx, dy, self.ctl)?;
+        let n = file.width.checked_mul(file.height).ok_or_else(|| invalid("tile size overflow"))?;
+        let expected = n.checked_mul(file.pixel_size).ok_or_else(|| invalid("tile size overflow"))?;
+        let mut source = Vec::new();
+        let mut converted = Vec::new();
+        let native = PixelFormat::new(model(space).0, model(space).1, true);
+        for tile in file.tiles() {
+            self.ctl.check().map_err(|_| IoError::Cancelled)?;
+            file.decode(tile, &mut source).map_err(map_error)?;
+            if source.len() != expected {
+                return Err(invalid("decoded tile has an unexpected size"));
+            }
+            if fmt == native {
+                space.samples(&source, &mut converted);
+            } else {
+                converted.clear();
+                let mut encoded = vec![0; fmt.bytes_per_pixel()];
+                for px in source.chunks_exact(space.pixel_size()) {
+                    let rgba = space.rgba(px);
+                    let samples = photocraft_raster::from_rgba(&fmt, rgba);
+                    photocraft_raster::encode_pixel(&fmt, &samples, &mut encoded);
+                    converted.extend_from_slice(&encoded);
+                }
+            }
+            let (x, y) = (
+                tile.x.checked_add(dx).ok_or_else(|| invalid("tile offset overflow"))?,
+                tile.y.checked_add(dy).ok_or_else(|| invalid("tile offset overflow"))?,
+            );
+            let rect = photocraft_geom::Rect::from_xywh(x, y, file.width as u32, file.height as u32);
+            if converted.len() != n * fmt.bytes_per_pixel() || rect.width() as usize != file.width || rect.height() as usize != file.height {
+                return Err(invalid("tile does not fit its position"));
+            }
+            surface.write_interleaved(rect, &converted);
+        }
         surface.prune();
         Ok(Some(surface))
     }
 
-    fn props(&mut self, node: &Node, layer: &mut Layer) {
+    fn props(&mut self, node: &craft_kra::Node, layer: &mut Layer) {
         layer.name = node.name.as_deref().filter(|n| !n.is_empty()).map_or_else(|| format!("Layer {}", self.nodes), str::to_string);
         layer.visible = node.visible;
         layer.opacity = (node.opacity / 255.0).clamp(0.0, 1.0) as f32;
@@ -107,13 +162,11 @@ impl Reader<'_, '_> {
         }
     }
 
-    /// The node's transparency masks, combined into one layer mask.
-    fn masks(&mut self, node: &Node, layer: &mut Layer, dx: i32, dy: i32) -> Result<()> {
+    fn masks(&mut self, node: &craft_kra::Node, layer: &mut Layer, dx: i32, dy: i32) -> Result<()> {
         for mask in &node.masks {
             self.ctl.check().map_err(|_| IoError::Cancelled)?;
             match mask.node_type.as_str() {
                 "transparencymask" => {}
-                // A layer's local selection: not part of its look.
                 "selectionmask" => continue,
                 other => {
                     let what = match other {
@@ -133,17 +186,14 @@ impl Reader<'_, '_> {
             let Some(file) = mask.filename.as_deref() else { continue };
             let (mx, my) = (dx.saturating_add(mask.x), dy.saturating_add(mask.y));
             match self.surface(&format!("{file}.pixelselection"), Space::Alpha8, PixelFormat::GRAY8, mx, my)? {
-                Some(surface) => {
-                    layer.mask = Some(LayerMask { surface, enabled: mask.visible, ..LayerMask::reveal_all() });
-                }
+                Some(surface) => layer.mask = Some(LayerMask { surface, enabled: mask.visible, ..LayerMask::reveal_all() }),
                 None => self.warnings.layer(&layer.name, "a transparency mask's pixels are missing from the file"),
             }
         }
         Ok(())
     }
 
-    /// `nodes` (topmost first, as maindoc.xml lists them) as layers, bottom-to-top.
-    fn layers(&mut self, nodes: &[Node], depth: usize, dx: i32, dy: i32) -> Result<Vec<Layer>> {
+    fn layers(&mut self, nodes: &[craft_kra::Node], depth: usize, dx: i32, dy: i32) -> Result<Vec<Layer>> {
         if depth > photocraft_doc::MAX_GROUP_DEPTH {
             return Err(IoError::Unsupported(format!("layer groups nested deeper than {}", photocraft_doc::MAX_GROUP_DEPTH)));
         }
@@ -151,6 +201,9 @@ impl Reader<'_, '_> {
         for child in nodes {
             self.ctl.check().map_err(|_| IoError::Cancelled)?;
             self.nodes += 1;
+            if self.nodes > MAX_NODES {
+                return Err(invalid(format!("more than {MAX_NODES} layers")));
+            }
             let (x, y) = (dx.saturating_add(child.x), dy.saturating_add(child.y));
             let mut layer = match child.node_type.as_str() {
                 "paintlayer" => {
@@ -159,7 +212,7 @@ impl Reader<'_, '_> {
                     let space = child.colorspace_name.as_deref().and_then(Space::from_name);
                     match (space, child.filename.as_deref()) {
                         (Some(space), Some(file)) => match self.surface(file, space, self.fmt, x, y)? {
-                            Some(s) => layer.content = LayerContent::Raster(s),
+                            Some(surface) => layer.content = LayerContent::Raster(surface),
                             None => self.warnings.layer(&layer.name, "the layer's pixels are missing from the file; it opens empty"),
                         },
                         (None, _) => {
@@ -180,17 +233,15 @@ impl Reader<'_, '_> {
                         }
                         layer.blend = BlendMode::PassThrough;
                     }
-                    // A group's own x/y is not applied to its children: Krita moves a group by
-                    // moving their pixels, and its merged image ignores the group offset.
                     let kids = self.layers(&child.layers, depth + 1, dx, dy)?;
-                    if let LayerContent::Group(g) = &mut layer.content {
-                        g.children = kids;
-                        g.expanded = !child.collapsed;
+                    if let LayerContent::Group(group) = &mut layer.content {
+                        group.children = kids;
+                        group.expanded = !child.collapsed;
                     }
                     layer
                 }
                 other => {
-                    let name = child.name.as_deref().unwrap_or(other).to_string();
+                    let name = child.name.as_deref().unwrap_or(other);
                     let what = match other {
                         "shapelayer" => "vector layers",
                         "adjustmentlayer" => "filter layers",
@@ -199,7 +250,7 @@ impl Reader<'_, '_> {
                         "clonelayer" => "clone layers",
                         _ => "unknown layer kinds",
                     };
-                    self.warnings.layer(&name, &format!("Krita {what} are not supported yet and were left out"));
+                    self.warnings.layer(name, &format!("Krita {what} are not supported yet and were left out"));
                     continue;
                 }
             };
@@ -212,40 +263,35 @@ impl Reader<'_, '_> {
 }
 
 /// Krita's merged image as a one-layer stand-in, for documents we can't read layer by layer.
-fn preview(name: &str, archive: &mut Archive<'_>, why: String) -> Result<ImportResult> {
-    let png = match archive.merged_image() {
-        Ok(Some(png)) => png,
-        Ok(None) => return Err(invalid(format!("{why}, and the file has no merged image"))),
-        Err(e) => return Err(invalid(format!("{why}, and the merged image can't be read: {e}"))),
-    };
-    let mut r = crate::flat::import_flat(name, &png)?;
-    r.document.name = name.to_string();
-    r.warnings.insert(0, format!("{why}; the file opens as Krita's merged image, without its layers"));
-    r.source_read_only = true;
-    r.preview_only = true;
-    Ok(r)
+fn preview(name: &str, archive: &mut craft_kra::Archive<'_>, why: String) -> Result<ImportResult> {
+    let png = archive.merged_image().map_err(map_error)?.ok_or_else(|| invalid(format!("{why}, and the merged image is missing")))?;
+    let mut result = crate::flat::import_flat(name, &png)?;
+    result.document.name = name.to_string();
+    result.warnings.insert(0, format!("{why}; the file opens as Krita's merged image, without its layers"));
+    result.source_read_only = true;
+    result.preview_only = true;
+    Ok(result)
 }
 
 pub(crate) fn import(name: &str, bytes: &[u8], ctl: &Interrupt<'_>) -> Result<ImportResult> {
-    let mut archive = Archive::open(bytes).map_err(kra_err)?;
+    let mut archive = craft_kra::Archive::open(bytes).map_err(map_error)?;
     let image = archive.image().clone();
     let Some(space) = Space::from_name(&image.colorspace_name) else {
         return preview(name, &mut archive, format!("Krita's {} colour space is not supported yet", image.colorspace_name));
     };
-    let (mode, depth) = space.model();
+    let (mode, depth) = model(space);
     let mut reader = Reader { archive, ctl, fmt: PixelFormat::new(mode, depth, true), nodes: 0, budget: MAX_PIXEL_BYTES, warnings: Warnings::default() };
     let layers = reader.layers(&image.layers, 1, 0, 0)?;
     ctl.progress(0.9);
     let mut document = Document::new(name, Size::new(image.width, image.height), mode, depth);
     document.layers = layers;
-    if let Some(profile) = reader.archive.icc_profile().map_err(kra_err)? {
+    if let Some(profile) = reader.archive.icc_profile().map_err(map_error)? {
         document.icc_profile = Some(std::sync::Arc::new(profile));
     }
-    let (xres, yres) = (image.x_res, image.y_res);
-    if xres > 0.0 && xres < 1.0e6 {
-        document.resolution_dpi = xres as f32;
-        if let Some(w) = crate::unequal_resolution_warning(xres, yres) {
-            reader.warnings.note(&w);
+    if image.x_res > 0.0 && image.x_res < 1.0e6 {
+        document.resolution_dpi = image.x_res as f32;
+        if let Some(warning) = crate::unequal_resolution_warning(image.x_res, image.y_res) {
+            reader.warnings.note(&warning);
         }
     }
     if document.layers.is_empty() {

@@ -282,6 +282,20 @@ fn create_token_file(path: &Path, token: &str) -> Result<(), AutomationError> {
     writeln!(file, "{token}").map_err(|e| AutomationError::Io(format!("{}: {e}", path.display())))
 }
 
+/// Write a fresh token to `path`, replacing any earlier one (user-only on Unix), and return it.
+/// The desktop app rotates the agent-connection token this way each time it starts listening, so
+/// a token sent to a port another program took over after a crash stops working.
+pub fn replace_token_file(path: &Path) -> Result<String, AutomationError> {
+    let token = generate_token()?;
+    match std::fs::remove_file(path) {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(AutomationError::Io(format!("{}: {e}", path.display()))),
+    }
+    create_token_file(path, &token)?;
+    Ok(token)
+}
+
 /// Resolve a server token. With no supplied token or file, a fresh token is returned.
 /// A missing token file is created atomically; an existing one is read and validated.
 pub fn server_token(supplied: Option<&str>, token_file: Option<&Path>) -> Result<String, AutomationError> {
@@ -484,6 +498,24 @@ mod tests {
             assert_eq!(step, AuthStep::Rejected, "{nonce}: {reply}");
             assert!(reply.get("result").is_none());
         }
+    }
+
+    #[test]
+    fn replaced_token_files_hold_a_new_valid_token() {
+        let dir = std::env::temp_dir().join(format!("photocraft-replace-token-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let path = dir.join("agent.token");
+        let first = replace_token_file(&path).unwrap();
+        assert_eq!(client_token(None, Some(&path)).unwrap(), first);
+        let second = replace_token_file(&path).unwrap();
+        assert_ne!(first, second);
+        assert_eq!(client_token(None, Some(&path)).unwrap(), second);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600);
+        }
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

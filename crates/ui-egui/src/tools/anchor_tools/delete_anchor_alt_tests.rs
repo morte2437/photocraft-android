@@ -56,7 +56,8 @@ fn a_plain_click_on_an_anchor_still_deletes_it() {
     assert_eq!(knots(&app), 3);
     assert_eq!(steps(&app), n + 1);
     assert_eq!(app.session.active().unwrap().history.undo_label(), Some("Delete Anchor Point"));
-    assert!(app.ui.direct_selection.anchors.is_empty());
+    // #12769: the anchor that followed the deleted one is selected, not nothing.
+    assert_eq!(app.ui.direct_selection.anchors.len(), 1);
 }
 
 #[test]

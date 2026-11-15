@@ -188,6 +188,8 @@ fn object_selection_keeps_the_mode_from_the_mouse_press() {
                 let sel = app.session.active().unwrap().doc.selection.as_ref().expect("the old selection survives outside the object");
                 assert!(sel.sample_channel(20, 20, 0) > 0.99, "the gesture must preserve selection outside the object");
                 assert_eq!(sel.sample_channel(220, 150, 0) > 0.5, !at_press.alt, "the disc follows the requested mode");
+                // From no selection: a New-mode click inside the selection deselects (#12853).
+                h.state_mut().run("select.deselect", json!({})).unwrap();
                 mods(&mut h, Modifiers::NONE);
                 move_to(&mut h, 220.0, 150.0);
                 let next = screen(&h, 220.0, 150.0);

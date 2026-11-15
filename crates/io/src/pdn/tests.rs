@@ -1,6 +1,5 @@
 use super::*;
 
-/// Paint.NET's modes in its numeric order, as they open here.
 const MODES: [BlendMode; 14] = [
     BlendMode::Normal,
     BlendMode::Multiply,
@@ -17,6 +16,8 @@ const MODES: [BlendMode; 14] = [
     BlendMode::Screen,
     BlendMode::Xor,
 ];
+const OLD_MODES: [&str; 14] =
+    ["Normal", "Multiply", "Additive", "ColorBurn", "ColorDodge", "Reflect", "Glow", "Overlay", "Difference", "Negation", "Lighten", "Darken", "Screen", "Xor"];
 use std::io::Write;
 
 enum Field {
@@ -119,7 +120,7 @@ fn fixture(modes: &[i32], legacy: bool, compressed: bool) -> Vec<u8> {
         w.int(id + 4);
         w.string(&format!("Läyer {i}"));
         w.object(id + 5, "PaintDotNet.LayerBlendMode", &[("value__", Int(*mode))]);
-        w.object(id + 6, &format!("PaintDotNet.UserBlendOps+{}BlendOp", craft_pdn::BlendMode::ALL.get(*mode as usize).map_or("Unknown", |m| m.name())), &[]);
+        w.object(id + 6, &format!("PaintDotNet.UserBlendOps+{}BlendOp", OLD_MODES.get(*mode as usize).unwrap_or(&"Unknown")), &[]);
         w.object(id + 7, "PaintDotNet.MemoryBlock", &[("length64", Long(24)), ("hasParent", Bool(false)), ("deferred", Bool(true))]);
     }
     w.0.push(11);

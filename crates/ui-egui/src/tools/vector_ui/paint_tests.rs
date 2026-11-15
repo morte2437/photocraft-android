@@ -477,6 +477,22 @@ fn float_paints_match_preview_creation_native_roundtrip_and_document_depth() {
 }
 
 #[test]
+fn open_pen_uses_selected_stroke_color_and_width() {
+    let mut app = app("rgb", 32);
+    let foreground = [0.9, 0.1, 0.2, 1.0];
+    let stroke = [0.1, 0.2, 0.9, 0.7];
+    app.run("tools.setColors", json!({"foreground": foreground})).unwrap();
+    set_tool_paint(&mut app, true, PaintChange::Color(stroke)).unwrap();
+    app.ui.tool_options.stroke_width = 4.0;
+    app.ui.tool_options.vector_mode = "shape".into();
+    app.ui.pen = Some(PenPath { knots: vec![[[20.0, 20.0]; 3], [[80.0, 60.0]; 3]], owner: super::capture_pen_owner(&app), ..Default::default() });
+    pen_commit(&mut app, false);
+    let drawn = shape(&app).stroke.as_ref().unwrap();
+    assert_eq!(drawn.paint, solid_paint(stroke));
+    assert_eq!(drawn.width, 4.0);
+}
+
+#[test]
 fn transparent_and_absent_paints_remain_distinct_and_open_pen_keeps_foreground() {
     let mut app = app("rgb", 32);
     let transparent = [0.124578, 0.564321, 0.765432, 0.0];
@@ -678,6 +694,16 @@ fn test_gradient() -> photocraft_doc::Fill {
         dither: true,
         align: false,
     }
+}
+
+#[test]
+fn open_pen_preserves_selected_stroke_gradient() {
+    let mut app = app("rgb", 32);
+    set_tool_paint(&mut app, true, PaintChange::Gradient(test_gradient())).unwrap();
+    app.ui.tool_options.vector_mode = "shape".into();
+    app.ui.pen = Some(PenPath { knots: vec![[[20.0, 20.0]; 3], [[80.0, 60.0]; 3]], owner: super::capture_pen_owner(&app), ..Default::default() });
+    pen_commit(&mut app, false);
+    assert_eq!(shape(&app).stroke.as_ref().unwrap().paint, test_gradient());
 }
 
 /// A gradient picked for the next shape's stroke and fill (the swatches' Gradient tab) reaches

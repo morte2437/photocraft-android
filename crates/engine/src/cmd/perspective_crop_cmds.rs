@@ -12,7 +12,7 @@
 //! editable equivalent for them. Vector masks, paths, notes, slices and guides follow the affine
 //! map closest to the homography (exact when the quad is a parallelogram).
 
-use photocraft_algo::transform::{Homography, Interp, convex_quad, quad_free_size, quad_size, quad_to_rect, warp_surface_clipped};
+use photocraft_algo::transform::{Homography, Interp, convex_quad_any_winding, quad_free_size, quad_size, quad_to_rect, warp_surface_clipped};
 use photocraft_color::PixelFormat;
 use photocraft_doc::{Document, Layer, LayerContent, LayerId, Size};
 use photocraft_geom::{Affine, Rect};
@@ -39,7 +39,8 @@ fn has_doc(s: &Session) -> std::result::Result<(), String> {
     s.active().map(|_| ()).ok_or_else(|| "no document open".into())
 }
 
-/// `corners`: four `[x, y]` points, TL, TR, BR, BL, forming a convex quad clockwise on screen.
+/// `corners`: four `[x, y]` points, TL, TR, BR, BL, forming a convex quad. Wound counter-clockwise
+/// on screen (a box flipped on one axis) it crops mirrored, each corner as it lies (#12489).
 fn corners(p: &Value) -> Result<[[f64; 2]; 4]> {
     let shape = || bad("`corners` must be four [x, y] points: top-left, top-right, bottom-right, bottom-left");
     let list = p.get("corners").and_then(Value::as_array).filter(|a| a.len() == 4).ok_or_else(shape)?;
@@ -52,9 +53,9 @@ fn corners(p: &Value) -> Result<[[f64; 2]; 4]> {
         }
         *slot = [x, y];
     }
-    if !convex_quad(&q) {
+    if !convex_quad_any_winding(&q) {
         return Err(bad(
-            "the corners must form a convex quadrilateral at least 1 px in area, in order top-left, top-right, bottom-right, bottom-left (clockwise on screen)",
+            "the corners must form a convex quadrilateral at least 1 px in area, in order top-left, top-right, bottom-right, bottom-left (counter-clockwise on screen crops mirrored)",
         ));
     }
     Ok(q)
@@ -387,7 +388,7 @@ mod tests {
             json!({"corners": [[0, 0], [10, 0], [10, 10]]}),
             json!({"corners": [[0, 0], [50, 0], [100, 0], [0, 50]]}),
             json!({"corners": [[0, 0], [50, 50], [50, 0], [0, 50]]}),
-            json!({"corners": [[0, 0], [0, 50], [50, 50], [50, 0]]}),
+            json!({"corners": [[50, 0], [0, 0], [50, 50], [0, 50]]}),
             json!({"corners": [[0, 0], [0.5, 0], [0.5, 0.5], [0, 0.5]]}),
             json!({"corners": [[0, 0], [1e300, 0], [50, 50], [0, 50]]}),
             json!({"corners": [[0, 0], ["a", 0], [50, 50], [0, 50]]}),

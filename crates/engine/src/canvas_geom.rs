@@ -305,6 +305,18 @@ pub(crate) fn transform_doc_marks(doc: &mut Document, a: &Affine) {
     }
 }
 
+/// Runs `f` (Image Size, Canvas Size, Image Rotation) and puts the count points back where they
+/// were: they keep their document coordinates, also where they end up off the canvas, as in the
+/// reference application (#11762). Other marks follow the map as `f` applies it.
+pub(crate) fn keeping_count_points<R>(doc: &mut Document, f: impl FnOnce(&mut Document) -> R) -> R {
+    let saved: Vec<Vec<[f64; 2]>> = doc.measurement.count_groups.iter().map(|g| g.points.clone()).collect();
+    let r = f(doc);
+    for (g, points) in doc.measurement.count_groups.iter_mut().zip(saved) {
+        g.points = points;
+    }
+    r
+}
+
 /// Applies `a` to all non-pixel geometry of the document (layers and document marks).
 pub(crate) fn transform_geometry(doc: &mut Document, a: &Affine) {
     let dpi = doc.resolution_dpi;

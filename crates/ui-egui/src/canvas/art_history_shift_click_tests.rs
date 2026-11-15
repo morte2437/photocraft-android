@@ -105,7 +105,9 @@ fn shift_click_still_connects_brush_pencil_history_brush_and_other_painting_tool
         tool_event(&mut app, ToolEvent::Up { x: 20.0, y: 40.0 }, none);
         tool_event(&mut app, ToolEvent::Down { x: 120.0, y: 40.0, pressure: 1.0 }, shift);
         tool_event(&mut app, ToolEvent::Up { x: 120.0, y: 40.0 }, shift);
-        assert_eq!(last_points(&app, cmd), vec![[20.0, 40.0], [120.0, 40.0]], "{tool:?}");
+        // The Pencil's 1 px tip paints whole pixels, so its points sit on pixel centres (#12200).
+        let want = if tool == Tool::Pencil { vec![[20.5, 40.5], [120.5, 40.5]] } else { vec![[20.0, 40.0], [120.0, 40.0]] };
+        assert_eq!(last_points(&app, cmd), want, "{tool:?}");
         assert!(red(&app, 70, 40) > 0.9, "{tool:?} painted the connecting line midpoint");
     }
 }

@@ -170,6 +170,38 @@ fn mouse(h: &mut egui_kittest::Harness<'static, PhotocraftApp>, kind: &str, x: f
     h.run_steps(2);
 }
 
+#[test]
+fn pasteboard_click_deselects_only_in_new_mode_and_is_undoable() {
+    for mods in [Modifiers::NONE, Modifiers::SHIFT, Modifiers::ALT, Modifiers::SHIFT | Modifiers::ALT] {
+        let mut h = harness();
+        h.state_mut().run("select.rect", json!({"x": 20, "y": 20, "width": 80, "height": 80})).unwrap();
+        let history = h.state().session.active().unwrap().history.past_len();
+        mouse(&mut h, "down", -20.0, 100.0, mods);
+        mouse(&mut h, "up", -20.0, 100.0, mods);
+        let state = h.state().session.active().unwrap();
+        if mods == Modifiers::NONE {
+            assert!(state.doc.selection.is_none(), "New-mode click deselects");
+            assert_eq!(state.history.past_len(), history + 1);
+            h.state_mut().run("edit.undo", json!({})).unwrap();
+            assert!(h.state().session.active().unwrap().doc.selection.is_some(), "undo restores the selection");
+        } else {
+            assert!(state.doc.selection.is_some(), "modified selection mode keeps the selection");
+            assert_eq!(state.history.past_len(), history);
+        }
+    }
+}
+
+#[test]
+fn lasso_drag_from_pasteboard_still_creates_a_selection() {
+    let mut h = harness();
+    mouse(&mut h, "down", -20.0, 80.0, Modifiers::NONE);
+    mouse(&mut h, "move", 100.0, 80.0, Modifiers::NONE);
+    mouse(&mut h, "move", 100.0, 160.0, Modifiers::NONE);
+    mouse(&mut h, "up", -20.0, 160.0, Modifiers::NONE);
+    let selection = h.state().session.active().unwrap().doc.selection.as_ref().expect("a drag still selects");
+    assert!(selection.sample_channel(50, 120, 0) > 0.5);
+}
+
 fn freeform_harness() -> egui_kittest::Harness<'static, PhotocraftApp> {
     let mut h = harness();
     let app = h.state_mut();

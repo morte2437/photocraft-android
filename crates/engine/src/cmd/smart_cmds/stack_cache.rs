@@ -48,11 +48,24 @@ pub(super) fn placed_key(bytes: &[u8], fmt: PixelFormat, sm: &SmartObject, canva
 }
 
 /// The stage after applying `f` to stage `below`.
-pub(super) fn filter_key(below: &StageKey, f: &SmartFilter) -> StageKey {
+pub(super) fn filter_key(below: &StageKey, f: &SmartFilter, mask: Option<&photocraft_doc::LayerMask>) -> StageKey {
     let mut h = blake3::Hasher::new();
     h.update(below);
     h.update(format!("{}\0{}\0{:?}\0", f.command, f.params, f.blend).as_bytes());
     h.update(&f.opacity.to_bits().to_le_bytes());
+    // Equalize's histogram depends on coverage; downstream stages inherit this key.
+    if f.command == "image.adjustments.equalize"
+        && let Some(mask) = mask.filter(|m| m.enabled)
+    {
+        h.update(format!("{:?}|{}", mask.surface.format(), mask.density).as_bytes());
+        h.update(mask.surface.default_bytes());
+        let mut tiles: Vec<_> = mask.surface.tiles().collect();
+        tiles.sort_by_key(|(coord, _)| **coord);
+        for (coord, tile) in tiles {
+            h.update(format!("{coord:?}").as_bytes());
+            h.update(&tile.bytes());
+        }
+    }
     *h.finalize().as_bytes()
 }
 

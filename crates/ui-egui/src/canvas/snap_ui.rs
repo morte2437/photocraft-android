@@ -8,6 +8,7 @@
 
 use egui::{Color32, Stroke, pos2};
 use photocraft_doc::LayerId;
+use photocraft_engine::layer_multi_cmds::move_targets;
 use photocraft_engine::snap::{SnapKind, SnapLine, SnapOptions, SnapTargets, layer_rect, union};
 
 use crate::PhotocraftApp;
@@ -104,7 +105,24 @@ fn moving_rect(app: &PhotocraftApp, tool: Tool) -> Option<[f64; 4]> {
     if crate::move_ui::moves_selected_pixels_with(app, tool) {
         return selection_rect(app);
     }
-    union(st.selected_layers().into_iter().filter_map(|id| layer_rect(&st.doc, id)))
+    // What moves, not what is selected: a group carries its layers and linked layers go along.
+    union(move_targets(&st.doc, &st.selected_layers()).into_iter().filter_map(|id| tree_rect(&st.doc, id)))
+}
+
+/// The bounds of layer `id` as the Move tool moves and snaps it. `snap::layer_rect` skips groups,
+/// which hold no pixels of their own: a group is the layers in it, whole even with a selection
+/// (it moves them whole, so clipping its pixel layers to the selection would frame less than
+/// moves). An artboard is its board, as the snap targets take it, since the whole board moves.
+pub(crate) fn tree_rect(doc: &photocraft_doc::Document, id: LayerId) -> Option<[f64; 4]> {
+    let l = doc.layer(id)?;
+    let b = if let Some(a) = l.artboard() {
+        a.rect
+    } else if l.is_group() {
+        photocraft_engine::transform_cmds::transform_bounds(doc, l)
+    } else {
+        return layer_rect(doc, id);
+    };
+    (!b.is_empty()).then(|| [b.x0, b.y0, b.x1, b.y1].map(f64::from))
 }
 
 /// The bounds of the pixels a selection moves, where they are shown: its floating piece's outline
@@ -231,7 +249,17 @@ fn begin(app: &mut PhotocraftApp, p: [f64; 2], mods: egui::Modifiers) {
     } else if tool == Tool::Move && crate::rulers::guide_at(app, p[0], p[1]).is_some() {
         Some((Gesture::Guide, Vec::new()))
     } else if tool == Tool::Move || moves_layer {
-        let exclude = app.session.active().map(|s| s.selected_layers()).unwrap_or_default();
+        // The targets and everything inside them stay out of the snap targets: a moving group
+        // must not snap to its own layers' starting edges. Selected pixels float off the active
+        // layer alone, so its linked layers stay put and stay targets.
+        let pixels = crate::move_ui::moves_selected_pixels_with(app, tool);
+        let exclude = app.session.active().map_or_else(Vec::new, |s| {
+            let mut ids = s.selected_layers();
+            if !pixels {
+                ids.extend(crate::move_ui::with_descendants(&s.doc, &move_targets(&s.doc, &ids)));
+            }
+            ids
+        });
         moving_rect(app, tool).map(|rect| (Gesture::Move { rect }, exclude))
     } else if straightens {
         // A straighten line (`crop_straighten::pointer` takes the press before the frame's drags)

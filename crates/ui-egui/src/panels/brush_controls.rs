@@ -3,8 +3,19 @@ use super::{Align2, BlendMode, Color32, PhotocraftApp, Rect, Sense, Stroke, Stro
 /// A painting tool's Mode dropdown over `modes` (`None` is Clear); the wheel over it steps the
 /// mode. Returns the mode picked this frame. A list of every blend mode draws the Layers panel's
 /// group lines (#5532; Clear starts none); a short one (the Healing Brush's) draws none.
-pub(super) fn tool_mode_dropdown(ui: &mut egui::Ui, id: &str, modes: &[Option<BlendMode>], current: Option<BlendMode>) -> Option<Option<BlendMode>> {
-    let opts: Vec<(Option<BlendMode>, &str)> = modes.iter().map(|m| (*m, m.map_or("Clear", BlendMode::label))).collect();
+/// `threshold` names Normal "Threshold", as the reference does in an Indexed Color document.
+pub(super) fn tool_mode_dropdown(
+    ui: &mut egui::Ui,
+    id: &str,
+    modes: &[Option<BlendMode>],
+    current: Option<BlendMode>,
+    threshold: bool,
+) -> Option<Option<BlendMode>> {
+    let label = |m: &Option<BlendMode>| match m {
+        Some(BlendMode::Normal) if threshold => tl!("Threshold"),
+        _ => m.map_or("Clear", BlendMode::label),
+    };
+    let opts: Vec<(Option<BlendMode>, &str)> = modes.iter().map(|m| (*m, label(m))).collect();
     let grouped = BlendMode::LAYER_MODES.iter().all(|m| modes.contains(&Some(*m)));
     let mut mode = current;
     let chosen = widgets::dropdown_wheel_grouped(ui, id, tl!("Mode"), &mut mode, &opts, 96.0, |m| grouped && m.is_some_and(starts_blend_group)).0;
@@ -40,8 +51,11 @@ pub(super) fn paint_mode_dropdown(ui: &mut egui::Ui, id: &str, b: &mut photocraf
 /// picking another mode leaves it. The wheel steps it as it steps the other Mode dropdowns.
 /// Without `behind_enabled` (the Background is the active layer) Behind is greyed, as in the
 /// Shift+right-click menu, and the wheel and the keys step past it.
-pub(super) fn pattern_stamp_mode_dropdown(ui: &mut egui::Ui, id: &str, b: &mut photocraft_engine::BrushSettings, behind_enabled: bool) {
-    let opts = crate::brush_mode_menu::pattern_stamp_choices();
+pub(super) fn pattern_stamp_mode_dropdown(ui: &mut egui::Ui, id: &str, b: &mut photocraft_engine::BrushSettings, behind_enabled: bool, threshold: bool) {
+    let mut opts = crate::brush_mode_menu::pattern_stamp_choices();
+    if threshold && let Some(normal) = opts.iter_mut().find(|o| o.0 == (Some(BlendMode::Normal), false)) {
+        normal.1 = tl!("Threshold");
+    }
     let before = if b.behind { (None, true) } else { (Some(b.mode), false) };
     let mut mode = before;
     let groups = |m: &(Option<BlendMode>, bool)| m.0.is_some_and(starts_blend_group);

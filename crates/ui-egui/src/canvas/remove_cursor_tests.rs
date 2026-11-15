@@ -11,7 +11,7 @@ use crate::PhotocraftApp;
 use crate::state::Tool;
 
 /// The canvas at 100 % with `tool` and a 40 px tip, the pointer over its centre.
-fn harness(tool: Tool) -> Harness<'static, PhotocraftApp> {
+pub(super) fn harness(tool: Tool) -> Harness<'static, PhotocraftApp> {
     let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
     app.run("file.new", json!({"width": 400, "height": 300})).unwrap();
     app.ui.tool = tool;
@@ -41,7 +41,7 @@ fn harness(tool: Tool) -> Harness<'static, PhotocraftApp> {
     h
 }
 
-fn set_pref(h: &mut Harness<'_, PhotocraftApp>, path: &str, value: serde_json::Value) {
+pub(super) fn set_pref(h: &mut Harness<'_, PhotocraftApp>, path: &str, value: serde_json::Value) {
     h.state_mut().run("prefs.set", json!({"path": path, "value": value})).unwrap();
     h.run_steps(2);
 }
@@ -66,10 +66,10 @@ fn circle_drawn(h: &Harness<'_, PhotocraftApp>) -> bool {
 }
 
 /// A cursor icon, and its bitmap's size, hotspot and pixels.
-type Cursor = (CursorIcon, Option<([u16; 2], [u16; 2], Vec<u8>)>);
+pub(super) type Cursor = (CursorIcon, Option<([u16; 2], [u16; 2], Vec<u8>)>);
 
 /// The cursor the canvas asks for this frame.
-fn cursor(h: &Harness<'_, PhotocraftApp>) -> Cursor {
+pub(super) fn cursor(h: &Harness<'_, PhotocraftApp>) -> Cursor {
     let out = h.output();
     let image = out.platform_output.cursor_image.as_ref().map(|i| (i.size, i.hotspot, i.rgba.to_vec()));
     (out.platform_output.cursor_icon, image)

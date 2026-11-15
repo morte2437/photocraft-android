@@ -242,7 +242,23 @@ fn equalize(s: &mut Session, p: &Value) -> Result<Value> {
         Some(Value::Bool(only)) => !only,
         Some(_) => return Err(EngineError::BadParams { cmd: "image.adjustments.equalize".into(), msg: "selectedAreaOnly must be true or false".into() }),
     };
-    map_pixels_in(s, "Equalize", p, whole, |_, px, cover| {
+    // A smart filter's selection is its output mask, so it cannot also stand for "histogram from
+    // the selection, applied to everything": refuse instead of quietly leaving the rest unchanged.
+    if whole && s.active().is_some_and(|d| d.doc.selection.is_some()) && crate::adjust_cmds::smart_pixel_target(s, p)?.is_some() {
+        return Err(EngineError::BadParams {
+            cmd: "image.adjustments.equalize".into(),
+            msg: "Equalize Entire Image Based On Selected Area is not available on a smart object yet".into(),
+        });
+    }
+    if crate::adjust_cmds::adjust_as_smart_filter(s, "equalize", "Equalize", p)? {
+        return Ok(Value::Null);
+    }
+    map_pixels_in(s, "Equalize", p, whole, |_, px, cover| equalize_pixels(px, cover))
+}
+
+/// [`equalize`] on straight RGBA pixels with a coverage weight each (also run as a smart filter).
+pub(crate) fn equalize_pixels(px: &mut [[f32; 4]], cover: &[f32]) {
+    {
         let mut hist = [0f64; 256];
         for (p, &k) in px.iter().zip(cover) {
             if k > 0.0 && p[3] > 0.0 {
@@ -269,7 +285,7 @@ fn equalize(s: &mut Session, p: &Value) -> Result<Value> {
                 *v = map(*v);
             }
         }
-    })
+    }
 }
 
 // ---------- transform presets ----------
@@ -317,9 +333,14 @@ fn transform_preset(s: &mut Session, p: &Value, kind: &str) -> Result<Value> {
     let (b, mut params) = match crate::transform_cmds::lone_target(&d.doc, d.active_layer, p)? {
         Some(surf) => (crate::transform_cmds::target_frame(&d.doc, surf), json!({"target": p.get("target")})),
         None => {
-            let id = d.active_layer.ok_or(EngineError::Other("no active layer".into()))?;
-            let l = d.doc.layer(id).ok_or(EngineError::NoLayer(id))?;
-            (crate::transform_cmds::transform_frame(&d.doc, l), json!({"layer": id.0}))
+            let explicit = crate::commands::explicit_layer(s, p)?;
+            let ids = explicit.map_or_else(|| crate::transform_cmds::selection_targets(d), |id| vec![id]);
+            let bounds = crate::transform_cmds::transform_frame_of(&d.doc, &ids);
+            let params = match explicit {
+                Some(id) => json!({"layer": id.0}),
+                None => json!({"layers": ids.iter().map(|id| id.0).collect::<Vec<_>>()}),
+            };
+            (bounds, params)
         }
     };
     if b.is_empty() {
@@ -727,11 +748,20 @@ pub(crate) fn kind_of(s: &Session, id: LayerId) -> Option<&'static str> {
     })
 }
 
+fn has_vector_mask(s: &Session, id: LayerId, only: Option<&str>) -> bool {
+    only.is_none() && s.active().and_then(|d| d.doc.layer(id)).is_some_and(|l| l.vector_mask.is_some())
+}
+
+/// Whether `rasterize_one` has something to do for this layer.
+fn has_rasterize_work(s: &Session, id: LayerId, only: Option<&str>) -> bool {
+    kind_of(s, id).is_some_and(|k| only.is_none_or(|o| o == k)) || has_vector_mask(s, id, only)
+}
+
 /// Rasterize one layer; `only` restricts it to one kind. Without `only` (Rasterize › Layer / All
 /// Layers: "all vector data") a vector mask becomes a pixel mask too; layer effects stay live, as
 /// in Photoshop (Rasterize › Layer Style bakes them). Returns false when there was nothing to do.
 pub(crate) fn rasterize_one(s: &mut Session, id: LayerId, only: Option<&str>, key: &str) -> Result<bool> {
-    let vector_mask = only.is_none() && s.active().and_then(|d| d.doc.layer(id)).is_some_and(|l| l.vector_mask.is_some());
+    let vector_mask = has_vector_mask(s, id, only);
     let content = rasterize_content(s, id, only, key)?;
     if vector_mask {
         s.execute("layer.rasterize.vectorMask", json!({"layer": id.0, "coalesce": key}))?;
@@ -800,36 +830,75 @@ fn rasterize_content(s: &mut Session, id: LayerId, only: Option<&str>, key: &str
 /// rasterize"), every selected layer the command applies to, in one history step.
 pub(crate) fn rasterize(s: &mut Session, p: &Value, only: Option<&'static str>) -> Result<Value> {
     let ids = crate::layer_multi_cmds::targets(s, p)?;
-    let many = ids.len() > 1;
-    let key = step_key(s, "rasterize");
-    let mut done = Vec::new();
-    for id in ids {
-        if rasterize_one(s, id, only, &key)? {
-            done.push(id.0);
-        }
+    rasterize_layers(s, ids, only, rasterize_one)
+}
+
+/// The history label of a Rasterize step: the kind it was limited to, or plain "Rasterize".
+fn rasterize_label(only: Option<&str>) -> &'static str {
+    match only {
+        Some("type") => "Rasterize Type",
+        Some("shape") => "Rasterize Shape",
+        Some("fill") => "Rasterize Fill Content",
+        Some("smart") => "Rasterize Smart Object",
+        _ => "Rasterize",
     }
-    let Some(&first) = done.first() else {
-        return Err(EngineError::Other(match (only, many) {
-            (Some(k), false) => format!("the layer is not a {k} layer"),
-            (Some(k), true) => format!("none of the selected layers is a {k} layer"),
-            (None, false) => "the layer has nothing to rasterize".into(),
-            (None, true) => "none of the selected layers has anything to rasterize".into(),
-        }));
-    };
+}
+
+fn nothing_to_rasterize(only: Option<&str>, many: bool) -> EngineError {
+    EngineError::Other(match (only, many) {
+        (Some(k), false) => format!("the layer is not a {k} layer"),
+        (Some(k), true) => format!("none of the selected layers is a {k} layer"),
+        (None, false) => "the layer has nothing to rasterize".into(),
+        (None, true) => "none of the selected layers has anything to rasterize".into(),
+    })
+}
+
+/// Convert `ids` with `convert` as one history step; a layer that fails takes back the ones
+/// converted before it (#4974).
+fn rasterize_layers(
+    s: &mut Session,
+    ids: Vec<LayerId>,
+    only: Option<&str>,
+    convert: impl Fn(&mut Session, LayerId, Option<&str>, &str) -> Result<bool>,
+) -> Result<Value> {
+    let many = ids.len() > 1;
+    // Refused before a step starts: a failed `compound` still moves the revision, and a command
+    // that changes nothing must leave it alone.
+    if !ids.iter().any(|&id| has_rasterize_work(s, id, only)) {
+        return Err(nothing_to_rasterize(only, many));
+    }
+    let key = step_key(s, "rasterize");
+    let (first, done) = crate::analysis_cmds::compound(s, rasterize_label(only), |s| {
+        let mut done = Vec::new();
+        for id in ids {
+            if convert(s, id, only, &key)? {
+                done.push(id.0);
+            }
+        }
+        let Some(&first) = done.first() else { return Err(nothing_to_rasterize(only, many)) };
+        Ok((first, done))
+    })?;
     let active = s.active().and_then(|d| d.active_layer).map(|id| id.0).filter(|id| done.contains(id));
     Ok(json!({"layer": active.unwrap_or(first), "layers": done}))
 }
 
 pub(crate) fn rasterize_all(s: &mut Session) -> Result<Value> {
     let ids: Vec<LayerId> = s.active().map(|d| d.doc.walk().into_iter().map(|(_, _, l)| l.id).collect()).unwrap_or_default();
-    let key = step_key(s, "rasterizeAll");
-    let mut n = 0;
-    for id in ids {
-        // Every sub-step shares one history entry via the coalescing key.
-        if rasterize_one(s, id, None, &key)? {
-            n += 1;
-        }
+    let ids: Vec<LayerId> = ids.into_iter().filter(|&id| has_rasterize_work(s, id, None)).collect();
+    if ids.is_empty() {
+        return Ok(json!({"rasterized": 0}));
     }
+    let key = step_key(s, "rasterizeAll");
+    let n = crate::analysis_cmds::compound(s, "Rasterize All Layers", |s| {
+        let mut n = 0;
+        for id in ids {
+            // Every sub-step shares one history entry via the coalescing key.
+            if rasterize_one(s, id, None, &key)? {
+                n += 1;
+            }
+        }
+        Ok(n)
+    })?;
     Ok(json!({"rasterized": n}))
 }
 
@@ -906,7 +975,7 @@ pub fn specs() -> Vec<CommandSpec> {
             &["Image", "Adjustments"],
             None,
             r#"{"selectedAreaOnly":bool=true (with a selection, false equalizes the layer within the canvas by the selection's histogram)}"#,
-            has_pixels,
+            crate::adjust_cmds::has_adjustable,
             equalize
         ),
         spec!("image.revealAll", "Reveal All", &["Image"], None, "{}", has_doc, |s, _| {

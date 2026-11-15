@@ -41,13 +41,15 @@ use overlay::{MAX_CURVE_PIECES, bezier};
 pub(crate) use overlay::{curve_points, path_lines, selected_saved_path, shows_anchors};
 pub(crate) use overlay::{draw_anchor, draw_handle, draw_outline};
 #[cfg(test)]
+use path_ops::delete_key_deletes_work_path;
+#[cfg(test)]
 use path_ops::target_path;
 pub use path_ops::{
     active_path_name, make_shape, path_selection_finish, path_to_selection, pick_shape_at, selected_document_path, takes_path_mask, with_active_path,
 };
 pub(crate) use path_ops::{
-    active_shape_path, active_type_path, delete_key_deletes_anchor, delete_key_deletes_work_path, deselect_loaded_path, free_transform_path,
-    targeted_vector_mask, work_path_shown,
+    active_shape_path, active_type_path, delete_key_deletes_anchor, delete_key_deletes_path, delete_key_deletes_segment, deselect_loaded_path,
+    free_transform_path, targeted_vector_mask, work_path_shown,
 };
 #[cfg(test)]
 use paths_panel::path_context_actions;
@@ -57,7 +59,7 @@ pub use paths_panel::{PathEntry, PathRow, path_rows, paths_footer, paths_panel};
 pub(crate) use pen::over_first_anchor;
 #[cfg(test)]
 use pen::pen_to_json;
-pub(crate) use pen::{PATH_OPS, pen_path, pen_replace};
+pub(crate) use pen::{PATH_OPS, path_op_field, pen_path, pen_replace};
 pub use pen::{
     cancel_stale, closes_path_at, continues_path_at, freeform_finish, pen_break_handle, pen_commit, pen_down, pen_end, pen_enter, pen_grab_handle, pen_move,
     pen_undo_last_point, pen_up,
@@ -114,7 +116,7 @@ fn copy_arrow_to_tool_defaults(app: &mut PhotocraftApp, id: photocraft_doc::Laye
                         *end,
                         bounded(*width, 1.0, 4096.0),
                         bounded(*length, 1.0, 4096.0),
-                        bounded(*concavity, 0.0, 100.0),
+                        bounded(*concavity, -50.0, 50.0),
                         bounded(*weight, 1.0, 10000.0),
                     ))
                 }
@@ -224,6 +226,11 @@ mod pen_rubber_band_tests;
 mod paint_tests;
 
 #[cfg(test)]
+mod triangle_box_geometry_tests;
+#[cfg(test)]
+mod triangle_properties_fields_tests;
+
+#[cfg(test)]
 mod pen_resume_tests;
 
 #[cfg(test)]
@@ -236,7 +243,25 @@ mod delete_anchor_options_bar_tests;
 mod pen_enter_deselects_tests;
 
 #[cfg(test)]
+mod line_shift_snap_tests;
+
+#[cfg(test)]
+mod ellipse_shift_circle_tests;
+
+#[cfg(test)]
 mod pen_mode_menu_tests;
+
+#[cfg(test)]
+mod ellipse_path_menus_tests;
+
+#[cfg(test)]
+mod triangle_align_edges_tests;
+
+#[cfg(test)]
+mod triangle_shift_equilateral_tests;
+
+#[cfg(test)]
+mod rectangle_gear_tests;
 
 pub(crate) use pen::freeform_locked_shape;
 #[cfg(test)]
@@ -285,9 +310,7 @@ enum PenTarget {
 pub(crate) fn capture_pen_owner(app: &PhotocraftApp) -> Option<PenOwner> {
     let st = app.session.active()?;
     let target = if app.ui.tool_options.vector_mode == "shape" {
-        let mut open_stroke = app.ui.tool_options.shape_stroke.params();
-        open_stroke["width"] = json!(app.ui.tool_options.stroke_width.max(1.0));
-        open_stroke["color"] = json!(app.session.tools.foreground);
+        let open_stroke = shapes::open_pen_stroke_param(app);
         PenTarget::Shape { fill: fill_param(app), stroke: stroke_param(app), open_stroke }
     } else if let Some((name, _)) = selected_document_geometry(app) {
         PenTarget::Path { name, append: true }

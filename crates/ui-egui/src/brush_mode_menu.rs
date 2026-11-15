@@ -189,15 +189,19 @@ pub(crate) fn is_gesture(tool: Tool, mods: egui::Modifiers) -> bool {
     mods.shift && !mods.alt && !mods.ctrl && !mods.command && !mods.mac_cmd && !items(tool).is_empty()
 }
 
-/// Does a right-click with `mods` open the menu? The Shift gesture for every tool that has one,
-/// and a plain right-click with the Eraser in Block mode, where the Brush Preset picker's Size and
-/// Hardness mean nothing (#11937, as in the reference application).
-/// A plain right-click opens it only where it would otherwise open the picker: with the Erase
-/// preference it still erases.
-pub(crate) fn opens_on(app: &PhotocraftApp, tool: Tool, mods: egui::Modifiers) -> bool {
+/// Does a right-click with `mods` at document point `doc` open the menu? The Shift gesture for
+/// every tool that has one, and a plain right-click with the Eraser in Block mode, where the Brush
+/// Preset picker's Size and Hardness mean nothing (#11937), or with the Paint Bucket (#12530), as
+/// in the reference application.
+/// A plain right-click opens it only where it would otherwise open the picker or nothing: with the
+/// Erase preference it still erases, and on the pasteboard its colour menu opens.
+pub(crate) fn opens_on(app: &PhotocraftApp, tool: Tool, mods: egui::Modifiers, doc: Option<[f64; 2]>) -> bool {
     let plain = !mods.shift && !mods.alt && !mods.ctrl && !mods.command && !mods.mac_cmd;
     let block = tool == Tool::Eraser && app.ui.tool_options.eraser_mode == "block";
-    is_gesture(tool, mods) || (plain && block && !crate::paint_mouse::right_erases(app, tool))
+    let pasteboard = doc.is_some_and(|d| crate::canvas_tool_menu::pasteboard_at(app, tool, d));
+    // An open Free Transform box owns the plain right-click: its transform menu opens instead.
+    let bucket = tool == Tool::PaintBucket && app.ui.transform.is_none();
+    is_gesture(tool, mods) || (plain && (block || bucket) && !crate::paint_mouse::right_erases(app, tool) && !pasteboard)
 }
 
 /// The modifiers that decide a right-button gesture: the ones held when the button went down.
@@ -228,11 +232,25 @@ pub(crate) fn menu_id() -> Id {
     Id::unique("canvas-brush-mode-menu")
 }
 
-/// Opens the active tool's menu at screen point `pos`.
-pub(crate) fn open(app: &mut PhotocraftApp, ctx: &Context, pos: [f32; 2]) {
+/// Temp data: was the open menu opened by a plain right-click (not the Shift gesture)?
+fn plain_id() -> Id {
+    menu_id().with("plain")
+}
+
+/// The row drawn checked. The Paint Bucket's plain right-click menu checks none, as in the
+/// reference application; its Shift+right-click menu checks the current mode.
+pub(crate) fn checked(app: &PhotocraftApp, ctx: &Context, tool: Tool) -> Option<Item> {
+    let plain = ctx.data(|d| d.get_temp::<bool>(plain_id())).unwrap_or(false);
+    if plain && tool == Tool::PaintBucket { None } else { current(app, tool) }
+}
+
+/// Opens the active tool's menu at screen point `pos`, for a right-click with `mods`.
+pub(crate) fn open(app: &mut PhotocraftApp, ctx: &Context, pos: [f32; 2], mods: egui::Modifiers) {
     if !pos.iter().all(|v| v.is_finite()) || items(app.ui.tool).is_empty() {
         return;
     }
+    let plain = !is_gesture(app.ui.tool, mods);
+    ctx.data_mut(|d| d.insert_temp(plain_id(), plain));
     // The checked row reads the tool's own brush.
     crate::paint_mouse::sync_tool_brush(app);
     app.ui.brush_picker = None;
@@ -378,7 +396,7 @@ pub(crate) fn show(app: &mut PhotocraftApp, ctx: &Context) {
     crate::paint_mouse::sync_tool_brush(app);
     let tool = app.ui.tool;
     let rows: Vec<(Item, bool)> = items(tool).into_iter().map(|i| (i, enabled(app, i))).collect();
-    let current = current(app, tool);
+    let current = checked(app, ctx, tool);
     let screen = crate::work_area::visible_rect(ctx);
     let id = menu_id();
     let margin = ctx.global_style().spacing.menu_margin.sum() + egui::Vec2::splat(2.0);
@@ -424,3 +442,7 @@ mod eraser_block_right_click_tests;
 #[cfg(test)]
 #[path = "pattern_stamp_behind_tests.rs"]
 mod pattern_stamp_behind_tests;
+
+#[cfg(test)]
+#[path = "paint_bucket_right_click_menu_tests.rs"]
+mod paint_bucket_right_click_menu_tests;

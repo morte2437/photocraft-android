@@ -106,17 +106,30 @@ fn bake_one(s: &mut Session, id: LayerId, key: &str) -> Result<bool> {
 /// one history step.
 fn rasterize_layer_style(s: &mut Session, p: &Value) -> Result<Value> {
     let ids = crate::layer_multi_cmds::targets(s, p)?;
+    bake_layers(s, ids, bake_one)
+}
+
+/// Bake `ids` with `bake` as one history step; a layer that fails takes back the ones baked before
+/// it (#4974).
+fn bake_layers(s: &mut Session, ids: Vec<LayerId>, bake: impl Fn(&mut Session, LayerId, &str) -> Result<bool>) -> Result<Value> {
     let many = ids.len() > 1;
-    let key = crate::extra_cmds::step_key(s, "rasterizeLayerStyle");
-    let mut done = Vec::new();
-    for id in ids {
-        if bake_one(s, id, &key)? {
-            done.push(id.0);
-        }
+    let nothing = || EngineError::Other(if many { "none of the selected layers has layer effects" } else { "the layer has no layer effects" }.into());
+    // Refused before a step starts: a failed `compound` still moves the revision, and a command
+    // that changes nothing must leave it alone.
+    if !ids.iter().any(|&id| s.active().and_then(|d| d.doc.layer(id)).is_some_and(can_bake)) {
+        return Err(nothing());
     }
-    let Some(&first) = done.first() else {
-        return Err(EngineError::Other(if many { "none of the selected layers has layer effects" } else { "the layer has no layer effects" }.into()));
-    };
+    let key = crate::extra_cmds::step_key(s, "rasterizeLayerStyle");
+    let (first, done) = crate::analysis_cmds::compound(s, "Rasterize Layer Style", |s| {
+        let mut done = Vec::new();
+        for id in ids {
+            if bake(s, id, &key)? {
+                done.push(id.0);
+            }
+        }
+        let Some(&first) = done.first() else { return Err(nothing()) };
+        Ok((first, done))
+    })?;
     let active = s.active().and_then(|d| d.active_layer).map(|id| id.0).filter(|id| done.contains(id));
     Ok(json!({"layer": active.unwrap_or(first), "layers": done}))
 }

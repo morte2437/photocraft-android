@@ -1,6 +1,5 @@
 use super::*;
-use craft_kra::MIMETYPE;
-use craft_kra::tiles::Space;
+use craft_kra::tiles::{Space, lzf_decompress};
 use photocraft_codecs::{ChannelLayout, Format, Image, SampleType as CSample};
 use photocraft_color::{ColorMode, SampleType};
 use photocraft_format::zip::ZipWriter;
@@ -211,12 +210,24 @@ fn deeply_nested_maindoc_is_an_error_not_a_stack_overflow() {
     let entity = format!("<!DOCTYPE DOC [<!ENTITY e \"{open}{close}\">]><DOC><IMAGE width=\"4\" height=\"4\">&e;</IMAGE></DOC>");
     // A quoted `?>` in the XML declaration must not hide the DOCTYPE behind it.
     let declared = format!("<?xml version=\"?>\"?>{entity}");
-    // The nesting is refused by its depth; entity-based forms must also fail safely.
-    for (xml, expected) in [(direct, Some("nest")), (entity, None), (declared, None)] {
+    for (xml, why) in [(direct, "nested"), (entity, "internal DTD"), (declared, "internal DTD")] {
         let bytes = archive(&xml, &[]);
         let e = std::thread::Builder::new().stack_size(512 * 1024).spawn(move || crate::import("deep.kra", &bytes).err()).unwrap().join().unwrap();
-        assert!(matches!(&e, Some(IoError::Kra(m)) if expected.is_none_or(|why| m.contains(why))), "{expected:?}: {e:?}");
+        assert!(matches!(&e, Some(IoError::Kra(m)) if m.contains(why)), "{why}: {e:?}");
     }
+}
+
+#[test]
+fn lzf_decodes_literals_and_overlapping_references() {
+    // "abc" then a 6-byte back-reference 3 back: abcabcabc.
+    assert_eq!(lzf_decompress(&[2, b'a', b'b', b'c', 0x80, 2], 9).unwrap(), b"abcabcabc");
+    // A long back-reference (len 7 + extra) over a single byte: run-length.
+    assert_eq!(lzf_decompress(&[0, b'x', 0xe0, 3, 0], 13).unwrap(), vec![b'x'; 13]);
+    for bad in [&[0x20, 5][..], &[5, 1, 2], &[0xe0], &[2, 1, 2, 3, 0x20]] {
+        assert!(lzf_decompress(bad, 64).is_err(), "{bad:?}");
+    }
+    assert!(lzf_decompress(&[2, 1, 2, 3], 2).is_err(), "overrun");
+    assert!(lzf_decompress(&[2, 1, 2, 3], 4).is_err(), "short");
 }
 
 #[test]

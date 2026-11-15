@@ -17,7 +17,7 @@ const CONTROLS: [(Role, &str, &str); 3] = [
 ];
 
 /// Build a settled options-bar fixture with the requested tool, locale, viewport and scale.
-fn bar(tool: Tool, lang: Lang, width: f32, scale: f32, narrow: bool) -> Harness<'static, PhotocraftApp> {
+pub(super) fn bar(tool: Tool, lang: Lang, width: f32, scale: f32, narrow: bool) -> Harness<'static, PhotocraftApp> {
     let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), Default::default());
     app.run("file.new", json!({"width": 80, "height": 80})).unwrap();
     app.run("prefs.set", json!({"path": "workspace.enableNarrowOptionsBar", "value": narrow})).unwrap();
@@ -39,7 +39,7 @@ fn bar(tool: Tool, lang: Lang, width: f32, scale: f32, narrow: bool) -> Harness<
 }
 
 /// Find the named control by its accessibility role without matching tooltip labels.
-fn control<'a>(h: &'a Harness<'static, PhotocraftApp>, role: Role, label: &str) -> egui_kittest::Node<'a> {
+pub(super) fn control<'a>(h: &'a Harness<'static, PhotocraftApp>, role: Role, label: &str) -> egui_kittest::Node<'a> {
     h.query_all_by_role(role).find(|n| n.accesskit_node().label().as_deref() == Some(label)).unwrap_or_else(|| panic!("missing {role:?} {label:?}"))
 }
 
@@ -54,7 +54,7 @@ fn control_name(h: &Harness<'static, PhotocraftApp>, lang: Lang, role: Role, lab
 }
 
 /// Scroll a control into view, wait for its hover delay and assert the visible tooltip text.
-fn hover(h: &mut Harness<'static, PhotocraftApp>, role: Role, label: &str, tip: &str) {
+pub(super) fn hover(h: &mut Harness<'static, PhotocraftApp>, role: Role, label: &str, tip: &str) {
     control(h, role, label).scroll_to_me();
     h.run_steps(4);
     let rect = control(h, role, label).rect();

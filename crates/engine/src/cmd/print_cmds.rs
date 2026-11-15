@@ -1531,22 +1531,24 @@ fn ps_comment_text(s: &str) -> String {
     s.chars().map(|c| if c.is_control() { ' ' } else { c }).collect()
 }
 
-/// The document's paths as an Illustrator 3 PostScript file. `which`: "all", "work" or a path
-/// name. Coordinates are points (pixels at the document resolution), y up.
+/// The document's paths as an Illustrator 3 PostScript file. `which`: "documentBounds" (the
+/// frame alone, no path: header, bounding box and trailer), "all", "work" or a path name.
+/// Coordinates are points (pixels at the document resolution), y up.
 pub fn paths_to_ai(doc: &Document, which: &str) -> Result<(String, usize)> {
     let dpi = f64::from(doc.resolution_dpi.max(1.0));
     let k = 72.0 / dpi;
     let (w, h) = (f64::from(doc.size.width) * k, f64::from(doc.size.height) * k);
-    let mut chosen: Vec<(String, &photocraft_doc::Path)> = Vec::new();
+    let mut chosen: Vec<&photocraft_doc::Path> = Vec::new();
     match which {
         "all" => {
-            chosen.extend(doc.paths.iter().map(|p| (p.name.clone(), &p.path)));
+            chosen.extend(doc.paths.iter().map(|p| &p.path));
             if let Some(wp) = &doc.work_path {
-                chosen.push(("Work Path".into(), wp));
+                chosen.push(wp);
             }
         }
-        "work" => chosen.extend(doc.work_path.iter().map(|wp| ("Work Path".to_string(), wp))),
-        name => chosen.extend(doc.paths.iter().filter(|p| p.name == name).map(|p| (p.name.clone(), &p.path))),
+        "work" => chosen.extend(doc.work_path.iter()),
+        "documentBounds" => {}
+        name => chosen.extend(doc.paths.iter().filter(|p| p.name == name).map(|p| &p.path)),
     }
     let mut s = String::new();
     s.push_str("%!PS-Adobe-2.0 EPSF-1.2\n%%Creator: PhotoCraft\n");
@@ -1559,18 +1561,28 @@ pub fn paths_to_ai(doc: &Document, which: &str) -> Result<(String, usize)> {
     s.push_str("%%DocumentProcessColors: Black\n%%EndComments\n%%EndProlog\n%%BeginSetup\n%%EndSetup\n");
     let pt = |x: f64, y: f64| (x * k, h - y * k);
     let mut n = 0;
-    for (name, path) in &chosen {
+    for path in &chosen {
         let subs: Vec<_> = path.subpaths.iter().filter(|sp| !sp.knots.is_empty()).collect();
         if subs.is_empty() {
             continue;
         }
         n += 1;
-        s.push_str(&format!("%%Note: {}\n", ps_comment_text(name)));
-        let compound = subs.len() > 1;
-        if compound {
-            s.push_str("*u\n");
-        }
+        // One marked block per path, one group per subpath. A `Join` subpath belongs to the
+        // component before it, so it writes that component's note (union when none precedes).
+        s.push_str("%Adobe_Photoshop_Path_Begin:<< /defaultFill false >>\n");
+        let mut component_op = photocraft_doc::PathOp::Combine;
         for sp in subs {
+            if sp.op != photocraft_doc::PathOp::Join {
+                component_op = sp.op;
+            }
+            s.push_str("*u\n");
+            s.push_str(match component_op {
+                photocraft_doc::PathOp::Exclude => "%AI3_Note:<< /operation /xor /defaultFill false >>\n",
+                photocraft_doc::PathOp::Subtract => "%AI3_Note:<< /operation /subtract >>\n",
+                photocraft_doc::PathOp::Intersect => "%AI3_Note:<< /operation /intersect >>\n",
+                photocraft_doc::PathOp::Combine | photocraft_doc::PathOp::Join => "%AI3_Note:<< /operation /union >>\n",
+            });
+            s.push_str("1 XR\n");
             let (x, y) = pt(sp.knots[0].anchor.x, sp.knots[0].anchor.y);
             s.push_str(&format!("{x:.4} {y:.4} m\n"));
             for seg in sp.segments() {
@@ -1587,10 +1599,9 @@ pub fn paths_to_ai(doc: &Document, which: &str) -> Result<(String, usize)> {
             }
             // Unpainted: `n` closes the path, `N` leaves it open.
             s.push_str(if sp.closed { "n\n" } else { "N\n" });
-        }
-        if compound {
             s.push_str("*U\n");
         }
+        s.push_str("%Adobe_Photoshop_Path_End\n");
     }
     s.push_str("%%PageTrailer\n%%Trailer\n%%EOF\n");
     Ok((s, n))
@@ -1601,7 +1612,8 @@ fn paths_to_illustrator(s: &mut Session, p: &Value) -> Result<Value> {
     let d = s.active().ok_or(EngineError::NoDocument)?;
     let which = p.get("paths").and_then(Value::as_str).unwrap_or("all");
     let (text, n) = paths_to_ai(&d.doc, which)?;
-    if n == 0 {
+    // Document Bounds writes the frame alone (#13771); any other choice must match a path.
+    if n == 0 && which != "documentBounds" {
         return Err(bad(cmd, format!("no paths match `{which}`")));
     }
     match p.get("path").and_then(Value::as_str).filter(|v| !v.is_empty()) {
@@ -1613,9 +1625,9 @@ fn paths_to_illustrator(s: &mut Session, p: &Value) -> Result<Value> {
     }
 }
 
-fn has_paths(s: &Session) -> std::result::Result<(), String> {
-    let d = s.active().ok_or("no document open")?;
-    if d.doc.paths.is_empty() && d.doc.work_path.is_none() { Err("the document has no paths".into()) } else { Ok(()) }
+/// Enabled for every open document, with or without paths: Document Bounds needs none (#13771).
+fn has_document(s: &Session) -> std::result::Result<(), String> {
+    s.active().map(|_| ()).ok_or_else(|| "no document open".into())
 }
 
 pub fn specs() -> Vec<CommandSpec> {
@@ -1681,8 +1693,8 @@ pub fn specs() -> Vec<CommandSpec> {
             "Paths to Illustrator…",
             &["File", "Export"],
             None,
-            r##"{"path":str? (.ai; omit to return the text),"paths":"all|work|<path name>"="all"} → {path, paths}"##,
-            has_paths,
+            r##"{"path":str? (.ai; omit to return the text),"paths":"documentBounds|all|work|<path name>"="all" (documentBounds: the file frame with the canvas as bounding box and no path)} → {path, paths}"##,
+            has_document,
             paths_to_illustrator
         ),
     ]
@@ -1691,3 +1703,11 @@ pub fn specs() -> Vec<CommandSpec> {
 #[cfg(test)]
 #[path = "print_cmds/tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "print_cmds/paths_export_document_bounds_tests.rs"]
+mod paths_export_document_bounds_tests;
+
+#[cfg(test)]
+#[path = "print_cmds/paths_export_path_blocks_tests.rs"]
+mod paths_export_path_blocks_tests;

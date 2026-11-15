@@ -216,23 +216,68 @@ pub(crate) fn delete_key_deletes_work_path(app: &PhotocraftApp) -> bool {
         && matches!(target_path(app), Some((PathTarget::Work, _)))
 }
 
-/// The anchor ⌫ / Delete removes, with its two segments: with the Add or Delete Anchor Point tool, the one
-/// anchor selected on it (⌘/Ctrl+click) while that selection still holds and its path is shown,
-/// as in Photoshop (#12703). The key reached Edit › Clear and deleted the active layer. Several
-/// selected anchors weren't measured and keep the key's other routes.
-pub(crate) fn delete_key_deletes_anchor(app: &PhotocraftApp) -> Option<(crate::direct_select::PathRef, [usize; 2])> {
+/// Does ⌫ / Delete act on what Direct Selection or the anchor tools selected on `target`: the
+/// selection still holds, nothing is being drawn or dragged, and the path is shown and writable.
+fn delete_key_edits_selection(app: &PhotocraftApp, target: &crate::direct_select::PathRef) -> bool {
     let ds = &app.ui.direct_selection;
-    let ([[s, k]], Some(target)) = (ds.anchors.as_slice(), ds.target) else { return None };
-    let usable = matches!(app.ui.tool, Tool::AddAnchorPoint | Tool::DeleteAnchorPoint)
-        && app.ui.pen.is_none()
+    app.ui.pen.is_none()
         && ds.drag.is_none()
         && app.ui.view.shows(app.ui.view.show.target_path)
         && crate::direct_select::still_valid(app, ds)
-        && crate::direct_select::writable(app, &target);
-    usable.then_some(())?;
+        && crate::direct_select::writable(app, target)
+}
+
+/// The anchor ⌫ / Delete removes, with its two segments: with Direct Selection or the Add or
+/// Delete Anchor Point tool, the one anchor selected on it while that selection still holds and
+/// its path is shown, as in Photoshop (#12703, #13203). The key reached Edit › Clear and deleted
+/// the active layer. Several selected anchors weren't measured and keep the key's other routes.
+pub(crate) fn delete_key_deletes_anchor(app: &PhotocraftApp) -> Option<(crate::direct_select::PathRef, [usize; 2])> {
+    let ds = &app.ui.direct_selection;
+    let ([[s, k]], Some(target)) = (ds.anchors.as_slice(), ds.target) else { return None };
+    let tool = matches!(app.ui.tool, Tool::DirectSelection | Tool::AddAnchorPoint | Tool::DeleteAnchorPoint);
+    (tool && delete_key_edits_selection(app, &target)).then_some(())?;
     let (_, path) = crate::direct_select::candidates(app).into_iter().find(|(r, _)| *r == target)?;
     path.subpaths.get(*s)?.knots.get(*k)?;
     Some((target, [*s, *k]))
+}
+
+/// The segment ⌫ / Delete removes (`[subpath, knot]` it leaves): with Direct Selection, a clicked
+/// segment and no selected anchor. Its anchors stay and the subpath opens there, as in Photoshop
+/// (#13203).
+pub(crate) fn delete_key_deletes_segment(app: &PhotocraftApp) -> Option<(crate::direct_select::PathRef, [usize; 2])> {
+    let ds = &app.ui.direct_selection;
+    let (Some([s, k]), Some(target)) = (ds.segment, ds.target) else { return None };
+    let usable = app.ui.tool == Tool::DirectSelection && ds.anchors.is_empty() && delete_key_edits_selection(app, &target);
+    usable.then_some(())?;
+    let (_, path) = crate::direct_select::candidates(app).into_iter().find(|(r, _)| *r == target)?;
+    path.subpaths.get(s)?.knots.get(k)?;
+    Some((target, [s, k]))
+}
+
+/// The path ⌫ / Delete deletes, as the command and its params: the work path with the Pen,
+/// Freeform Pen or Path Selection ([`delete_key_deletes_work_path`]); with Direct Selection and
+/// no anchor or segment selected, the targeted saved path, work path or vector mask, as in
+/// Photoshop (#13203). A shape layer's path wasn't measured: the key keeps deleting the layer.
+pub(crate) fn delete_key_deletes_path(app: &PhotocraftApp) -> Option<(&'static str, Value)> {
+    if delete_key_deletes_work_path(app) {
+        return Some(("path.delete", json!({"name": "work"})));
+    }
+    let ds = &app.ui.direct_selection;
+    let selected = crate::direct_select::still_valid(app, ds) && (!ds.anchors.is_empty() || ds.segment.is_some());
+    let usable = app.ui.tool == Tool::DirectSelection
+        && !selected
+        && app.ui.pen.is_none()
+        && app.ui.transform.is_none()
+        && ds.drag.is_none()
+        && app.ui.view.shows(app.ui.view.show.target_path);
+    usable.then_some(())?;
+    match target_path(app)?.0 {
+        PathTarget::Work => Some(("path.delete", json!({"name": "work"}))),
+        PathTarget::Saved(name) => Some(("path.delete", json!({"name": name}))),
+        // As the Paths panel's trash does with a vector mask's row.
+        PathTarget::VectorMask(id) => Some(("layer.vectorMask.delete", json!({"layer": id}))),
+        PathTarget::Shape(_) => None,
+    }
 }
 
 /// The path Path Selection edits: the targeted vector mask, the active shape layer's path, the

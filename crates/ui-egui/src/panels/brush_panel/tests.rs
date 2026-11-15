@@ -456,7 +456,7 @@ fn clone_stamp_opacity_and_flow_are_journaled_per_gesture() {
         assert_eq!(id, "tools.setBrush");
         assert_eq!(params["brush"][field].as_f64().map(|v| v as f32), Some(value));
     }
-    h.state_mut().ui.clone_source = Some([0.0, 0.0]);
+    crate::retouch_ui::set_source(h.state_mut(), 0.0, 0.0);
     let params = crate::retouch_ui::clone_params(h.state()).unwrap();
     assert_eq!(params["opacity"], json!(h.state().session.tools.brush.opacity * 100.0));
     assert_eq!(params["flow"], json!(h.state().session.tools.brush.flow * 100.0));

@@ -6,7 +6,7 @@
 
 use std::sync::Arc;
 
-use photocraft_cms::{ColorSpace, TransformOptions};
+use craft_cms::{ColorSpace, TransformOptions};
 use photocraft_color::ColorMode;
 use photocraft_doc::Document;
 use photocraft_engine::color_cmds::ColorSettings;
@@ -469,6 +469,9 @@ fn apply_command_defaults(app: &PhotocraftApp, command: &str, fields: &mut Map<S
     if command == "edit.assignProfile" {
         assign_profile_defaults(app, fields);
     }
+    if command == super::fade_modes::COMMAND {
+        super::fade_modes::defaults(app, fields);
+    }
     if command == crate::bitmap_dialog::COMMAND {
         crate::bitmap_dialog::defaults(app, fields);
     }
@@ -853,7 +856,7 @@ const PROFILE_DIALOGS: &[&str] = &["edit.assignProfile", "edit.convertToProfile"
 /// working spaces those of that space, as Photoshop lists them (#6323). An RGB working space is a
 /// display or colour-space profile, not a scanner's or a printer's.
 fn installed_filter(cmd: &str, key: &str) -> Option<fn(&InstalledProfile) -> bool> {
-    use photocraft_cms::{ColorSpace, ProfileClass};
+    use craft_cms::{ColorSpace, ProfileClass};
     match (cmd, key) {
         (c, "profile") if PROFILE_DIALOGS.contains(&c) => Some(|_| true),
         ("edit.colorSettings", "workingRgb") => {
@@ -1045,9 +1048,9 @@ fn indexed_matte_document_color(app: &PhotocraftApp, doc: &Document, color: [f32
     };
     let source = app.session.color.working(ColorMode::Rgb);
     let options = TransformOptions { intent: app.session.color.settings.intent(), bpc: app.session.color.settings.bpc, ..Default::default() };
-    let transform = photocraft_cms::transform::cached(&source, &destination, options).map_err(|e| e.to_string())?;
+    let transform = craft_cms::transform::cached(&source, &destination, options).map_err(|e| e.to_string())?;
     let mut output = [0.0; 16];
-    transform.eval(&color[..3], &mut output);
+    transform.eval(&color[..3], &mut output).map_err(|e| e.to_string())?;
     let rgb = if destination.color_space == ColorSpace::Gray { [output[0]; 3] } else { [output[0], output[1], output[2]] };
     if rgb.iter().any(|v| !v.is_finite()) {
         return Err("cannot convert matte colour to finite document samples".into());
@@ -1151,6 +1154,10 @@ pub fn body(ui: &mut egui::Ui, f: &mut Map<String, Value>) {
     for p in parse_spec(&spec) {
         if cmd == "image.mode.indexedColor" && p.key == "matte" {
             indexed_matte_row(ui, f);
+            continue;
+        }
+        if cmd == super::fade_modes::COMMAND && p.key == "mode" {
+            super::fade_modes::row(ui, f, &label(&p.key));
             continue;
         }
         if zoom_center::owns(&cmd, f) && matches!(p.key.as_str(), "centerX" | "centerY") {

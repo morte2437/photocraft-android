@@ -213,7 +213,7 @@ pub(crate) fn apply_filter_to_surface_in(
     }
     // Image › Adjustments recorded as smart filters (Levels, Curves, Shadows/Highlights… from PSD).
     if let Some(kind) = id.strip_prefix("image.adjustments.") {
-        return crate::adjust_cmds::adjust_as_filter(kind, params, surf);
+        return crate::adjust_cmds::adjust_as_filter(kind, params, surf, None);
     }
     // WebAssembly plug-in smart filters (plugin_cmds).
     if id == crate::plugin_cmds::RUN {

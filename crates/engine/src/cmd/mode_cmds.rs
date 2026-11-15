@@ -7,9 +7,9 @@
 //! inks (`Document::duotone`), which display and flat export render through. Like Photoshop the
 //! conversions flatten (Indexed, Bitmap) and require a grayscale source (Bitmap, Duotone).
 
+use craft_cms::{ColorSpace, TransformOptions};
 use photocraft_algo::quantize::{self, BitmapMethod, Dither, Forced, HalftoneShape, PaletteKind};
 use photocraft_algo::transform::{Homography, Interp};
-use photocraft_cms::{ColorSpace, TransformOptions};
 use photocraft_color::{ColorMode, PixelFormat, SampleType};
 use photocraft_doc::adjust::CurvePoint;
 use photocraft_doc::{ColorTable, Document, Duotone, DuotoneInk, Layer, LayerContent, LayerId, Size};
@@ -63,6 +63,12 @@ pub fn rotated_size(size: Size, deg: f64) -> Size {
 }
 
 pub(crate) fn rotate_arbitrary(s: &mut Session, p: &Value) -> Result<Value> {
+    rotate_arbitrary_with(s, p, true)
+}
+
+/// [`rotate_arbitrary`]; `keep_counts` leaves the count points where they were (Image Rotation,
+/// #11762). The Crop tool's straighten turn moves them with the image, as before.
+pub(crate) fn rotate_arbitrary_with(s: &mut Session, p: &Value, keep_counts: bool) -> Result<Value> {
     const CMD: &str = "image.rotation.arbitrary";
     // At full precision: an f32 angle can grow the canvas 1 px past what `rotated_size` gives callers.
     let angle = p.get("angle").and_then(Value::as_f64).unwrap_or(0.0);
@@ -132,7 +138,11 @@ pub(crate) fn rotate_arbitrary(s: &mut Session, p: &Value) -> Result<Value> {
             // What Free Transform leaves alone: unlinked vector masks, gradient angles, artboards…
             crate::canvas_geom::transform_layer_geometry(l, &a, false, dpi);
         }
-        crate::canvas_geom::transform_doc_marks(doc, &a);
+        if keep_counts {
+            crate::canvas_geom::keeping_count_points(doc, |doc| crate::canvas_geom::transform_doc_marks(doc, &a));
+        } else {
+            crate::canvas_geom::transform_doc_marks(doc, &a);
+        }
         for ch in doc.channels.iter_mut().chain(doc.quick_mask.as_mut()) {
             ch.surface = crate::transform_cmds::warp_gray(&ch.surface, &h, interp)?;
         }
@@ -270,10 +280,10 @@ fn working_matte_color(s: &Session, doc: &Document, color: [f32; 4]) -> Result<[
     };
     let source = s.color.working(ColorMode::Rgb);
     let options = TransformOptions { intent: s.color.settings.intent(), bpc: s.color.settings.bpc, ..Default::default() };
-    let transform = photocraft_cms::transform::cached(&source, &destination, options)
+    let transform = craft_cms::transform::cached(&source, &destination, options)
         .map_err(|e| bad("image.mode.indexedColor", format!("cannot convert matte colour: {e}")))?;
     let mut output = [0.0; 16];
-    transform.eval(&color[..3], &mut output);
+    transform.eval(&color[..3], &mut output).map_err(|e| bad("image.mode.indexedColor", format!("cannot convert matte colour: {e}")))?;
     let matte = if destination.color_space == ColorSpace::Gray { [output[0]; 3] } else { [output[0], output[1], output[2]] };
     if matte.iter().any(|v| !v.is_finite()) {
         return Err(bad("image.mode.indexedColor", "cannot convert matte colour to finite document samples"));

@@ -2,10 +2,10 @@
 //! a JPEG, as Photoshop's JPEG Options does. Quality is Photoshop's 0–12 scale (Low 0–4, Medium
 //! 5–7, High 8–9, Maximum 10–12), mapped to the encoder's 1–100 by
 //! `photocraft_engine::file_cmds::jpeg_quality`; Format Options are Baseline ("Standard"), Baseline
-//! Optimized and Progressive. Matte, Scans and the size preview aren't offered yet. Re-saving an
-//! opened JPEG starts at the file's own quality, as File › Save keeps it (#4032). Otherwise the
-//! dialog starts at the quality and format it was last answered with, also after a restart, as
-//! Photoshop's does (see [`Start::for_active`]).
+//! Optimized and Progressive, and the dialog shows the size the file will have. Matte and Scans
+//! aren't offered yet. Re-saving an opened JPEG starts at the file's own quality, as File › Save
+//! keeps it (#4032). Otherwise the dialog starts at the quality and format it was last answered
+//! with, also after a restart, as Photoshop's does (see [`Start::for_active`]).
 //!
 //! The save is parked in [`Prompt`] while the modal is up (egui is immediate-mode) and written
 //! once answered. Cancel drops the save. Scripts skip the prompt by passing `quality` or
@@ -23,6 +23,8 @@ use photocraft_codecs::JpegFormat;
 use serde_json::Value;
 
 use crate::{ExportSettings, PhotocraftApp};
+
+mod size_readout;
 
 /// The highest quality on Photoshop's JPEG scale.
 pub const MAX_QUALITY: u8 = 12;
@@ -213,7 +215,7 @@ pub struct Prompt {
 
 /// `true` when `path` names a JPEG (`.jpg`, `.jpeg`, `.jpe`, …).
 pub fn is_jpeg_path(path: &str) -> bool {
-    photocraft_engine::file_cmds::extension(path).and_then(|e| photocraft_codecs::from_extension(&e)) == Some(photocraft_codecs::Format::Jpeg)
+    photocraft_engine::file_cmds::extension(path).and_then(|e| photocraft_formats::from_extension(&e)) == Some(photocraft_formats::Format::Jpeg)
 }
 
 /// Whether saving the active document to `path` asks for JPEG Options.
@@ -240,6 +242,7 @@ pub fn park_at(app: &mut PhotocraftApp, path: String, copy: bool, record: &'stat
 }
 
 pub fn show(app: &mut PhotocraftApp, ctx: &egui::Context) {
+    let size_source = size_readout::Source::of(app);
     let Some(p) = &mut app.jpeg_options else { return };
     let (mut ok, mut cancel) = (false, false);
     let (mut quality, mut format) = (p.quality, p.format);
@@ -274,6 +277,8 @@ pub fn show(app: &mut PhotocraftApp, ctx: &egui::Context) {
             ui.spacing_mut().item_spacing.x = 10.0;
             ok = crate::widgets::primary_button(ui, tl!("OK"), 84.0).clicked();
             cancel = crate::widgets::secondary_button(ui, tl!("Cancel"), 84.0).clicked();
+            // How big the file will be with these options, at the left of the buttons.
+            ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| size_readout::show(ui, size_source.as_ref(), quality, format));
         });
     });
     cancel |= modal.should_close();
