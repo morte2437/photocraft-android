@@ -15,6 +15,18 @@ use crate::state::{DialogKind, Tool};
 const MARK: &str = "__createShape";
 /// Largest side the dialog accepts, in pixels (Photoshop's document limit).
 const MAX_PX: f64 = 300_000.0;
+/// The reference's alert for a Width or Height typed past `1..=MAX_PX` px (#13358): Perspective
+/// Crop's text, with the limits in two decimals and the system's decimal separator ("1,00" there).
+fn size_range_alert() -> String {
+    let number = |v: f64| {
+        let text = format!("{v:.2}");
+        if crate::i18n::decimal_separator() == Some(',') { text.replace('.', ",") } else { text }
+    };
+    let (lo, hi) = (number(1.0), number(MAX_PX));
+    crate::i18n::fmt(tl!(crate::tools::crop_size::LENGTH_RANGE_ALERT), &[("min", &lo), ("max", &hi), ("unit", tl!("Pixels"))])
+}
+/// Set in the dialog's fields by [`body`] when a typed size was out of range; [`open_owed_alert`] takes it.
+const ALERT_OWED: &str = "__sizeRangeAlert";
 /// Remembered values (document pixels; sides and radii come from the options bar).
 const KEYS: [&str; 4] = ["width", "height", "fromCenter", "starRatio"];
 
@@ -183,6 +195,20 @@ pub fn confirm(app: &mut PhotocraftApp, f: &Map<String, Value>) -> Result<Value,
     result
 }
 
+/// Returns whether a size warning is owed, blocking creation until it has been acknowledged.
+pub fn open_owed_alert(app: &mut PhotocraftApp, ctx: &egui::Context, f: &mut Map<String, Value>) -> bool {
+    if !f.contains_key(ALERT_OWED) {
+        return false;
+    }
+    // A mouse press leaves the field before its button answers on release. Keep the warning
+    // pending until then, so Cancel can discard it instead of opening an orphaned alert.
+    if !ctx.input(|i| i.pointer.any_down()) {
+        f.remove(ALERT_OWED);
+        crate::panels::options_bar::range_alert(&mut app.ui, &size_range_alert());
+    }
+    true
+}
+
 /// Label column bounds for [`crate::widgets::label_column_width`]: the English labels' width, and a cap.
 const LABEL_MIN_W: f32 = 96.0;
 const LABEL_MAX_W: f32 = 200.0;
@@ -214,7 +240,18 @@ pub fn body(app: &PhotocraftApp, ui: &mut egui::Ui, f: &mut Map<String, Value>) 
             let to_unit = |px: f64| unit.from_px(px, dpi, extent, ppi) as f32;
             let mut v = to_unit(px);
             let places = unit.decimals() as u32;
-            let resp = crate::widgets::value_field_prec(ui, &mut v, to_unit(1.0)..=to_unit(MAX_PX), unit.suffix(), 110.0, places).accessible_name(text);
+            let range = to_unit(1.0)..=to_unit(MAX_PX);
+            // Create Triangle's pixel fields say when a typed size was out of range (#13358); the other
+            // units and the other shapes' dialogs keep clamping silently.
+            let (resp, out_of_range) = if unit == Unit::Pixels && kind == "triangle" {
+                crate::widgets::value_field_alerting_prec(ui, text, &mut v, range, unit.suffix(), 110.0, places)
+            } else {
+                (crate::widgets::value_field_prec(ui, &mut v, range, unit.suffix(), 110.0, places), false)
+            };
+            let resp = resp.accessible_name(text);
+            if out_of_range {
+                f.insert(ALERT_OWED.into(), Value::Bool(true));
+            }
             if resp.changed() {
                 let px = unit.to_px(f64::from(v), dpi, extent, ppi).clamp(1.0, MAX_PX);
                 f.insert(key.into(), json!((px * 1000.0).round() / 1000.0));
@@ -298,3 +335,6 @@ pub fn body(app: &PhotocraftApp, ui: &mut egui::Ui, f: &mut Map<String, Value>) 
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod create_triangle_range_alert_tests;

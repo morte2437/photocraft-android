@@ -821,6 +821,11 @@ pub fn show(app: &mut PhotocraftApp, ctx: &egui::Context) {
         }
         outcome = image_processor_ui::finish(&mut app.ui, interactive, processor_alert, outcome);
         outcome = fit_image_range::finish(&mut app.ui, interactive, fit_image_alert, outcome);
+        // A size warning must precede creation, while Cancel discards the edit and its warning.
+        // Wait until the buttons have answered so the click that left a field cannot do both.
+        if crate::shape_dialog::owns(&fields) && outcome != Some(false) && crate::shape_dialog::open_owed_alert(app, ctx, &mut fields) {
+            outcome = None;
+        }
         if let Some(dm) = app.ui.dialog_mut(d.id) {
             dm.fields = fields;
         }

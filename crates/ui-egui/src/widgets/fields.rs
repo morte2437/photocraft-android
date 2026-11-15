@@ -33,13 +33,28 @@ pub fn value_field_whole_alerting(
     suffix: &str,
     width: f32,
 ) -> (Response, bool) {
-    value_field_alerting_in(ui, name, value, range, suffix, width, true)
+    value_field_alerting_in(ui, name, value, range, suffix, width, (true, None))
 }
 
 /// [`value_field_whole_alerting`] for a field that takes decimals (a corner radius, #13336): a
 /// typed value past `range` becomes the closest end, unrounded.
 pub fn value_field_alerting(ui: &mut Ui, name: &str, value: &mut f32, range: std::ops::RangeInclusive<f32>, suffix: &str, width: f32) -> (Response, bool) {
-    value_field_alerting_in(ui, name, value, range, suffix, width, false)
+    value_field_alerting_in(ui, name, value, range, suffix, width, (false, None))
+}
+
+/// [`value_field_alerting`] showing `decimals` decimal places, for a field in a ruler unit (Create
+/// Triangle's Width and Height in pixels, #13358): the typed value past `range` becomes the closest
+/// end, and the field keeps the places its unit needs.
+pub fn value_field_alerting_prec(
+    ui: &mut Ui,
+    name: &str,
+    value: &mut f32,
+    range: std::ops::RangeInclusive<f32>,
+    suffix: &str,
+    width: f32,
+    decimals: u32,
+) -> (Response, bool) {
+    value_field_alerting_in(ui, name, value, range, suffix, width, (false, Some(decimals)))
 }
 
 fn value_field_alerting_in(
@@ -49,7 +64,8 @@ fn value_field_alerting_in(
     range: std::ops::RangeInclusive<f32>,
     suffix: &str,
     width: f32,
-    whole: bool,
+    // Whole numbers only, and the decimal places to show (`None`: the field's own choice).
+    (whole, decimals): (bool, Option<u32>),
 ) -> (Response, bool) {
     let (lo, hi) = (*range.start(), *range.end());
     let fit = |v: f32| {
@@ -69,7 +85,7 @@ fn value_field_alerting_in(
     let draft = draft.filter(|(_, stored, field)| *stored == *value && field.is_some_and(|f| ui.ctx().memory(|m| m.has_focus(f))));
     let mut typed = draft.map_or(*value, |(typed, _, _)| typed);
     // The field's own range is wide, so the typed value reaches here unclamped.
-    let r = value_field_named(ui, name, &mut typed, -1.0e9..=1.0e9, suffix, width);
+    let r = value_field_in(ui, &mut typed, -1.0e9..=1.0e9, suffix, width, 0.0, FieldOpts { decimals, ..Default::default() }, Some(name)).0;
     // A step past the ends is no typed value (#13304). Only a step the field took counts: a wheel
     // event that moves less than a notch (or not at all) steps nothing, and must not drop what was
     // typed.
