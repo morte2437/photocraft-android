@@ -613,7 +613,7 @@ fn package_keeps_files_already_in_links() {
     let second = s.execute("file.package", json!({"dir": format!("{dir}/pkg")})).unwrap();
     let second = second["links"][0].as_str().unwrap();
     assert_ne!(second, first);
-    assert!(second.ends_with("Links/0-art.png"), "{second}");
+    assert!(second.ends_with("Links/art_1.png"), "{second}");
     assert_eq!(std::fs::read(&first).unwrap(), kept);
     assert_eq!(std::fs::read(second).unwrap(), kept);
     let _ = std::fs::remove_dir_all(&dir);
