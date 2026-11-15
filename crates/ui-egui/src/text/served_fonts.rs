@@ -18,6 +18,25 @@ use crate::PhotocraftApp;
 /// Layers whose document was busy with a background job when their font arrived.
 static PENDING: Mutex<Vec<TypeLayerRef>> = Mutex::new(Vec::new());
 
+/// The served catalog is process-wide, and every family added while a font menu is open adds a
+/// row that egui styles on its next pass, so `Harness::run` takes one more pass per family. Tests
+/// that add families hold this for writing ([`changing_catalog`]), and tests that wait for an
+/// open font menu to settle hold it for reading ([`steady_catalog`]).
+#[cfg(test)]
+static CATALOG: std::sync::RwLock<()> = std::sync::RwLock::new(());
+
+/// Held by a test while it adds families to the served catalog.
+#[cfg(test)]
+pub(crate) fn changing_catalog() -> std::sync::RwLockWriteGuard<'static, ()> {
+    CATALOG.write().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// Held by a test while it waits for an open font menu to settle: no family is added meanwhile.
+#[cfg(test)]
+pub(crate) fn steady_catalog() -> std::sync::RwLockReadGuard<'static, ()> {
+    CATALOG.read().unwrap_or_else(PoisonError::into_inner)
+}
+
 /// Served script fallbacks in the UI's font stack, by egui font name, unscaled: kept so the stack
 /// `theme::install_fonts` rebuilds on a language change includes them again.
 static UI_FACES: Mutex<Vec<(String, Arc<FontData>)>> = Mutex::new(Vec::new());
@@ -204,7 +223,10 @@ mod tests {
     fn a_layer_in_a_script_redraws_when_that_scripts_fallback_arrives() {
         // Thai: other tests use other scripts (the served catalog is process-wide).
         let thai = "Served Test Thai";
-        photocraft_text::served::add_fonts(&parse_manifest(&format!("{thai} | Regular | fonts/t/T.ttf | Thai\n")).0);
+        {
+            let _catalog = changing_catalog();
+            photocraft_text::served::add_fonts(&parse_manifest(&format!("{thai} | Regular | fonts/t/T.ttf | Thai\n")).0);
+        }
         let layer = |text: &str| TextLayer { text: text.into(), font_family: "Inter".into(), ..Default::default() };
         assert!(redraws_for(&layer("สวัสดี"), &[thai.into()]), "Thai text set in Inter falls back to it");
         assert!(!redraws_for(&layer("hello"), &[thai.into()]));
@@ -276,7 +298,12 @@ mod tests {
             return;
         }
         let (jpan, hans) = ("Served Test Jpan", "Served Test Hans");
-        photocraft_text::served::add_fonts(&parse_manifest(&format!("{jpan} | Regular | fonts/j/J.ttf | Jpan\n{hans} | Regular | fonts/h/H.ttf | Hans\n")).0);
+        {
+            let _catalog = changing_catalog();
+            photocraft_text::served::add_fonts(
+                &parse_manifest(&format!("{jpan} | Regular | fonts/j/J.ttf | Jpan\n{hans} | Regular | fonts/h/H.ttf | Hans\n")).0,
+            );
+        }
         crate::i18n::set_current(crate::i18n::Lang::from_code("zh-hans").expect("Simplified Chinese"));
         let ctx = egui::Context::default();
         crate::theme::install_fonts(&ctx);

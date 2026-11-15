@@ -469,5 +469,9 @@ mod tests;
 mod fade_visibility_tests;
 
 #[cfg(test)]
+#[path = "edit_menu_cmds/caf_new_layer_name_tests.rs"]
+mod caf_new_layer_name_tests;
+
+#[cfg(test)]
 #[path = "edit_menu_cmds/find_replace_change_tests.rs"]
 mod find_replace_change_tests;

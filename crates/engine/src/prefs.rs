@@ -1323,12 +1323,129 @@ impl MenuCustomization {
     }
 }
 
-/// Edit › Toolbar: hidden tools and a custom order (tool names as in `ui.set {tool}`).
+/// Edit › Toolbar: the toolbar's group layout (tool names as in `ui.set {tool}`), plus the older
+/// flat `hidden` list and the unused `order` list.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct ToolbarCustomization {
+    /// Tools taken off the toolbar one by one (the Keyboard Shortcuts dialog's Toolbar tab). The
+    /// layout moves each into `extras` as its own group.
     pub hidden: Vec<String>,
     pub order: Vec<String>,
+    /// The toolbar's slots in order, each a group of tools in flyout order. `None` is the
+    /// default layout ([`DEFAULT_TOOLBAR`]).
+    pub toolbar: Option<Vec<Vec<String>>>,
+    /// Extra Tools: groups that get no slot of their own. Like `toolbar`, `null` is the default
+    /// (stored as such, so `prefs.reset` of one path finds its default).
+    pub extras: Option<Vec<Vec<String>>>,
+}
+
+/// The default toolbar layout: one group per slot, in toolbar order (the same as the toolbar's
+/// `TOOL_SECTIONS` read slot by slot).
+pub const DEFAULT_TOOLBAR: &[&[&str]] = &[
+    &["Move", "Artboard"],
+    &["RectMarquee", "EllipseMarquee", "SingleRowMarquee", "SingleColumnMarquee"],
+    &["Lasso", "PolygonLasso", "MagneticLasso"],
+    &["ObjectSelection", "QuickSelection", "MagicWand"],
+    &["Crop", "PerspectiveCrop", "Slice", "SliceSelect"],
+    &["Frame"],
+    &["Eyedropper", "ColorSampler", "Ruler", "Note", "Count"],
+    &["SpotHealing", "Remove", "Healing", "Patch", "ContentAwareMove", "RedEye"],
+    &["Brush", "Pencil", "ColorReplacement", "MixerBrush"],
+    &["CloneStamp", "PatternStamp"],
+    &["HistoryBrush", "ArtHistoryBrush"],
+    &["Eraser", "BackgroundEraser", "MagicEraser"],
+    &["Gradient", "PaintBucket"],
+    &["Blur", "Sharpen", "Smudge"],
+    &["Dodge", "Burn", "Sponge"],
+    &["Pen", "FreeformPen", "CurvaturePen", "AddAnchorPoint", "DeleteAnchorPoint", "ConvertPoint"],
+    &["Type", "VerticalType", "VerticalTypeMask", "HorizontalTypeMask"],
+    &["PathSelection", "DirectSelection"],
+    &["Rectangle", "EllipseShape", "Triangle", "Polygon", "Star", "Line", "CustomShape"],
+    &["Hand", "RotateView"],
+    &["Zoom"],
+];
+
+/// A toolbar layout with every name resolved: the slots' groups and the Extra Tools groups.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ToolbarLayout {
+    pub toolbar: Vec<Vec<String>>,
+    pub extras: Vec<Vec<String>>,
+}
+
+impl ToolbarCustomization {
+    /// The tool `name` means, as its canonical name (the `tools.select.<tool>` id with a capital
+    /// first letter, which is the toolbar's `Tool` name). Matches like `ui.set {tool}`: case,
+    /// spaces, `_` and `-` don't count, a marquee may drop "Marquee", and the tool's own name
+    /// works with or without "Tool". `None` for a name that isn't a tool.
+    pub fn tool_name(name: &str) -> Option<String> {
+        let canonical = |key: &str| -> String { key.chars().take(1).flat_map(char::to_uppercase).chain(key.chars().skip(1)).collect() };
+        // Stored layouts hold canonical names: find those without allocating (the toolbar
+        // resolves its layout every frame).
+        if let Some(key) = crate::shell_commands::TOOLS.iter().filter_map(|(id, _, _)| id.strip_prefix("tools.select.")).find(|k| k.eq_ignore_ascii_case(name))
+        {
+            return Some(canonical(key));
+        }
+        let squash = |s: &str| s.to_ascii_lowercase().replace([' ', '_', '-'], "");
+        let n = squash(name);
+        if n.is_empty() {
+            return None;
+        }
+        crate::shell_commands::TOOLS.iter().find_map(|(id, label, _)| {
+            let key = id.strip_prefix("tools.select.")?;
+            let k = key.to_ascii_lowercase();
+            let label = squash(label);
+            let hit = n == k || n == k.replace("marquee", "") || n == label || Some(n.as_str()) == label.strip_suffix("tool");
+            hit.then(|| canonical(key))
+        })
+    }
+
+    /// The layout the toolbar shows. Unknown names are skipped and a tool listed twice keeps its
+    /// first place (the toolbar before the extras); empty groups are dropped. Each `hidden` tool
+    /// leaves its toolbar group for a group of its own in the extras, in toolbar order, and a
+    /// tool listed nowhere is added to the extras as its own group.
+    pub fn layout(&self) -> ToolbarLayout {
+        let hidden: Vec<String> = self.hidden.iter().filter_map(|h| Self::tool_name(h)).collect();
+        let stored = match &self.toolbar {
+            Some(groups) => groups.clone(),
+            None => DEFAULT_TOOLBAR.iter().map(|g| g.iter().map(|t| (*t).to_string()).collect()).collect(),
+        };
+        // `moved` collects the hidden tools when given; without it they stay in their group.
+        fn resolve(groups: &[Vec<String>], seen: &mut Vec<String>, hidden: &[String], mut moved: Option<&mut Vec<Vec<String>>>) -> Vec<Vec<String>> {
+            let mut out = Vec::new();
+            for group in groups {
+                let mut tools = Vec::new();
+                for name in group.iter().filter_map(|n| ToolbarCustomization::tool_name(n)) {
+                    if seen.contains(&name) {
+                        continue;
+                    }
+                    seen.push(name.clone());
+                    match moved.as_deref_mut() {
+                        Some(moved) if hidden.contains(&name) => moved.push(vec![name]),
+                        _ => tools.push(name),
+                    }
+                }
+                if !tools.is_empty() {
+                    out.push(tools);
+                }
+            }
+            out
+        }
+        let mut seen: Vec<String> = Vec::new();
+        let mut moved = Vec::new();
+        let toolbar = resolve(&stored, &mut seen, &hidden, Some(&mut moved));
+        let mut extras = resolve(self.extras.as_deref().unwrap_or_default(), &mut seen, &hidden, None);
+        extras.append(&mut moved);
+        for (id, _, _) in crate::shell_commands::TOOLS {
+            if let Some(name) = Self::tool_name(id.trim_start_matches("tools.select."))
+                && !seen.contains(&name)
+            {
+                seen.push(name.clone());
+                extras.push(vec![name]);
+            }
+        }
+        ToolbarLayout { toolbar, extras }
+    }
 }
 
 /// Layer Mask Display Options (double-click the layer mask's row in the Channels panel, or Mask

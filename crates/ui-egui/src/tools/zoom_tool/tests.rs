@@ -203,6 +203,7 @@ fn discrete_zoom_animates_and_keeps_its_document_anchor_fixed() {
 
 #[test]
 fn gpu_zoom_animation_reuses_the_document_composite() {
+    let _gpu = photocraft_testkit::gpu_lock();
     let Ok(rs) = std::panic::catch_unwind(|| egui_kittest::wgpu::create_render_state(crate::gpu_canvas::wgpu_setup(), Default::default())) else {
         eprintln!("skipping: no GPU adapter");
         return;

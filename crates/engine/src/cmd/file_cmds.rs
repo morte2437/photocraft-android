@@ -55,8 +55,7 @@ use open::{approve_memory, close_all, close_others, open_as, place, revert};
 pub use open_as_smart_object::admit_as_smart_object;
 use open_as_smart_object::open_as_smart_object;
 use paths::is_file;
-#[cfg(test)]
-use paths::openable_name;
+pub(crate) use paths::openable_name;
 pub use paths::{
     extension, holds, holds_at, is_template, layered_extension, list_images, losses_at, portable_device_name, same_destination, same_file, saves_in_place,
     template_name, untitled_name,
