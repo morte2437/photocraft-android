@@ -210,3 +210,19 @@ fn a_suffix_longer_than_the_limit_cannot_be_typed() {
     let list = dialog_rows(&h);
     assert_eq!(list, vec![("1x".to_string(), "s".repeat(64))], "capped, and the row list kept");
 }
+
+/// CodeRabbit on #15030: only a folder was chosen, so a file already there is never replaced. Any
+/// existing target stops the batch before the first write.
+#[test]
+fn a_file_already_in_the_folder_stops_the_batch_before_any_write() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("harbor@0.5x.png"), b"keep me").unwrap();
+    let (mut h, writes, _) = harness(crate::FileDialogAnswer::FolderTo(dir.path().to_string_lossy().into_owned()));
+    open_dialog(&mut h);
+    click(&mut h, "Add a size");
+    h.get_by_role_and_label(Role::Button, "Export").click();
+    h.run_steps(6);
+    assert!(writes.borrow().is_empty(), "not even the first row (harbor.png) was written");
+    assert!(h.state().ui.status.contains("already exists"), "{}", h.state().ui.status);
+    assert_eq!(std::fs::read(dir.path().join("harbor@0.5x.png")).unwrap(), b"keep me");
+}

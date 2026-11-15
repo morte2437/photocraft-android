@@ -1214,15 +1214,20 @@ fn confirm_sizes(
     let (f, stem) = (f.clone(), export_name(stem));
     let names = batch_file_names(&stem, &s_fmt(&f), &rows)?;
     app.ask_folder(move |app, dir| {
+        // Only a folder was chosen, so nothing already there is replaced without asking: any entry at
+        // a target path (a file, or a link the writer would follow) stops the whole batch before the
+        // first write.
+        #[cfg(not(target_arch = "wasm32"))]
+        for name in &names {
+            let path = std::path::Path::new(&dir).join(name);
+            if let Ok(meta) = path.symlink_metadata() {
+                let what = if meta.file_type().is_symlink() { "is a link" } else { "already exists" };
+                return Err(format!("{} {what}; nothing was written. Choose another folder or change the suffix", path.display()));
+            }
+        }
         let mut exported = Vec::new();
         for ((size, _), name) in rows.iter().zip(&names) {
-            let path = std::path::Path::new(&dir).join(name);
-            // The writer follows links, so one planted where a file is written would redirect it.
-            #[cfg(not(target_arch = "wasm32"))]
-            if path.symlink_metadata().is_ok_and(|m| m.file_type().is_symlink()) {
-                return Err(format!("{} is a link; nothing was written there", path.display()));
-            }
-            let path = path.to_string_lossy().into_owned();
+            let path = std::path::Path::new(&dir).join(name).to_string_lossy().into_owned();
             exported.push(write_export(app, &doc, &scaled_fields(&f, scale_factor(size)), &path, &source_profile)?);
         }
         let template = "Exported {n} files";
