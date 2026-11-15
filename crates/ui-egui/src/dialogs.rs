@@ -456,6 +456,9 @@ fn filter_body(app: &mut PhotocraftApp, ui: &mut egui::Ui, d: &Dialog, fields: &
     } else {
         first_field_focused(ui, id, |ui| body(ui, fields));
     }
+    if let Some(Value::String(msg)) = fields.remove("__rangeAlert") {
+        crate::panels::options_bar::range_alert(&mut app.ui, &msg);
+    }
 }
 
 /// The OK / Cancel row (with Apply, Alternate or Reset where the dialog has them), drawn in the
