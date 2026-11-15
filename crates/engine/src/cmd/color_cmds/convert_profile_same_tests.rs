@@ -76,3 +76,24 @@ fn an_unreadable_embedded_profile_is_still_replaced() {
     assert_eq!(r["converted"], true, "{r}");
     assert_ne!(s.active().unwrap().doc.icc_profile.as_deref().map(Vec::as_slice), Some(&b"not an ICC profile"[..]));
 }
+
+/// CodeRabbit on #14825: with Flatten on, an embedded profile of the same colours but other bytes
+/// (here another creation date in its header) is replaced by the destination, as the conversion
+/// would have, so the reply's profile is the document's.
+#[test]
+fn flatten_with_the_same_colours_embeds_the_destination_profile() {
+    let mut s = tagged();
+    let srgb = Builtin::Srgb.profile().to_bytes();
+    let mut other = srgb.to_vec();
+    // The header's creation date (bytes 24 to 35): not part of the colours.
+    other[24..36].copy_from_slice(&[0x07, 0xd0, 0, 1, 0, 1, 0, 0, 0, 0, 0, 0]);
+    assert_ne!(other.as_slice(), srgb.as_slice());
+    s.edit("retag", |doc, _| {
+        doc.icc_profile = Some(std::sync::Arc::new(other));
+        Ok(())
+    })
+    .unwrap();
+    let r = s.execute("edit.convertToProfile", json!({"profile": "srgb", "flatten": true})).unwrap();
+    assert_eq!(r["converted"], true, "{r}");
+    assert_eq!(s.active().unwrap().doc.icc_profile.as_deref().map(Vec::as_slice), Some(srgb.as_slice()), "the destination's bytes");
+}

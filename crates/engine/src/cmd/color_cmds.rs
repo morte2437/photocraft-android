@@ -1141,6 +1141,10 @@ fn convert_to_profile(s: &mut Session, p: &Value) -> Result<Value> {
             prepare_profile_smart_layers(doc, true)?;
         }
         if same {
+            // The colours stay, but the destination is the profile asked for: an embedded one of
+            // the same colours with other bytes (another name, another date) is replaced, as the
+            // conversion would have, so the reply's profile is the document's.
+            doc.icc_profile = Some(dst.to_bytes());
             Ok(())
         } else if dither {
             profile_dither::convert(doc, &dst, intent, bpc)
