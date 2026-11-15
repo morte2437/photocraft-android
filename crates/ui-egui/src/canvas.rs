@@ -2519,6 +2519,8 @@ pub fn canvas_view(app: &mut PhotocraftApp, ui: &mut egui::Ui, idx: usize, rect:
         d.reposition = reposition;
         drawing = true;
     }
+    // A frame being drawn with the Frame tool moves while Space is held (#13867).
+    drawing |= crate::frame_tool::set_space(app, reposition);
     let temporary = crate::hold_keys::for_frame(app, &ctx, drawing || crate::type_transform::active(app));
     let space_pan = temporary == Some(crate::hold_keys::Temporary::Hand);
     let middle = ui.input(|i| i.pointer.middle_down());
