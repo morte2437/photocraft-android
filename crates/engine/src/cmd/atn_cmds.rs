@@ -156,7 +156,7 @@ pub fn specs() -> Vec<CommandSpec> {
             label: "Save Actions…",
             menu: &[],
             shortcut: None,
-            params: r##"{"path":".atn file"? (else the bytes come back as base64 `data`),"set":name? (default: every action, as "PhotoCraft Actions"),"setSlot":index? (one folder occurrence from actions.list),"action":name|index? (one action),"skipUnsupported":bool=false (omit steps with no Photoshop equivalent)} → {set, actions:[names], steps, bytes, skipped:[{action, step, id}], path|data}"##,
+            params: r##"{"path":".atn file"? (else the bytes come back as base64 `data`),"set":name? (default: every action, as "PhotoCraft Actions"),"setSlot":index? (one folder occurrence from actions.list; requires set to match its current caption, e.g. {"set":"My Set","setSlot":0}),"action":name|index? (one action),"skipUnsupported":bool=false (omit steps with no Photoshop equivalent)} → {set, actions:[names], steps, bytes, skipped:[{action, step, id}], path|data}"##,
             enabled: always,
             run: save,
             journal: false,

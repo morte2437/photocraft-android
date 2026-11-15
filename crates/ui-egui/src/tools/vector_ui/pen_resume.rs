@@ -190,7 +190,8 @@ pub(crate) fn pen_history_step(app: &mut PhotocraftApp, id: &str) -> Option<Resu
         "edit.redo" | "history.stepForward" => false,
         _ => return None,
     };
-    if box_steps(app, id) {
+    // A refused draft waits for retry, but another tool must keep its own History routing.
+    if box_steps(app, id) || app.ui.pen.as_ref().is_some_and(|pen| !pen.owns_undo(app.ui.tool)) {
         return None;
     }
     if undo && super::pen_undo_last_point(app) {
@@ -211,7 +212,8 @@ pub(crate) fn pen_history_enabled(app: &PhotocraftApp, id: &str) -> Option<bool>
         "edit.redo" | "history.stepForward" => false,
         _ => return None,
     };
-    if box_steps(app, id) {
+    // A refused draft waits for retry, but another tool must keep its own History routing.
+    if box_steps(app, id) || app.ui.pen.as_ref().is_some_and(|pen| !pen.owns_undo(app.ui.tool)) {
         return None;
     }
     if undo { app.ui.pen.as_ref().is_some_and(|pen| !pen.knots.is_empty()).then_some(true) } else { pen_blocks_redo(app).then_some(false) }
