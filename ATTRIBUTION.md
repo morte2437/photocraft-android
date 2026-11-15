@@ -154,3 +154,9 @@ longer used or shipped.
 | `hayro-interpret 0.7.0 / assets/Foxit*.pfb` (13 standard-14 font files) | Foxit Software Inc. / PDFium Authors | <https://github.com/storytold/craft-libs/tree/c5a1cbfb5f9049f9270955caffb5bee5997aebf7/vendor/hayro-interpret/assets> | BSD-3-Clause | Renders non-embedded standard-14 PDF fonts |
 | `hayro-interpret 0.7.0 / assets/CGATS001Compat-v2-micro.icc` | Clinton Ingram (saucecontrol/Compact-ICC-Profiles) | <https://github.com/storytold/craft-libs/tree/c5a1cbfb5f9049f9270955caffb5bee5997aebf7/vendor/hayro-interpret/assets> | CC0-1.0 | Default CMYK colour conversion |
 | `hayro-cmap 0.1.0 / assets/cmaps.brotli` | Adobe | <https://github.com/storytold/craft-libs/tree/c5a1cbfb5f9049f9270955caffb5bee5997aebf7/vendor/hayro-cmap/assets> | BSD-3-Clause | Character-code mapping for CJK PDFs |
+
+## Code dependency notices
+
+| Dependency | Authors | Source | License and notices |
+|---|---|---|---|
+| `jpeg-encoder` 0.6.1, through `craft-image-codecs` | Upstream jpeg-encoder, IJG and SIMD authors named in the notices | [Published crate](https://crates.io/crates/jpeg-encoder/0.6.1) | `(MIT OR Apache-2.0) AND IJG`; complete notices in [NOTICE](NOTICE), source texts and checksums in [licenses/jpeg-encoder-0.6.1](licenses/jpeg-encoder-0.6.1) |
