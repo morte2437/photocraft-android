@@ -153,7 +153,7 @@ fn compressed_variants_that_cannot_be_decoded_fail_cleanly() {
     other.swap(0, 2);
     let b = compressed(&other, 14, false).build();
     match decode(&b, &Limits::default()) {
-        Err(RawError::Unsupported(m)) => assert!(m.contains("X-Trans layout"), "{m}"),
+        Err(RawError::Unsupported(m)) => assert!(m.contains("unsupported CFA layout"), "{m}"),
         other => panic!("expected unsupported, got {other:?}"),
     }
     // A short strip without the IS signature.

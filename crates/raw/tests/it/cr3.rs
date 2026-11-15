@@ -54,11 +54,11 @@ fn broken_tables_and_raw_codec_tracks_are_not_used() {
     let at = position(&b, b"co64") + 12;
     b[at..at + 8].copy_from_slice(&u64::MAX.to_be_bytes());
     assert!(embedded_jpeg_preview(&b).is_none());
-    // (An absurd sample count is tolerated: only the first sample is read, and it is the right JPEG.)
+    // Refuse an impossible sample count rather than trusting just its first entry.
     let mut b = good;
     let at = position(&b, b"stsz") + 12;
     b[at..at + 4].copy_from_slice(&u32::MAX.to_be_bytes());
-    assert_eq!(embedded_jpeg_preview(&b).unwrap(), jpeg());
+    assert!(embedded_jpeg_preview(&b).is_none());
 }
 
 #[test]

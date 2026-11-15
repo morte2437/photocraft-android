@@ -118,15 +118,13 @@ fn an_active_area_outside_the_plane_is_ignored() {
     assert_eq!((sensor.active, sensor.crop), (Rect::new(0, 0, 16, 12), Rect::new(0, 0, 16, 12)));
 }
 
-/// craft-raw zero-fills the missing rows of a cut uncompressed strip instead of refusing the file.
+/// Refuse truncated sensor data rather than silently inventing black pixels.
 #[test]
-fn truncated_strip_is_zero_filled() {
+fn truncated_strip_is_refused() {
     let mut b = spec().build();
     // The preview blob sits past the strip; cutting 60 bytes eats into the strip.
     b.truncate(b.len() - 60);
-    let sensor = decode(&b, &Limits::default()).unwrap();
-    assert_eq!(sensor.data.len(), 16 * 12);
-    assert_eq!(sensor.data.last(), Some(&0));
+    assert!(matches!(decode(&b, &Limits::default()), Err(photocraft_raw::RawError::Malformed(_))));
 }
 
 #[test]

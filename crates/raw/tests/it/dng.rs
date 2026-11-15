@@ -1114,7 +1114,7 @@ fn lossy_jpeg_tile_dimension_mismatch_errors() {
     let small: Vec<u8> = (0..16 * 16).map(|i| (i % 16 * 16) as u8).collect();
     spec.lossy_segments = vec![baseline_jpeg(&small, 16, 16, 1)];
     let err = decode(&spec.build(), &Limits::default()).unwrap_err().to_string();
-    assert!(err.contains("16 × 16") && err.contains("32 × 32"), "{err}");
+    assert!(err.contains("16 x 16") && err.contains("32 x 32"), "{err}");
     // A tile JPEG is tolerated when it covers the part of the tile inside the image (edge tiles are
     // often coded smaller or larger than nominal); one that leaves part of that uncovered is not.
     let (w, h) = (16, 12);
