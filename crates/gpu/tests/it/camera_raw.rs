@@ -25,7 +25,7 @@ fn gpu() -> Option<Gpu> {
     let lock = crate::GPU_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     let required = std::env::var_os("WGPU_BACKEND").is_some();
     // `WGPU_BACKEND` picks the backend; `PHOTOCRAFT_TEST_FALLBACK_ADAPTER=1` the software one (WARP).
-    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
+    let instance = crate::instance();
     let fallback = std::env::var_os("PHOTOCRAFT_TEST_FALLBACK_ADAPTER").is_some();
     let options = wgpu::RequestAdapterOptions { force_fallback_adapter: fallback, ..Default::default() };
     let adapter = match pollster::block_on(instance.request_adapter(&options)) {
