@@ -550,22 +550,26 @@ pub(super) fn path_to_shape(s: &mut Session, p: &Value) -> Result<Value> {
 
 /// The History name of a `shape.edit` of layer `id`: an edit of one arrowhead setting of a line
 /// is named after it, "Change Arrowhead End" (#13267). The reference application was measured for
-/// End and Width; Start, Length and Concavity follow the same pattern. Any other edit, several
-/// keys at once, or arrowhead keys sent to a shape that isn't a line stay "Edit Shape".
+/// End and Width; Start, Length and Concavity follow the same pattern. Rounding a live triangle
+/// alone is "Change Rounded Triangle" (#13354); a three-sided Polygon is not a Triangle and keeps
+/// "Edit Shape" until the Polygon naming issue lands. Any other edit, several keys at once, or
+/// these keys sent to another shape stay "Edit Shape".
 fn edit_history_name(s: &Session, id: LayerId, p: &Value) -> &'static str {
     const EDIT: &str = "Edit Shape";
-    let is_line = s
-        .active()
-        .and_then(|st| st.doc.layer(id))
-        .is_some_and(|l| matches!(&l.content, LayerContent::Shape(sh) if matches!(sh.live, Some(LiveShape::Line { .. } | LiveShape::ArrowLine { .. }))));
-    let Some(o) = p.as_object().filter(|_| is_line) else { return EDIT };
+    let live = s.active().and_then(|st| st.doc.layer(id)).and_then(|l| match &l.content {
+        LayerContent::Shape(sh) => sh.live.as_ref(),
+        _ => None,
+    });
+    let Some(o) = p.as_object() else { return EDIT };
     let mut changed = o.keys().map(String::as_str).filter(|k| !matches!(*k, "layer" | "coalesce") && !k.starts_with("__"));
+    let line = matches!(live, Some(LiveShape::Line { .. } | LiveShape::ArrowLine { .. }));
     match (changed.next(), changed.next()) {
-        (Some("arrowStart"), None) => "Change Arrowhead Start",
-        (Some("arrowEnd"), None) => "Change Arrowhead End",
-        (Some("arrowWidth"), None) => "Change Arrowhead Width",
-        (Some("arrowLength"), None) => "Change Arrowhead Length",
-        (Some("arrowConcavity"), None) => "Change Arrowhead Concavity",
+        (Some("arrowStart"), None) if line => "Change Arrowhead Start",
+        (Some("arrowEnd"), None) if line => "Change Arrowhead End",
+        (Some("arrowWidth"), None) if line => "Change Arrowhead Width",
+        (Some("arrowLength"), None) if line => "Change Arrowhead Length",
+        (Some("arrowConcavity"), None) if line => "Change Arrowhead Concavity",
+        (Some("cornerRadius"), None) if matches!(live, Some(LiveShape::Triangle { .. })) => "Change Rounded Triangle",
         _ => EDIT,
     }
 }

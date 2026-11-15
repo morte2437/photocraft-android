@@ -278,13 +278,15 @@ impl PhotocraftApp {
         })
     }
 
-    /// File › Open: opens every chosen file, reporting each failure (see [`Self::open_paths`]).
+    /// File › Open: opens every chosen file in the order the dialog returns them, reporting each
+    /// failure (see [`Self::open_paths_in_order`]).
     pub fn open_dialog_file(&mut self) -> Result<Value, String> {
         let initial_dir = last_used_dir(&self.ui.recent_files);
         self.ask_file(FileDialogRequest::Open { multiple: true, initial_dir, extensions: None }, |app, answer| {
             match answer {
                 FileDialogAnswer::Paths(paths) => {
-                    app.open_paths(&paths);
+                    // The order the dialog returns, not name order; the last is active.
+                    app.open_paths_in_order(&paths);
                 }
                 FileDialogAnswer::Contents(name, bytes) => app.open_contents(vec![(name, bytes)]),
                 FileDialogAnswer::ContentsMany(files) => app.open_contents(files),

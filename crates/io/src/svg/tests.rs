@@ -1181,6 +1181,21 @@ fn a_latin1_embedded_svg_that_decodes_past_the_budget_is_refused() {
     assert!(error.to_string().contains("byte or nesting budget"), "{error}");
 }
 
+/// The retry allowance counts inflated bytes, not their possibly longer decoded UTF-8 text.
+#[test]
+fn fitting_latin1_retry_keeps_inflation_and_content_budgets_separate() {
+    let budget = usize::try_from(MAX_BOUNDED_SVG_BYTES).unwrap();
+    let mut latin1 = b"<?xml version=\"1.0\" encoding=\"ISO-8859-1\"?><svg xmlns=\"http://www.w3.org/2000/svg\"><!--".to_vec();
+    latin1.resize(budget * 3 / 8, 0xe9);
+    latin1.extend_from_slice(b"--></svg>");
+    let decoded = craft_svg::svgz::decode(&latin1).unwrap();
+    assert!(latin1.len() < budget / 2);
+    assert!(decoded.len() > budget / 2 && decoded.len() < budget);
+    let refusals = SvgRefusals { unread_charges: AtomicUsize::new(budget), rechecked: AtomicUsize::new(budget / 2), ..SvgRefusals::default() };
+    note_byte_refusal(&gzip(&latin1), budget, &refusals);
+    assert!(!refusals.over_budget.load(Ordering::Relaxed));
+    assert_eq!(refusals.rechecked.load(Ordering::Relaxed), budget / 2 + latin1.len());
+}
 /// After a damaged image spent the budget, images refused for bytes are unpacked again to tell
 /// whether they are too large themselves, but at most one budget's worth in all: past that the
 /// drawing is refused rather than unpacking each one.
@@ -1593,4 +1608,18 @@ fn every_raster_refusal_reason_is_reported_once() {
     let dropped = |what: &str| result.warnings.iter().filter(|w| w.contains("was dropped because") && w.contains(what)).count();
     assert_eq!(dropped("rasterising limit"), 1, "{:?}", result.warnings);
     assert_eq!(dropped("too much memory"), 1, "{:?}", result.warnings);
+}
+
+#[test]
+fn plain_legacy_encoding_rechecks_have_a_separate_bounded_work_allowance() {
+    let budget = usize::try_from(MAX_BOUNDED_SVG_BYTES).unwrap();
+    let xml = b"<?xml version=\"1.0\" encoding=\"ISO-8859-1\"?><svg><!--\xe9--></svg>";
+    let refusals = SvgRefusals { unread_charges: AtomicUsize::new(budget), text_rechecked: AtomicUsize::new(budget - xml.len()), ..SvgRefusals::default() };
+    note_byte_refusal(xml, budget, &refusals);
+    assert!(!refusals.over_budget.load(Ordering::Relaxed));
+    assert_eq!(refusals.text_rechecked.load(Ordering::Relaxed), budget);
+    assert_eq!(refusals.rechecked.load(Ordering::Relaxed), 0);
+    note_byte_refusal(xml, budget, &refusals);
+    assert!(refusals.over_budget.load(Ordering::Relaxed));
+    assert_eq!(refusals.text_rechecked.load(Ordering::Relaxed), budget);
 }

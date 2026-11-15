@@ -20,6 +20,8 @@ craft-psd = { workspace = true }
 parley = { version = "0.11", default-features = false, features = ["std"] }
 skrifa = "0.47"
 flate2 = { workspace = true }
+# Subresource Integrity values for served fonts.
+base64 = "0.23"
 
 # ICU dictionary data for Japanese word boundaries and complex-script (Thai, Lao, Khmer, Burmese)
 # line breaking. Native only: the CJK dictionary alone is 3.8 MB of wasm, and the web build must

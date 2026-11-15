@@ -610,6 +610,8 @@ struct SvgRefusals {
     unread_charges: AtomicUsize,
     /// Bytes unpacked again to tell those images apart, at most one byte budget per drawing.
     rechecked: AtomicUsize,
+    /// Source bytes decoded during refusal rechecks, at most one byte budget per drawing.
+    text_rechecked: AtomicUsize,
 }
 
 /// Note in `refusals` what craft-svg will do with an embedded SVG's `data` when its images have
@@ -630,19 +632,23 @@ fn note_byte_refusal(data: &[u8], used: usize, refusals: &SvgRefusals) {
             let content_left = budget.saturating_sub(used.saturating_sub(unread));
             // Rechecks may inflate or allocate text for a legacy encoding.
             let compressed = data.starts_with(&[0x1f, 0x8b]);
-            let limit = content_left.min(budget.saturating_sub(refusals.rechecked.load(Ordering::Relaxed)));
-            // Charge inflation and allocated decoded text against the same recheck budget.
+            let limit = if compressed { content_left.min(budget.saturating_sub(refusals.rechecked.load(Ordering::Relaxed))) } else { content_left };
+            // Bound inflation and text-conversion work independently from content size.
             let (unpacked, too_large) = match craft_svg::svgz::inflate(data, limit) {
                 Ok(xml) => {
-                    // Encoding expansion is part of the text budget too: a Latin-1 child
-                    // after corrupt data must not evade the normal decoded-text limit.
-                    let (decoded, converted) = match craft_svg::svgz::decode(&xml) {
-                        Ok(std::borrow::Cow::Owned(text)) => (text.len(), text.len()),
-                        Ok(text) => (text.len(), 0),
-                        Err(_) => (xml.len(), xml.len()),
+                    // Inflation and text conversion have separate work allowances: a fitting
+                    // Latin-1 document must not spend its UTF-8 size against inflation bytes.
+                    // Charge source bytes before decoding, including invalid encodings. The
+                    // supported encodings expand by at most 2x, so conversion work stays bounded
+                    // even for plain children that do not require inflation.
+                    let text_left = budget.saturating_sub(refusals.text_rechecked.load(Ordering::Relaxed));
+                    let too_large = if xml.len() > text_left {
+                        true
+                    } else {
+                        refusals.text_rechecked.fetch_add(xml.len(), Ordering::Relaxed);
+                        craft_svg::svgz::decode(&xml).is_ok_and(|text| text.len() > content_left)
                     };
-                    let work = (if compressed { xml.len().max(converted) } else { converted }).min(limit);
-                    (work, decoded > limit)
+                    (if compressed { xml.len() } else { 0 }, too_large)
                 }
                 Err(craft_svg::svgz::Error::Nested(len)) => (len, false),
                 Err(craft_svg::svgz::Error::TooLarge(_)) => (if compressed { limit } else { 0 }, true),

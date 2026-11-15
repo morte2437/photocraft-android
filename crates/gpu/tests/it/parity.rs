@@ -1345,6 +1345,30 @@ use photocraft_doc::{
     StrokePosition,
 };
 
+/// #14983: the Size 1 Satin transition agrees with the CPU across whole textures and pages.
+#[test]
+fn satin_size_one_gpu_matches_cpu() {
+    let Some(mut g) = gpu() else { return };
+    let mut doc = Document::new("Satin size 1", Size::new(400, 300), ColorMode::Rgb, SampleType::U8);
+    doc.layers.push(Layer::new("Background", LayerContent::Fill(Fill::Solid(Color::WHITE))));
+    let mut layer = Layer::raster("Orange", PixelFormat::RGBA8);
+    layer.surface_mut().unwrap().fill_rect(Rect::new(100, 75, 300, 225), &[1.0, 128.0 / 255.0, 0.0, 1.0]);
+    layer.effects.items.push(Effect::Satin(Satin {
+        common: FxCommon::new(BlendMode::Normal, 1.0),
+        color: Color::BLACK,
+        angle: 90.0,
+        distance: 20.0,
+        size: 1.0,
+        contour: Contour::Linear,
+        anti_alias: true,
+        invert: false,
+    }));
+    doc.layers.push(layer);
+
+    let stats = diff_rect(&mut g, &doc, doc.bounds(), "Satin size 1").unwrap();
+    assert_eq!(stats.fx_programs, 1, "the GPU built the Satin effect map");
+}
+
 /// An anti-aliased blob (disc plus a soft-edged bar and a hole) with partially transparent parts,
 /// so effects see real edge coverage, concavities and interior alpha.
 /// Small layers composite only over their bounds and are copied back into the backdrop (#125):
@@ -1644,6 +1668,11 @@ fn effect_cases() -> Vec<(&'static str, Vec<Effect>)> {
     ds_global.use_global_light = true;
     let mut og_contour = glow(FxPaint::Color(Color::rgb(1.0, 0.9, 0.2)), GlowTechnique::Softer, 9.0, 0.0, GlowSource::Edge);
     og_contour.contour = contour();
+    // #11361: a flat "always 100 %" contour paints a solid band up to the glow's reach on both
+    // renderers, not the whole effect rectangle.
+    let flat = Contour::Custom { name: "flat".into(), points: vec![Cp { input: 0.0, output: 1.0 }, Cp { input: 1.0, output: 1.0 }], corners: vec![] };
+    let og_flat_precise = Glow { contour: flat.clone(), ..glow(FxPaint::Color(Color::rgb(0.2, 0.9, 1.0)), GlowTechnique::Precise, 4.0, 0.0, GlowSource::Edge) };
+    let og_flat_softer = Glow { contour: flat, ..glow(FxPaint::Color(Color::rgb(0.2, 0.9, 1.0)), GlowTechnique::Softer, 10.0, 0.0, GlowSource::Edge) };
     let mut satin_inv = Satin {
         common: FxCommon::new(BlendMode::Multiply, 0.6),
         color: Color::rgb(0.3, 0.0, 0.4),
@@ -1685,6 +1714,8 @@ fn effect_cases() -> Vec<(&'static str, Vec<Effect>)> {
         ("inner shadow choke", vec![Effect::InnerShadow(shadow(BlendMode::Normal, 0.9, 300.0, 3.0, 7.0, 0.4))]),
         ("outer glow softer", vec![Effect::OuterGlow(glow(FxPaint::Color(Color::rgb(1.0, 0.9, 0.2)), GlowTechnique::Softer, 10.0, 0.3, GlowSource::Edge))]),
         ("outer glow contour", vec![Effect::OuterGlow(og_contour)]),
+        ("outer glow flat contour precise", vec![Effect::OuterGlow(og_flat_precise)]),
+        ("outer glow flat contour softer", vec![Effect::OuterGlow(og_flat_softer)]),
         ("outer glow precise gradient", vec![Effect::OuterGlow(glow(FxPaint::Gradient(gradient()), GlowTechnique::Precise, 8.0, 0.25, GlowSource::Edge))]),
         (
             "outer glow softer gradient",

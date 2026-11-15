@@ -268,9 +268,15 @@ pub(super) fn satin_map(shape: &Map, s: &photocraft_doc::effects::Satin) -> Map 
     let (dx, dy) = offset(s.angle, satin_distance(s));
     let mut a = shape.shifted(dx, dy, 0.0);
     let mut b = shape.shifted(-dx, -dy, 0.0);
-    // Two box passes of the satin size (fitted: 0.2 % mean error on psd-tools layer_effects).
-    tent(&mut a, s.size);
-    tent(&mut b, s.size);
+    if s.size == 1.0 {
+        // #14983: the measured edge has one quarter-strength pixel on either side.
+        super::blur::size_one_blur(&mut a);
+        super::blur::size_one_blur(&mut b);
+    } else {
+        // Two box passes of the satin size (fitted: 0.2 % mean error on psd-tools layer_effects).
+        tent(&mut a, s.size);
+        tent(&mut b, s.size);
+    }
     let mut m = Map { w: shape.w, h: shape.h, v: a.v.iter().zip(&b.v).map(|(x, y)| (x - y).abs()).collect() };
     if s.invert {
         m = m.map(|v| 1.0 - v);

@@ -1,6 +1,6 @@
-//! Canvas context menus for the selection tools, the Pen, the Zoom and Hand tools, an active Free
-//! Transform box, text being edited with a Type tool, committed type under a Type tool, the
-//! pasteboard (outside the image), a guide and a pending crop.
+//! Canvas context menus for the selection tools, the Pen, the Line tool in Shape mode, the Zoom
+//! and Hand tools, an active Free Transform box, text being edited with a Type tool, committed type
+//! under a Type tool, the pasteboard (outside the image), a guide and a pending crop.
 
 use egui::Context;
 use photocraft_doc::{ColorMode, LayerContent};
@@ -626,6 +626,78 @@ pub const PEN_MENU: &[Row] = &[
     Some(("Disable Symmetry Path", "paint.symmetryDisable")),
 ];
 
+/// The shape tools' canvas menu in Shape mode (#13249), measured with the Line tool: the Pen's
+/// path rows without Create Vector Mask, Delete Path, Clipping Path… or the Symmetry rows, plus
+/// Blending Options… and the Rasterize rows. `$transform` is the transform row: Free Transform with
+/// no path, which runs the menu bar's, Free Transform Path on a path or shape layer.
+macro_rules! shape_menu {
+    ($transform:expr) => {
+        &[
+            Some(("Define Custom Shape…", "edit.defineCustomShape")),
+            None,
+            Some(("Blending Options…", "layer.layerStyle.blendingOptions")),
+            None,
+            Some(("Make Selection…", "path.toSelection")),
+            Some(("New Guides From Shape", "view.newGuidesFromShape")),
+            Some(("Fill Path…", "path.fill")),
+            Some(("Stroke Path…", "path.stroke")),
+            None,
+            Some(("Rasterize Layer", "layer.rasterize.layer")),
+            Some(("Rasterize Layer Style", "layer.rasterize.layerStyle")),
+            Some(("Rasterize Vector Mask", "layer.rasterize.vectorMask")),
+            None,
+            $transform,
+            None,
+            Some(("Unite Shapes", "layer.combineShapes.unite")),
+            Some(("Subtract Front Shape", "layer.combineShapes.subtractFrontShape")),
+            Some(("Unite Shapes at Overlap", "layer.combineShapes.intersectShapeAreas")),
+            Some(("Subtract Shapes at Overlap", "layer.combineShapes.excludeOverlappingShapes")),
+            None,
+            Some(("Copy Fill", "path.style.copyFill")),
+            Some(("Copy Complete Stroke", "path.style.copyStroke")),
+            None,
+            Some(("Paste Fill", "path.style.pasteFill")),
+            Some(("Paste Complete Stroke", "path.style.pasteStroke")),
+            None,
+            Some(("Isolate Layers", "select.isolateLayers")),
+        ]
+    };
+}
+
+/// [`shape_menu!`] with a path or a shape layer: Free Transform Path, as the Pen's.
+pub const SHAPE_MENU: &[Row] = shape_menu!(Some(("Free Transform Path", "path.transform")));
+
+/// [`shape_menu!`] with no path: Free Transform, the menu bar's, on the active layer.
+pub const SHAPE_MENU_NO_PATH: &[Row] = shape_menu!(Some(("Free Transform", "edit.freeTransform")));
+
+/// The shape menu's rows that act on the layer, not the path: enabled and run as the menu bar's.
+fn shape_layer_row(command: &str) -> bool {
+    matches!(
+        command,
+        "layer.layerStyle.blendingOptions"
+            | "layer.rasterize.layer"
+            | "layer.rasterize.layerStyle"
+            | "layer.rasterize.vectorMask"
+            | "edit.freeTransform"
+            | "view.newGuidesFromShape"
+    )
+}
+
+/// Shape tools whose Shape-mode right-click opens [`SHAPE_MENU`] (#13249). The Ellipse (#13232)
+/// and the other shape tools join here once measured.
+pub fn shape_tool_menu(tool: Tool) -> bool {
+    matches!(tool, Tool::Line)
+}
+
+/// Does a right-click with a shape tool open its menu? Only where measured: Shape mode, over
+/// a pixel or shape layer. Path and Pixels mode, and other layer kinds, keep opening nothing.
+fn shape_menu_measured(app: &PhotocraftApp) -> bool {
+    app.ui.tool_options.shape_mode == "shape"
+        && app.session.active().is_some_and(|st| {
+            st.active_layer.and_then(|id| st.doc.layer(id)).is_some_and(|l| matches!(l.content, LayerContent::Raster(_) | LayerContent::Shape(_)))
+        })
+}
+
 /// The label a row shows, untranslated. The Pen's transform row names what it acts on, as in
 /// Photoshop (#12913): the points of the path being drawn, or nothing when the document has no
 /// path at all. A path that exists but isn't active, and the Path Selection and Direct Selection
@@ -729,7 +801,8 @@ fn red_eye_measured(app: &PhotocraftApp, doc: Option<[f64; 2]>) -> bool {
 }
 
 /// Tools whose plain canvas right-click opens a menu: the selection tools' actions, the
-/// Content-Aware Move menu, the path menu, the Color Sampler's and the Red Eye tool's.
+/// Content-Aware Move menu, the path menu, the Color Sampler's, the Red Eye tool's and the shape
+/// tools' (in Shape mode only: [`open_at`] checks it).
 pub fn applies(tool: Tool) -> bool {
     matches!(
         tool,
@@ -754,6 +827,7 @@ pub fn applies(tool: Tool) -> bool {
             // The layer or selection menu, where measured (#12577).
             | Tool::RedEye
     ) || path_menu(tool)
+        || shape_tool_menu(tool)
 }
 
 /// A Magnetic Lasso border is being drawn on the document in front: a right-click opens no menu
@@ -849,6 +923,8 @@ pub fn rows(menu: &CanvasToolMenu) -> &'static [Row] {
         type_layer_rows(menu)
     } else if path_menu(menu.tool) {
         PEN_MENU
+    } else if shape_tool_menu(menu.tool) {
+        if menu.has_path { SHAPE_MENU } else { SHAPE_MENU_NO_PATH }
     } else if sampler_menu(menu) {
         SAMPLER_MENU
     } else if menu.tool == Tool::Count {
@@ -1236,8 +1312,20 @@ pub fn entry_enabled(app: &PhotocraftApp, menu: &CanvasToolMenu, command: &str) 
     if inside_selection(menu) && command == "select.loadSelection" {
         return app.session.active().is_some_and(|st| st.doc.channels.iter().any(|c| c.spot.is_none())) && crate::menus::is_enabled(app, command);
     }
-    if menu.transform || !path_menu(menu.tool) {
+    if menu.transform || !(path_menu(menu.tool) || shape_tool_menu(menu.tool)) {
         return crate::menus::is_enabled(app, command);
+    }
+    if shape_tool_menu(menu.tool) {
+        if !rows(menu).iter().flatten().any(|(_, id)| *id == command) {
+            return false;
+        }
+        // Measured enabled over a pixel layer too, where the menu bar greys it (#13249).
+        if command == "view.newGuidesFromShape" {
+            return app.session.active().is_some();
+        }
+        if shape_layer_row(command) {
+            return crate::menus::is_enabled(app, command);
+        }
     }
     let Some(st) = app.session.active() else { return false };
     let layer = st.active_layer.and_then(|id| st.doc.layer(id));
@@ -1306,6 +1394,9 @@ pub fn open_at(app: &mut PhotocraftApp, ctx: &Context, tool: Tool, pos: [f32; 2]
         return false;
     }
     if tool == Tool::RedEye && !red_eye_measured(app, doc) {
+        return false;
+    }
+    if shape_tool_menu(tool) && !text && !type_layer && !shape_menu_measured(app) {
         return false;
     }
     app.ui.brush_picker = None;
@@ -1433,7 +1524,8 @@ pub fn choose(app: &mut PhotocraftApp, ctx: &Context, command: &str) {
         choose_spelling(app, &menu, command)
     } else if menu.text || menu.type_layer {
         choose_type(app, ctx, command)
-    } else if path_menu(menu.tool) && !menu.transform {
+    } else if !menu.transform && (path_menu(menu.tool) || (shape_tool_menu(menu.tool) && !shape_layer_row(command))) {
+        // The shape menu's path rows run as the Pen's; its layer rows as the menu bar's, below.
         choose_pen(app, ctx, &menu, command)
     } else if sampler_menu(&menu) {
         let (id, params) = engine_call(app, &menu, command);
@@ -1784,6 +1876,7 @@ pub fn show(app: &mut PhotocraftApp, ctx: &Context) {
                     let text = match row_label(app, &menu, label, command) {
                         // Spelled out so `cargo xtask i18n-coverage` lists the new label.
                         "Free Transform Points" => tl!("Free Transform Points"),
+                        "Rasterize Vector Mask" => tl!("Rasterize Vector Mask"),
                         key => tl!(key),
                     };
                     let item = egui::Button::selectable(mode_checked(app, &menu, command), text).min_size(egui::vec2(200.0, 20.0));
@@ -1845,3 +1938,6 @@ mod convert_point_menu_tests;
 
 #[cfg(test)]
 mod object_selection_menu_tests;
+
+#[cfg(test)]
+mod line_menu_tests;

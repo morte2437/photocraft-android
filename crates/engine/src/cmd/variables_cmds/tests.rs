@@ -77,7 +77,7 @@ fn define_apply_visibility_and_text() {
     assert_eq!(doc(&s).variables.active, Some(0));
 
     // One history step, undoable back to the original.
-    assert_eq!(s.active().unwrap().history.entries().last().map(|e| e.as_str()), Some("Apply Data Set \"A\""));
+    assert_eq!(s.active().unwrap().history.entries().last().map(|e| e.as_str()), Some("Apply Data Set"));
     assert!(s.undo());
     assert!(doc(&s).layer(badge).unwrap().visible);
     assert_eq!(text_of(&s, title), "Old");
