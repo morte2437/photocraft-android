@@ -176,3 +176,28 @@ fn svg_smart_render_cache_tracks_destination_profile_and_transform() {
         assert!((rerendered.pixel(10, 8)[0] - corrected.pixel(3, 3)[0]).abs() < 0.01, "saved source keeps ICC and warp");
     }
 }
+
+#[test]
+fn warning_bearing_svg_render_keeps_visible_filters_without_poisoning_strict_cache() {
+    let clean = br##"<svg xmlns="http://www.w3.org/2000/svg" width="8" height="8"><rect x="4" width="4" height="8" fill="#ff0000"/></svg>"##;
+    let omitted = br##"<svg xmlns="http://www.w3.org/2000/svg" width="8" height="8"><image width="4" height="4" href="data:image/bmp,BM"/><rect x="4" width="4" height="8" fill="#ff0000"/></svg>"##;
+    let s = session(8);
+    let doc = &s.active().unwrap().doc;
+    let mut smart = SmartObject::new(SmartSource::Embedded { file_name: "Artwork.svg".into(), bytes: Arc::new(clean.to_vec()) }, Affine::IDENTITY, None);
+    let unfiltered = render(doc, &smart).unwrap().unwrap();
+    smart.smart_filters.push(SmartFilter {
+        command: "filter.blur.gaussianBlur".into(),
+        params: json!({"radius": 2}),
+        blend: BlendMode::Normal,
+        opacity: 1.0,
+        visible: true,
+    });
+    let expected = render(doc, &smart).unwrap().unwrap();
+    assert_ne!(expected, unfiltered, "the visible filter must actually change pixels");
+    smart.source = SmartSource::Embedded { file_name: "Artwork.svg".into(), bytes: Arc::new(omitted.to_vec()) };
+    let (actual, warnings) = render_with_warnings(doc, &smart).unwrap();
+    assert_eq!(actual.unwrap(), expected);
+    assert_eq!(warnings.len(), 1);
+    assert!(warnings[0].contains("embedded image was omitted"));
+    assert!(render(doc, &smart).is_err(), "warning-bearing filter results must not enter strict caches");
+}
