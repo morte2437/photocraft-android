@@ -715,6 +715,10 @@ fn canvas_size(s: &mut Session, p: &Value) -> Result<Value> {
     let (nw, nh) = if relative { (ow + w, oh + h) } else { (w, h) };
     let (nw, nh) = (nw.round().clamp(1.0, 300_000.0) as u32, nh.round().clamp(1.0, 300_000.0) as u32);
     let (ax, ay) = anchor_factors("image.canvasSize", p.get("anchor").and_then(Value::as_str).unwrap_or("center"))?;
+    // A result equal to the current size changes nothing and adds no history step (#14537).
+    if (nw, nh) == (ow as u32, oh as u32) {
+        return Ok(json!({ "width": nw, "height": nh, "offset": [0, 0] }));
+    }
     let dx = ((nw as f64 - ow) * ax).round() as i32;
     let dy = ((nh as f64 - oh) * ay).round() as i32;
     let ext = extension_color(s, p);
@@ -1311,3 +1315,6 @@ mod canvas_size_selection_tests;
 #[cfg(test)]
 #[path = "image_size_drops_selection_tests.rs"]
 mod image_size_drops_selection_tests;
+
+#[cfg(test)]
+mod canvas_size_noop_history_tests;
