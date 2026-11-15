@@ -1056,9 +1056,10 @@ fn select_tool_by_key(app: &mut PhotocraftApp, ctx: &egui::Context, pressed: &im
         if cycle_shift || pressed(k) {
             let before = app.ui.tool;
             let mut group: Vec<Tool> = Tool::ALL.iter().copied().filter(|x| x.key() == t.key() && crate::tool_shortcuts::uses_default(app, *x)).collect();
-            // Shift+key cycles in toolbar flyout order.
+            // Shift+key cycles in the toolbar layout's order, across slots (Edit › Toolbar).
             if cycle_shift {
-                group.sort_by_key(|x| crate::panels::toolbar::toolbar_position(*x));
+                let order = crate::panels::toolbar::layout_order(&app.session.prefs().toolbar);
+                group.sort_by_key(|x| order.iter().position(|t| t == x).unwrap_or(usize::MAX));
             }
             let next_tool = match group.iter().position(|x| *x == app.ui.tool) {
                 Some(i) if shift_switch && !cycle_shift => group[i],
