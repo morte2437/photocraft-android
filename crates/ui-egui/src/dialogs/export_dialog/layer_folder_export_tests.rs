@@ -28,6 +28,9 @@ fn names_keep_spaces_replace_illegal_characters_and_number_duplicates_downwards(
     assert_eq!(layer_file_names(&docs, "png"), ["Logo-1.png", "logo.png"]);
     let docs = [named("logo"), named("LOGO"), named("Logo")];
     assert_eq!(layer_file_names(&docs, "png"), ["logo-2.png", "LOGO-1.png", "Logo.png"]);
+    // Windows folds names by upper-casing: a final sigma and a sigma are one file there.
+    let docs = [named("ς"), named("σ")];
+    assert_eq!(layer_file_names(&docs, "png"), ["ς-1.png", "σ.png"]);
     // A layer already called `Dup-1` keeps its name; the numbering skips it.
     let docs = [named("Dup"), named("Dup-1"), named("Dup")];
     assert_eq!(layer_file_names(&docs, "jpg"), ["Dup-2.jpg", "Dup-1.jpg", "Dup.jpg"]);
