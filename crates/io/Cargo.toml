@@ -29,6 +29,7 @@ photocraft-doc = { workspace = true }
 photocraft-compose = { workspace = true }
 photocraft-algo = { workspace = true }
 craft-psd = { workspace = true }
+craft-psd-guides = { package = "craft-psd", version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "6d590ce432d9ae725590df72428aeb47256a01fd" }
 photocraft-codecs = { workspace = true }
 photocraft-formats = { workspace = true }
 photocraft-raw = { workspace = true }
