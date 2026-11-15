@@ -80,6 +80,40 @@ pub const CATEGORIES: &[(&str, &[Preset])] = &[
 
 const DEPTH_OPTIONS: &[(u64, &str, &str)] = &[(8, "8 bit", "Integer"), (16, "16 bit", "Integer"), (32, "32 bit (float)", "Floating point")];
 
+/// A Bitmap document's only depth (#14030).
+const BITMAP_DEPTH_OPTIONS: &[(u64, &str, &str)] = &[(1, "1 bit", "Integer")];
+
+/// The Color Mode menu, in Photoshop's order (#14030).
+pub(crate) const MODE_OPTIONS: &[(&str, &str)] =
+    &[("bitmap", "Bitmap"), ("gray", "Grayscale"), ("rgb", "RGB Color"), ("cmyk", "CMYK Color"), ("lab", "Lab Color")];
+
+/// The Depth menu for `mode`: Bitmap is 1 bit only.
+pub(crate) fn depth_options(mode: &str) -> &'static [(u64, &'static str, &'static str)] {
+    if mode == "bitmap" { BITMAP_DEPTH_OPTIONS } else { DEPTH_OPTIONS }
+}
+
+/// The Background Contents menu for `mode`: a Bitmap document has no Transparent (#14030).
+pub(crate) fn background_options(mode: &str) -> Vec<(String, &'static str)> {
+    [
+        ("white", tl!("White")),
+        ("black", tl!("Black")),
+        ("backgroundColor", tl!("Background Color")),
+        ("transparent", tl!("Transparent")),
+        (CUSTOM, tl!("Custom…")),
+    ]
+    .into_iter()
+    .filter(|(v, _)| !(mode == "bitmap" && *v == "transparent"))
+    .map(|(v, l)| (v.to_string(), l))
+    .collect()
+}
+
+/// `depth` if `mode` offers it, else the mode's first depth: switching to Bitmap locks it to 1 bit,
+/// and leaving Bitmap goes back to 8 bit, as Photoshop does (#14030).
+pub(crate) fn fit_depth(mode: &str, depth: u64) -> u64 {
+    let options = depth_options(mode);
+    if options.iter().any(|(bits, _, _)| *bits == depth) { depth } else { options.first().map_or(8, |(bits, _, _)| *bits) }
+}
+
 /// Width/Height units: (key, label, units per inch; 0 = pixels).
 pub const UNITS: &[(&str, &str, f32)] =
     &[("px", "Pixels", 0.0), ("in", "Inches", 1.0), ("cm", "Centimeters", 2.54), ("mm", "Millimeters", 25.4), ("pt", "Points", 72.0), ("pica", "Picas", 6.0)];
@@ -261,6 +295,7 @@ pub fn apply_preset(f: &mut Map<String, Value>, p: &Preset, units: &UnitsAndRule
 fn color_mode_of(mode: &str) -> Option<photocraft_color::ColorMode> {
     use photocraft_color::ColorMode;
     match mode {
+        "bitmap" => Some(ColorMode::Bitmap),
         "rgb" => Some(ColorMode::Rgb),
         "gray" | "grayscale" => Some(ColorMode::Grayscale),
         "cmyk" => Some(ColorMode::Cmyk),
@@ -284,9 +319,15 @@ fn profile_options(
     v
 }
 
-/// Fields `file.new` takes (drops the dialog's `__` UI keys).
+/// Fields `file.new` takes (drops the dialog's `__` UI keys). The depth is fitted to the mode here
+/// too, not only while the dialog draws: an agent can set the mode and confirm before the next
+/// frame (#14030).
 pub fn command_params(f: &Map<String, Value>) -> Value {
-    Value::Object(f.iter().filter(|(k, _)| !k.starts_with("__")).map(|(k, v)| (k.clone(), v.clone())).collect())
+    let mut p: Map<String, Value> = f.iter().filter(|(k, _)| !k.starts_with("__")).map(|(k, v)| (k.clone(), v.clone())).collect();
+    if let Some(depth) = p.get("depth").and_then(Value::as_u64) {
+        p.insert("depth".into(), json!(fit_depth(&get_s(f, "mode", "rgb"), depth)));
+    }
+    Value::Object(p)
 }
 
 /// Set the resolution (pixels/inch) the way Photoshop's New Document does (#758): with Width/Height
@@ -819,27 +860,21 @@ pub fn body(app: &mut crate::PhotocraftApp, ui: &mut egui::Ui, f: &mut Map<Strin
             small_label(ui, tl!("Color Mode"));
             ui.horizontal(|ui| {
                 let mut mode = get_s(f, "mode", "rgb");
-                if widgets::dropdown(
-                    ui,
-                    "nd-mode",
-                    tl!("Color Mode"),
-                    &mut mode,
-                    &[
-                        ("gray".to_string(), tl!("Grayscale")),
-                        ("rgb".to_string(), tl!("RGB Color")),
-                        ("cmyk".to_string(), tl!("CMYK Color")),
-                        ("lab".to_string(), tl!("Lab Color")),
-                    ],
-                    110.0,
-                ) {
+                let modes: Vec<(String, &str)> = MODE_OPTIONS.iter().map(|(v, l)| (v.to_string(), tl!(*l))).collect();
+                if widgets::dropdown(ui, "nd-mode", tl!("Color Mode"), &mut mode, &modes, 110.0) {
                     f.insert("mode".into(), json!(mode));
                     // A profile of the old mode's colour space doesn't suit the new one.
                     f.remove("profile");
                     f.remove("__savedPreset");
                 }
-                let mut depth = f.get("depth").and_then(Value::as_u64).unwrap_or(8);
-                let depth_options: Vec<(u64, &str, &str)> = DEPTH_OPTIONS.iter().map(|(bits, label, tooltip)| (*bits, *label, *tooltip)).collect();
-                if widgets::dropdown_with_tooltips(ui, "nd-depth", tl!("Depth"), &mut depth, &depth_options, 120.0) {
+                let held = f.get("depth").and_then(Value::as_u64).unwrap_or(8);
+                let mut depth = fit_depth(&mode, held);
+                if depth != held {
+                    // Not a depth of this mode (as after switching into or out of Bitmap): Create
+                    // must not send it.
+                    f.insert("depth".into(), json!(depth));
+                }
+                if widgets::dropdown_with_tooltips(ui, "nd-depth", tl!("Depth"), &mut depth, depth_options(&mode), 120.0) {
                     f.insert("depth".into(), json!(depth));
                     f.remove("__savedPreset");
                 }
@@ -875,13 +910,7 @@ pub fn body(app: &mut crate::PhotocraftApp, ui: &mut egui::Ui, f: &mut Map<Strin
             // A custom colour is kept as its "#rrggbb", which `file.new` takes as is (#4789).
             let current = get_s(f, "background", "white");
             let mut bg = if crate::color_picker_ui::parse_hex(&current).is_some() { CUSTOM.to_string() } else { current.clone() };
-            let opts = [
-                ("white".to_string(), tl!("White")),
-                ("black".to_string(), tl!("Black")),
-                ("backgroundColor".to_string(), tl!("Background Color")),
-                ("transparent".to_string(), tl!("Transparent")),
-                (CUSTOM.to_string(), tl!("Custom…")),
-            ];
+            let opts = background_options(&get_s(f, "mode", "rgb"));
             let shown = background_rgb(app, f);
             let mut pick = false;
             ui.horizontal(|ui| {
