@@ -45,6 +45,9 @@ fn metadata() {
     assert_eq!(sensor.active, Rect::new(0, 0, 16, 12));
     assert_eq!(sensor.black, BlackLevels::uniform(4096.0));
     assert_eq!(sensor.white, [64763.0; 3]);
+    let wb = sensor.camera_wb.unwrap();
+    assert!((wb[0] - 1.0 / 0.375).abs() < 1e-9, "{wb:?}");
+    assert!((wb[2] - 1.0 / 0.617).abs() < 1e-9, "{wb:?}");
     // craft-raw reads AsShotNeutral as the DNG colour tag; development turns it into multipliers.
     let neutral = sensor.color.as_shot_neutral.unwrap();
     assert!((neutral[0] - 0.375).abs() < 1e-9 && (neutral[2] - 0.617).abs() < 1e-9, "{neutral:?}");
