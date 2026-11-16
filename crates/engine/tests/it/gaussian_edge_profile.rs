@@ -19,9 +19,9 @@
 //! depths and on both routes, and ratchet the distance to Photoshop's measured row so a future
 //! kernel change is a decision with a number attached to it instead of a silent drift.
 
+use craft_psd::atn::{self, AtnAction, AtnEvent, AtnFile, AtnItem};
+use craft_psd::descriptor::{Descriptor, UnicodeString, Value as D};
 use photocraft_engine::{Session, atn_cmds};
-use photocraft_psd::atn::{self, AtnAction, AtnEvent, AtnFile, AtnItem};
-use photocraft_psd::descriptor::{Descriptor, UnicodeString, Value as D};
 use serde_json::json;
 
 /// The issue's fixture: 33 px wide, black at x = 0..15, white from x = 16.
