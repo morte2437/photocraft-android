@@ -191,11 +191,15 @@ fn fill_samples(row: &mut [f32], raw: impl Iterator<Item = [u16; 3]>, table: &[[
         phase = if phase + 1 == table.len() { 0 } else { phase + 1 };
         for k in 0..3 {
             let (black, range) = t[k];
-            let n = if !range.is_finite() || range <= 0.0 {
-                0.0
-            } else {
+            // One comparison keeps this per-sample loop as cheap as before. It gives the same
+            // result as the `!range.is_finite() || range <= 0.0` test of `Scale::value`: NaN and
+            // nonpositive ranges fail it, and a +inf range divides a finite numerator to 0 (or to
+            // NaN for an infinite one, which the finiteness check maps to 0).
+            let n = if range > 0.0 {
                 let n = (lin(raw[k]) - black) / range;
                 if n.is_finite() { n } else { 0.0 }
+            } else {
+                0.0
             };
             px[k] = (n * mult[k]).clamp(0.0, 1.0);
         }
