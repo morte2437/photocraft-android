@@ -12,6 +12,8 @@ use crate::theme::Tokens;
 use crate::{icons, widgets};
 use photocraft_engine::document_preset_cmds::DocumentSettings;
 
+pub mod pixel_aspect;
+
 /// A blank-document preset: (name, width px, height px, ppi).
 pub type Preset = (&'static str, u32, u32, f32);
 
@@ -79,6 +81,40 @@ pub const CATEGORIES: &[(&str, &[Preset])] = &[
 ];
 
 const DEPTH_OPTIONS: &[(u64, &str, &str)] = &[(8, "8 bit", "Integer"), (16, "16 bit", "Integer"), (32, "32 bit (float)", "Floating point")];
+
+/// A Bitmap document's only depth (#14030).
+const BITMAP_DEPTH_OPTIONS: &[(u64, &str, &str)] = &[(1, "1 bit", "Integer")];
+
+/// The Color Mode menu, in Photoshop's order (#14030).
+pub(crate) const MODE_OPTIONS: &[(&str, &str)] =
+    &[("bitmap", "Bitmap"), ("gray", "Grayscale"), ("rgb", "RGB Color"), ("cmyk", "CMYK Color"), ("lab", "Lab Color")];
+
+/// The Depth menu for `mode`: Bitmap is 1 bit only.
+pub(crate) fn depth_options(mode: &str) -> &'static [(u64, &'static str, &'static str)] {
+    if mode == "bitmap" { BITMAP_DEPTH_OPTIONS } else { DEPTH_OPTIONS }
+}
+
+/// The Background Contents menu for `mode`: a Bitmap document has no Transparent (#14030).
+pub(crate) fn background_options(mode: &str) -> Vec<(String, &'static str)> {
+    [
+        ("white", tl!("White")),
+        ("black", tl!("Black")),
+        ("backgroundColor", tl!("Background Color")),
+        ("transparent", tl!("Transparent")),
+        (CUSTOM, tl!("Custom…")),
+    ]
+    .into_iter()
+    .filter(|(v, _)| !(mode == "bitmap" && *v == "transparent"))
+    .map(|(v, l)| (v.to_string(), l))
+    .collect()
+}
+
+/// `depth` if `mode` offers it, else the mode's first depth: switching to Bitmap locks it to 1 bit,
+/// and leaving Bitmap goes back to 8 bit, as Photoshop does (#14030).
+pub(crate) fn fit_depth(mode: &str, depth: u64) -> u64 {
+    let options = depth_options(mode);
+    if options.iter().any(|(bits, _, _)| *bits == depth) { depth } else { options.first().map_or(8, |(bits, _, _)| *bits) }
+}
 
 /// Width/Height units: (key, label, units per inch; 0 = pixels).
 pub const UNITS: &[(&str, &str, f32)] =
@@ -218,23 +254,50 @@ pub fn at_pref_resolutions(p: &Preset, units: &UnitsAndRulers) -> Preset {
     (p.0, px(p.1), px(p.2), ppi)
 }
 
+/// The category tabs whose presets start the document as an artboard, as in Photoshop (#14042).
+const ARTBOARD_CATEGORIES: &[&str] = &["Web", "Mobile"];
+
+/// Set when a Web or Mobile preset ticked Artboards, so a preset of another tab unticks only that
+/// and never a box ticked by hand (#14042).
+const PRESET_ARTBOARD: &str = "__presetArtboard";
+
 /// Apply a built-in preset (at the preference resolutions, see [`at_pref_resolutions`]) to the
-/// dialog fields.
+/// dialog fields. A preset of the category tab picked in `__category` also sets Artboards: on for
+/// Web and Mobile; the other tabs turn it back off when a Web or Mobile preset turned it on, and
+/// leave a box ticked by hand as it is (#14042). Recent's built-in cards and the Clipboard preset
+/// leave it as it is.
 pub fn apply_preset(f: &mut Map<String, Value>, p: &Preset, units: &UnitsAndRulers) {
     let (name, w, h, ppi) = at_pref_resolutions(p, units);
     let unit = preset_unit(p, f);
+    let cat = get_s(f, "__category", CATEGORIES[0].0);
+    let tab = CATEGORIES.iter().find(|c| c.0 == cat && c.0 != CATEGORIES[0].0 && c.1.iter().any(|q| q.0 == name));
     f.remove("__savedPreset");
     f.insert("width".into(), json!(w));
     f.insert("height".into(), json!(h));
     f.insert("resolution".into(), json!(ppi));
     f.insert("__preset".into(), json!(name));
     f.insert("__unit".into(), json!(unit));
+    match tab {
+        Some((tab, _)) if ARTBOARD_CATEGORIES.contains(tab) => {
+            if f.get("artboard").and_then(Value::as_bool) != Some(true) {
+                f.insert("artboard".into(), json!(true));
+                f.insert(PRESET_ARTBOARD.into(), json!(true));
+            }
+        }
+        // Off is the checkbox's and `file.new`'s default.
+        Some(_) if f.contains_key(PRESET_ARTBOARD) => {
+            f.remove(PRESET_ARTBOARD);
+            f.remove("artboard");
+        }
+        _ => {}
+    }
 }
 
 /// The colour mode of the dialog's `mode` value.
 fn color_mode_of(mode: &str) -> Option<photocraft_color::ColorMode> {
     use photocraft_color::ColorMode;
     match mode {
+        "bitmap" => Some(ColorMode::Bitmap),
         "rgb" => Some(ColorMode::Rgb),
         "gray" | "grayscale" => Some(ColorMode::Grayscale),
         "cmyk" => Some(ColorMode::Cmyk),
@@ -258,9 +321,15 @@ fn profile_options(
     v
 }
 
-/// Fields `file.new` takes (drops the dialog's `__` UI keys).
+/// Fields `file.new` takes (drops the dialog's `__` UI keys). The depth is fitted to the mode here
+/// too, not only while the dialog draws: an agent can set the mode and confirm before the next
+/// frame (#14030).
 pub fn command_params(f: &Map<String, Value>) -> Value {
-    Value::Object(f.iter().filter(|(k, _)| !k.starts_with("__")).map(|(k, v)| (k.clone(), v.clone())).collect())
+    let mut p: Map<String, Value> = f.iter().filter(|(k, _)| !k.starts_with("__")).map(|(k, v)| (k.clone(), v.clone())).collect();
+    if let Some(depth) = p.get("depth").and_then(Value::as_u64) {
+        p.insert("depth".into(), json!(fit_depth(&get_s(f, "mode", "rgb"), depth)));
+    }
+    Value::Object(p)
 }
 
 /// Set the resolution (pixels/inch) the way Photoshop's New Document does (#758): with Width/Height
@@ -479,44 +548,79 @@ fn saved_presets(app: &mut crate::PhotocraftApp, ui: &mut egui::Ui, f: &mut Map<
     create
 }
 
+/// The name Save Document Preset proposes: the first `Saved N` no saved preset has (#14043).
+pub fn next_saved_name(presets: &[photocraft_engine::document_preset_cmds::DocumentPreset]) -> String {
+    // n presets leave one of `Saved 1`..`Saved n+1` free.
+    let free = (1..=presets.len().saturating_add(1)).map(|n| format!("Saved {n}")).find(|name| !presets.iter().any(|p| p.name.eq_ignore_ascii_case(name)));
+    free.unwrap_or_else(|| "Saved".into())
+}
+
+/// Whether the Save Document Preset pane stands in for Preset Details.
+fn saving_preset(f: &Map<String, Value>) -> bool {
+    f.get("__savingPreset").and_then(Value::as_bool) == Some(true)
+}
+
+/// Photoshop's Save Document Preset pane, opened by the icon beside Name (#14043): the header
+/// SAVE DOCUMENT PRESET, a name proposing the next free `Saved N` with its text selected, and
+/// Save Preset / Cancel. Cancel goes back to Preset Details without saving.
 fn save_preset(app: &mut crate::PhotocraftApp, ui: &mut egui::Ui, f: &mut Map<String, Value>) {
+    let t = Tokens::get(ui.ctx());
+    ui.label(RichText::new(tl!("SAVE DOCUMENT PRESET")).size(11.0).color(t.text_faint));
+    ui.add_space(4.0);
+    // Consume every Enter, Ctrl+Enter too, before TextEdit sees it, so naming can never confirm the
+    // outer dialog. A dialog stacked above disables this pane and keeps its own Enter.
+    let enter = ui.is_enabled() && ui.input_mut(consume_any_enter);
+    let mut name = f.get("__presetName").and_then(Value::as_str).map_or_else(|| next_saved_name(&app.session.presets.documents), str::to_owned);
+    let r = ui
+        .add(egui::TextEdit::singleline(&mut name).id_salt("document-preset-name").desired_width(250.0).font(egui::FontId::proportional(15.0)).char_limit(255))
+        .accessible_name(tl!("Preset Name"));
+    f.insert("__presetName".into(), json!(name));
+    crate::field_tab::register(ui.ctx(), r.id);
+    // The pane opens with the proposed name selected, so typing replaces it.
+    if f.remove("__presetNameFocus").is_some() {
+        crate::field_tab::focus(ui.ctx(), r.id);
+    }
+    if r.gained_focus() {
+        crate::field_tab::select_all(ui.ctx(), r.id, &name);
+    }
     ui.add_space(12.0);
-    if f.get("__savingPreset").and_then(Value::as_bool) != Some(true) {
-        if widgets::secondary_button(ui, tl!("Save Preset…"), 240.0).clicked() {
-            f.insert("__savingPreset".into(), json!(true));
-            f.remove("__presetError");
-        }
-    } else {
-        // Consume before TextEdit sees Enter, so naming can never confirm the outer dialog.
-        let enter = ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Enter));
-        let label = ui.label(tl!("Preset Name"));
-        let mut name = get_s(f, "__presetName", "");
-        ui.add(egui::TextEdit::singleline(&mut name).id_salt("document-preset-name").desired_width(240.0).char_limit(255)).labelled_by(label.id);
-        f.insert("__presetName".into(), json!(name));
-        ui.horizontal(|ui| {
-            if widgets::secondary_button(ui, tl!("Save"), 110.0).clicked() || enter {
-                match app.run("document.presets.save", json!({"name":name,"settings":document_settings(f)})) {
-                    Ok(_) => {
-                        if let Some(preset) = app.session.presets.documents.last() {
-                            apply_saved_preset(f, preset);
-                        }
-                        f.insert("__category".into(), json!("Saved"));
-                        f.remove("__savingPreset");
-                        f.remove("__presetName");
-                        f.remove("__presetError");
-                        ui.ctx().request_repaint();
+    ui.horizontal(|ui| {
+        if widgets::secondary_button(ui, tl!("Save Preset"), 120.0).clicked() || enter {
+            match app.run("document.presets.save", json!({"name":name,"settings":document_settings(f)})) {
+                Ok(_) => {
+                    if let Some(preset) = app.session.presets.documents.last() {
+                        apply_saved_preset(f, preset);
                     }
-                    Err(e) => {
-                        f.insert("__presetError".into(), json!(e.to_string()));
-                    }
+                    f.insert("__category".into(), json!("Saved"));
+                    f.remove("__savingPreset");
+                    f.remove("__presetName");
+                    f.remove("__presetError");
+                    ui.ctx().request_repaint();
+                }
+                Err(e) => {
+                    f.insert("__presetError".into(), json!(e.to_string()));
                 }
             }
-            if widgets::secondary_button(ui, tl!("Cancel"), 110.0).clicked() {
-                f.remove("__savingPreset");
-                f.remove("__presetError");
-            }
-        });
-    }
+        }
+        if widgets::secondary_button(ui, tl!("Cancel"), 120.0).clicked() {
+            f.remove("__savingPreset");
+            f.remove("__presetName");
+            f.remove("__presetError");
+        }
+    });
+    preset_error(ui, f);
+}
+
+/// Takes this frame's Enter presses whatever their modifiers (`consume_key` leaves Ctrl+Enter for
+/// the outer dialog's Create) and says whether there was one.
+fn consume_any_enter(i: &mut egui::InputState) -> bool {
+    let before = i.events.len();
+    i.events.retain(|e| !matches!(e, egui::Event::Key { key: egui::Key::Enter, pressed: true, .. }));
+    i.events.len() != before
+}
+
+/// The last failed save or delete of a preset.
+fn preset_error(ui: &mut egui::Ui, f: &Map<String, Value>) {
     if let Some(error) = f.get("__presetError").and_then(Value::as_str) {
         // The engine's message stays copyable, unlike the static labels around it.
         ui.add(egui::Label::new(error).wrap().selectable(true));
@@ -642,12 +746,37 @@ pub fn body(app: &mut crate::PhotocraftApp, ui: &mut egui::Ui, f: &mut Map<Strin
         // Right: Preset Details.
         ui.vertical(|ui| {
             ui.set_width(260.0);
+            // The Save Document Preset pane keeps the height Preset Details had, so the dialog
+            // doesn't shrink and jump while saving.
+            let details_height = egui::Id::unique("new-document-details-height");
+            if saving_preset(f) {
+                if let Some(h) = ui.ctx().data(|d| d.get_temp::<f32>(details_height)) {
+                    ui.set_min_height(h);
+                }
+                save_preset(app, ui, f);
+                return;
+            }
             ui.label(RichText::new(tl!("PRESET DETAILS")).size(11.0).color(t.text_faint));
             ui.add_space(4.0);
             // Keep the canonical English default in state; only the TextEdit shows a translation.
             let raw = get_s(f, "name", "Untitled-1");
             let mut name = if raw == "Untitled-1" { tl!("Untitled-1").to_string() } else { raw };
-            let r = ui.add(egui::TextEdit::singleline(&mut name).desired_width(250.0).font(egui::FontId::proportional(15.0))).accessible_name(tl!("Name"));
+            let r = ui
+                .horizontal(|ui| {
+                    const ICON: f32 = 24.0;
+                    let width = 250.0 - ICON - ui.spacing().item_spacing.x;
+                    let r =
+                        ui.add(egui::TextEdit::singleline(&mut name).desired_width(width).font(egui::FontId::proportional(15.0))).accessible_name(tl!("Name"));
+                    // Photoshop's save icon right of Name opens the Save Document Preset pane (#14043).
+                    if icons::button(ui, icons::FOOTER_NEW, ICON, false, "Save Document Preset").clicked() {
+                        f.insert("__savingPreset".into(), json!(true));
+                        f.insert("__presetNameFocus".into(), json!(true));
+                        f.remove("__presetName");
+                        f.remove("__presetError");
+                    }
+                    r
+                })
+                .inner;
             if r.changed() {
                 f.insert("name".into(), json!(name));
             }
@@ -705,6 +834,8 @@ pub fn body(app: &mut crate::PhotocraftApp, ui: &mut egui::Ui, f: &mut Map<Strin
             let mut artboard = f.get("artboard").and_then(Value::as_bool).unwrap_or(false);
             if widgets::checkbox(ui, &mut artboard, tl!("Artboards")).changed() {
                 f.insert("artboard".into(), json!(artboard));
+                // Now the user's choice: another tab's preset leaves it alone.
+                f.remove(PRESET_ARTBOARD);
             }
             ui.add_space(4.0);
             small_label(ui, tl!("Resolution"));
@@ -731,27 +862,21 @@ pub fn body(app: &mut crate::PhotocraftApp, ui: &mut egui::Ui, f: &mut Map<Strin
             small_label(ui, tl!("Color Mode"));
             ui.horizontal(|ui| {
                 let mut mode = get_s(f, "mode", "rgb");
-                if widgets::dropdown(
-                    ui,
-                    "nd-mode",
-                    tl!("Color Mode"),
-                    &mut mode,
-                    &[
-                        ("gray".to_string(), tl!("Grayscale")),
-                        ("rgb".to_string(), tl!("RGB Color")),
-                        ("cmyk".to_string(), tl!("CMYK Color")),
-                        ("lab".to_string(), tl!("Lab Color")),
-                    ],
-                    110.0,
-                ) {
+                let modes: Vec<(String, &str)> = MODE_OPTIONS.iter().map(|(v, l)| (v.to_string(), tl!(*l))).collect();
+                if widgets::dropdown(ui, "nd-mode", tl!("Color Mode"), &mut mode, &modes, 110.0) {
                     f.insert("mode".into(), json!(mode));
                     // A profile of the old mode's colour space doesn't suit the new one.
                     f.remove("profile");
                     f.remove("__savedPreset");
                 }
-                let mut depth = f.get("depth").and_then(Value::as_u64).unwrap_or(8);
-                let depth_options: Vec<(u64, &str, &str)> = DEPTH_OPTIONS.iter().map(|(bits, label, tooltip)| (*bits, *label, *tooltip)).collect();
-                if widgets::dropdown_with_tooltips(ui, "nd-depth", tl!("Depth"), &mut depth, &depth_options, 120.0) {
+                let held = f.get("depth").and_then(Value::as_u64).unwrap_or(8);
+                let mut depth = fit_depth(&mode, held);
+                if depth != held {
+                    // Not a depth of this mode (as after switching into or out of Bitmap): Create
+                    // must not send it.
+                    f.insert("depth".into(), json!(depth));
+                }
+                if widgets::dropdown_with_tooltips(ui, "nd-depth", tl!("Depth"), &mut depth, depth_options(&mode), 120.0) {
                     f.insert("depth".into(), json!(depth));
                     f.remove("__savedPreset");
                 }
@@ -783,17 +908,22 @@ pub fn body(app: &mut crate::PhotocraftApp, ui: &mut egui::Ui, f: &mut Map<Strin
                 }
             }
             ui.add_space(4.0);
+            // Photoshop's Advanced Options › Pixel Aspect Ratio, under Color Profile (#14034).
+            small_label(ui, tl!("Pixel Aspect Ratio"));
+            {
+                let opts = pixel_aspect::options(&app.ui.shell.custom_pars);
+                let mut par = pixel_aspect::picked(f, &app.ui.shell.custom_pars);
+                let shown: Vec<(String, &str)> = opts.iter().map(|(v, l)| (v.clone(), l.as_str())).collect();
+                if widgets::dropdown_literal(ui, "nd-pixel-aspect", tl!("Pixel Aspect Ratio"), &mut par, &shown, 240.0) {
+                    f.insert(pixel_aspect::FIELD.into(), json!(par));
+                }
+            }
+            ui.add_space(4.0);
             small_label(ui, tl!("Background Contents"));
             // A custom colour is kept as its "#rrggbb", which `file.new` takes as is (#4789).
             let current = get_s(f, "background", "white");
             let mut bg = if crate::color_picker_ui::parse_hex(&current).is_some() { CUSTOM.to_string() } else { current.clone() };
-            let opts = [
-                ("white".to_string(), tl!("White")),
-                ("black".to_string(), tl!("Black")),
-                ("backgroundColor".to_string(), tl!("Background Color")),
-                ("transparent".to_string(), tl!("Transparent")),
-                (CUSTOM.to_string(), tl!("Custom…")),
-            ];
+            let opts = background_options(&get_s(f, "mode", "rgb"));
             let shown = background_rgb(app, f);
             let mut pick = false;
             ui.horizontal(|ui| {
@@ -836,7 +966,10 @@ pub fn body(app: &mut crate::PhotocraftApp, ui: &mut egui::Ui, f: &mut Map<Strin
                 f.remove("backgroundColor");
                 crate::color_picker_ui::request_field(f, "background", &crate::color_picker_ui::title_for(tl!("Background Contents")));
             }
-            save_preset(app, ui, f);
+            ui.add_space(12.0);
+            preset_error(ui, f);
+            let h = ui.min_rect().height();
+            ui.ctx().data_mut(|d| d.insert_temp(details_height, h));
         });
     });
     create

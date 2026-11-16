@@ -113,9 +113,22 @@ fn preferences_section(s: &mut Session, p: &Value) -> Result<Value> {
     Ok(json!({"section": section, "title": title, "values": values}))
 }
 
-/// Edit › Toolbar: hide tools and reorder the toolbar.
+/// Edit › Toolbar: the toolbar's group layout (`toolbar` slots and `extras`, each a list of tool
+/// groups), and the older flat `hidden` list. Returns the resulting layout.
 fn toolbar(s: &mut Session, p: &Value) -> Result<Value> {
     let ids = |k: &str| -> Option<Vec<String>> { p.get(k).and_then(Value::as_array).map(|a| a.iter().filter_map(Value::as_str).map(str::to_string).collect()) };
+    // A list of groups; a bare name is a group of one.
+    let groups = |k: &str| -> Result<Option<Vec<Vec<String>>>> {
+        let Some(v) = p.get(k).filter(|v| !v.is_null()) else { return Ok(None) };
+        let list = v.as_array().ok_or_else(|| bad("edit.toolbar", format!("`{k}` needs a list of tool groups")))?;
+        let group = |g: &Value| match g {
+            Value::Array(a) => Ok(a.iter().filter_map(Value::as_str).map(str::to_string).collect()),
+            Value::String(name) => Ok(vec![name.clone()]),
+            _ => Err(bad("edit.toolbar", format!("`{k}` needs a list of tool groups"))),
+        };
+        list.iter().map(group).collect::<Result<Vec<Vec<String>>>>().map(Some)
+    };
+    let (toolbar, extras) = (groups("toolbar")?, groups("extras")?);
     s.edit_prefs(|pr| {
         if p.get("reset").and_then(Value::as_bool) == Some(true) {
             pr.toolbar = ToolbarCustomization::default();
@@ -126,8 +139,22 @@ fn toolbar(s: &mut Session, p: &Value) -> Result<Value> {
         if let Some(o) = ids("order") {
             pr.toolbar.order = o;
         }
+        if toolbar.is_some() || extras.is_some() {
+            let current = pr.toolbar.layout();
+            // Tools a new extras list names leave the current toolbar for it.
+            let named: Vec<String> = extras.iter().flatten().flatten().filter_map(|n| ToolbarCustomization::tool_name(n)).collect();
+            let toolbar =
+                toolbar.clone().unwrap_or_else(|| current.toolbar.iter().map(|g| g.iter().filter(|t| !named.contains(t)).cloned().collect()).collect());
+            let extras = extras.clone().unwrap_or(current.extras);
+            // The new layout holds the hidden tools now; keep it as it was given.
+            let layout = ToolbarCustomization { toolbar: Some(toolbar), extras: Some(extras), ..Default::default() }.layout();
+            pr.toolbar.hidden.clear();
+            pr.toolbar.toolbar = Some(layout.toolbar);
+            pr.toolbar.extras = Some(layout.extras);
+        }
     });
-    Ok(serde_json::to_value(&s.prefs().toolbar).unwrap_or_default())
+    let layout = s.prefs().toolbar.layout();
+    Ok(json!({"toolbar": layout.toolbar, "extras": layout.extras}))
 }
 
 macro_rules! spec {
@@ -208,6 +235,14 @@ pub fn specs() -> Vec<CommandSpec> {
             menus,
             true
         ),
-        spec!("edit.toolbar", "Toolbar…", ["Edit"], None, r##"{"hidden":["<tool>",…]?,"order":["<tool>",…]?,"reset":bool=false}"##, toolbar, true),
+        spec!(
+            "edit.toolbar",
+            "Toolbar…",
+            ["Edit"],
+            None,
+            r##"{"toolbar":[["<tool>",…],…]?,"extras":[["<tool>",…],…]?,"hidden":["<tool>",…]?,"order":["<tool>",…]?,"reset":bool=false}"##,
+            toolbar,
+            true
+        ),
     ]
 }

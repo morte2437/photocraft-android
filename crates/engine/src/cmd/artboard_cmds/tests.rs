@@ -174,8 +174,8 @@ fn export_to_files_and_pdf() {
     let r = s.execute("file.export.artboardsToFiles", json!({"dir": d, "prefix": "site"})).unwrap();
     let files: Vec<String> = r["files"].as_array().unwrap().iter().map(|v| v.as_str().unwrap().to_string()).collect();
     assert_eq!(files.len(), 2);
-    assert!(files[0].ends_with("site_0000_Empty_One.png"), "{files:?}");
-    assert!(files[1].ends_with("site_0001_Red Board.png"), "{files:?}");
+    assert!(files[0].ends_with("/siteEmpty_One.png"), "{files:?}");
+    assert!(files[1].ends_with("/siteRed-Board.png"), "{files:?}");
     let img = photocraft_io::import("x.png", &std::fs::read(&files[1]).unwrap()).unwrap().document;
     assert_eq!((img.size.width, img.size.height), (10, 10));
     let img2 = photocraft_io::import("x.png", &std::fs::read(&files[0]).unwrap()).unwrap().document;

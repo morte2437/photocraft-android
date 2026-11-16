@@ -5,6 +5,7 @@
 //! unless `PHOTOCRAFT_REQUIRE_WINRES=1` (set by the release packaging script) turns it into a
 //! build error.
 
+/// Embeds the Windows resources and delay-loads the print-only system DLLs (#8272).
 fn main() -> std::io::Result<()> {
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-changed=../../assets/app-icon/photocraft.ico");
@@ -12,12 +13,14 @@ fn main() -> std::io::Result<()> {
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("windows") {
         return Ok(());
     }
-    // Printing to PDF (winprint's `PdfCreateRenderer`) imports Windows.Data.Pdf.dll, which
-    // stripped Windows images (NTLite, some N/LTSC builds) lack. A load-time import stops the exe
-    // from starting at all ("windows.data.pdf.dll was not found", #5884), so load it on first use;
-    // the print command checks for it first and reports an error instead.
+    // Printing to PDF (winprint's `PdfCreateRenderer`) imports Windows.Data.Pdf.dll, and its
+    // printer options (the Print Ticket API) import prntvpt.dll; stripped Windows images (NTLite,
+    // some N/LTSC builds) lack them. A load-time import stops the exe from starting at all
+    // ("windows.data.pdf.dll was not found", #5884; "prntvpt.dll", #8272), so load them on first
+    // use; the print commands check for them first and report an error instead.
     if std::env::var("CARGO_CFG_TARGET_ENV").as_deref() == Ok("msvc") {
         println!("cargo:rustc-link-arg-bins=/DELAYLOAD:windows.data.pdf.dll");
+        println!("cargo:rustc-link-arg-bins=/DELAYLOAD:prntvpt.dll");
         println!("cargo:rustc-link-arg-bins=delayimp.lib");
     }
     let mut res = winresource::WindowsResource::new();

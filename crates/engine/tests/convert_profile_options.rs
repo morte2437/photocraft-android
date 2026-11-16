@@ -31,12 +31,15 @@ fn layered(depth: u32, mode: &str) -> Session {
         Ok(())
     })
     .unwrap();
+    // Assign Profile is greyed for Lab documents (#14238), which are device-independent anyway.
     let profile = match mode {
-        "cmyk" => "coated-cmyk",
-        "lab" => "lab-d50",
-        _ => "srgb",
+        "cmyk" => Some("coated-cmyk"),
+        "lab" => None,
+        _ => Some("srgb"),
     };
-    s.execute("edit.assignProfile", json!({"profile": profile})).unwrap();
+    if let Some(profile) = profile {
+        s.execute("edit.assignProfile", json!({"profile": profile})).unwrap();
+    }
     s
 }
 

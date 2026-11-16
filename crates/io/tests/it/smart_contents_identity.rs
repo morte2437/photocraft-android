@@ -349,3 +349,29 @@ fn plld_only_spilled_custom_warp_places_like_sold_and_round_trips_verbatim() {
     assert!(close(c.transform, t), "{:?} vs {t:?}", c.transform);
     assert_eq!(c.warp.as_ref(), Some(&warp));
 }
+
+/// Shared annotation refusal preserves the established smart-source fallback policy:
+/// the cached pixels survive and the warning explains loss of editable nested contents.
+#[test]
+fn oversized_nested_annotations_warn_before_smart_object_becomes_pixels() {
+    let mut source = Document::new("contents", Size::new(2, 2), ColorMode::Rgb, SampleType::U8);
+    source.notes = vec![photocraft_doc::Note::default(); 4097];
+    let mut pixels = Surface::new(source.pixel_format());
+    pixels.fill_rect(source.bounds(), &[1.0, 0.0, 0.0, 1.0]);
+    source.layers.push(Layer::new("red", LayerContent::Raster(pixels.clone())));
+    let bytes = photocraft_format::save_to_bytes(&source, &Default::default()).unwrap();
+    let mut doc = Document::new("outer", Size::new(2, 2), ColorMode::Rgb, SampleType::U8);
+    let sm = SmartObject::new(SmartSource::Embedded { file_name: "contents.pcraft".into(), bytes: Arc::new(bytes) }, Affine::IDENTITY, Some(pixels));
+    doc.layers.push(Layer::new("nested notes", LayerContent::Smart(sm)));
+    for extension in ["psd", "psb"] {
+        let out = export(&doc, extension, &Default::default()).unwrap();
+        assert!(
+            out.warnings.iter().any(|w| w.contains("smart object written as pixels") && w.contains("annotations") && w.contains("annotation count")),
+            "{:?}",
+            out.warnings
+        );
+        let back = import(extension, &out.bytes).unwrap().document;
+        assert!(matches!(back.layers[0].content, LayerContent::Raster(_)));
+        assert_eq!(back.layers[0].surface().unwrap().pixel(0, 0), vec![1.0, 0.0, 0.0, 1.0]);
+    }
+}

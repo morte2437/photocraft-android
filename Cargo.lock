@@ -1352,7 +1352,7 @@ dependencies = [
 [[package]]
 name = "craft-cms"
 version = "0.1.0"
-source = "git+https://github.com/storytold/craft-libs?rev=ad8faa1c136ce289e9f132c9137d0cd913bd4ef6#ad8faa1c136ce289e9f132c9137d0cd913bd4ef6"
+source = "git+https://github.com/storytold/craft-libs?rev=c6eb84d427d81b6d64207654c8ee0516cd3d7324#c6eb84d427d81b6d64207654c8ee0516cd3d7324"
 dependencies = [
  "md-5",
  "rayon",
@@ -1545,9 +1545,20 @@ source = "git+https://github.com/storytold/craft-libs?rev=ad8faa1c136ce289e9f132
 dependencies = [
  "blake3",
  "craft-atomic",
- "craft-pcraft-format",
+ "craft-pcraft-format 0.1.0 (git+https://github.com/storytold/craft-libs?rev=ad8faa1c136ce289e9f132c9137d0cd913bd4ef6)",
  "craft-zip",
  "ruzstd",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "craft-pcraft-format"
+version = "0.1.0"
+source = "git+https://github.com/storytold/craft-libs?rev=3e970577b9bb446967c2003ec8ecaf4f28b0768c#3e970577b9bb446967c2003ec8ecaf4f28b0768c"
+dependencies = [
+ "flate2",
+ "serde",
+ "serde_json",
  "thiserror 2.0.21",
 ]
 
@@ -1585,6 +1596,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "craft-plist"
+version = "0.1.0"
+source = "git+https://github.com/storytold/craft-libs?rev=e2e3b4213afb2b5e7651bc1b1a1cf72a8bb6313d#e2e3b4213afb2b5e7651bc1b1a1cf72a8bb6313d"
+dependencies = [
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "craft-print"
 version = "0.1.0"
 source = "git+https://github.com/storytold/craft-libs?rev=ad8faa1c136ce289e9f132c9137d0cd913bd4ef6#ad8faa1c136ce289e9f132c9137d0cd913bd4ef6"
@@ -1601,7 +1620,29 @@ dependencies = [
 [[package]]
 name = "craft-psd"
 version = "0.1.0"
-source = "git+https://github.com/storytold/craft-libs?rev=ad8faa1c136ce289e9f132c9137d0cd913bd4ef6#ad8faa1c136ce289e9f132c9137d0cd913bd4ef6"
+source = "git+https://github.com/storytold/craft-libs?rev=2284a6bf76b3d629b5e5bb2ca71e1c319d8dae5f#2284a6bf76b3d629b5e5bb2ca71e1c319d8dae5f"
+dependencies = [
+ "encoding_rs",
+ "flate2",
+ "rayon",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "craft-psd"
+version = "0.1.0"
+source = "git+https://github.com/storytold/craft-libs?rev=589842f0da5c5a11e71f39b70092dcb918b92f39#589842f0da5c5a11e71f39b70092dcb918b92f39"
+dependencies = [
+ "encoding_rs",
+ "flate2",
+ "rayon",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "craft-psd"
+version = "0.1.0"
+source = "git+https://github.com/storytold/craft-libs?rev=b9c22554ce0fd2caccdb53b417082a2ff2ef178f#b9c22554ce0fd2caccdb53b417082a2ff2ef178f"
 dependencies = [
  "encoding_rs",
  "flate2",
@@ -2903,9 +2944,11 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "899def5c37c4fd7b2664648c28120ecec138e4d395b459e5ca34f9cce2dd77fd"
 dependencies = [
  "cfg-if",
+ "js-sys",
  "libc",
  "r-efi 5.3.0",
  "wasip2",
+ "wasm-bindgen",
 ]
 
 [[package]]
@@ -5506,7 +5549,7 @@ dependencies = [
  "craft-ai-agents",
  "craft-flags",
  "craft-image-codecs",
- "craft-psd",
+ "craft-psd 0.1.0 (git+https://github.com/storytold/craft-libs?rev=2284a6bf76b3d629b5e5bb2ca71e1c319d8dae5f)",
  "getrandom 0.3.4",
  "hmac",
  "photocraft-color",
@@ -5540,7 +5583,7 @@ dependencies = [
  "clap_mangen",
  "craft-cms",
  "craft-image-codecs",
- "craft-psd",
+ "craft-psd 0.1.0 (git+https://github.com/storytold/craft-libs?rev=2284a6bf76b3d629b5e5bb2ca71e1c319d8dae5f)",
  "photocraft-automation",
  "photocraft-doc",
  "photocraft-engine",
@@ -5603,11 +5646,13 @@ dependencies = [
  "craft-cms",
  "craft-file-formats",
  "craft-image-codecs",
+ "craft-pcraft-format 0.1.0 (git+https://github.com/storytold/craft-libs?rev=3e970577b9bb446967c2003ec8ecaf4f28b0768c)",
  "craft-print",
- "craft-psd",
+ "craft-psd 0.1.0 (git+https://github.com/storytold/craft-libs?rev=2284a6bf76b3d629b5e5bb2ca71e1c319d8dae5f)",
  "craft-xml",
  "exr",
  "flate2",
+ "getrandom 0.3.4",
  "photocraft-algo",
  "photocraft-color",
  "photocraft-compose",
@@ -5644,7 +5689,7 @@ dependencies = [
  "craft-file-formats",
  "craft-image-codecs",
  "craft-pcraft-bundle",
- "craft-pcraft-format",
+ "craft-pcraft-format 0.1.0 (git+https://github.com/storytold/craft-libs?rev=ad8faa1c136ce289e9f132c9137d0cd913bd4ef6)",
  "craft-zip",
  "crc32fast",
  "exacl",
@@ -5706,7 +5751,9 @@ dependencies = [
  "craft-ora",
  "craft-pdf",
  "craft-pdn",
- "craft-psd",
+ "craft-psd 0.1.0 (git+https://github.com/storytold/craft-libs?rev=2284a6bf76b3d629b5e5bb2ca71e1c319d8dae5f)",
+ "craft-psd 0.1.0 (git+https://github.com/storytold/craft-libs?rev=589842f0da5c5a11e71f39b70092dcb918b92f39)",
+ "craft-psd 0.1.0 (git+https://github.com/storytold/craft-libs?rev=b9c22554ce0fd2caccdb53b417082a2ff2ef178f)",
  "craft-svg",
  "craft-tiff 0.1.0 (git+https://github.com/storytold/craft-libs?rev=ad8faa1c136ce289e9f132c9137d0cd913bd4ef6)",
  "craft-xcf",
@@ -5751,6 +5798,7 @@ dependencies = [
 name = "photocraft-paint"
 version = "0.23.1"
 dependencies = [
+ "base64 0.23.1",
  "craft-cms",
  "photocraft-color",
  "photocraft-geom",
@@ -5835,7 +5883,9 @@ dependencies = [
 name = "photocraft-text"
 version = "0.23.1"
 dependencies = [
- "craft-psd",
+ "base64 0.23.1",
+ "craft-plist",
+ "craft-psd 0.1.0 (git+https://github.com/storytold/craft-libs?rev=2284a6bf76b3d629b5e5bb2ca71e1c319d8dae5f)",
  "flate2",
  "parley",
  "photocraft-color",
@@ -5857,7 +5907,7 @@ dependencies = [
  "craft-i18n",
  "craft-image-codecs",
  "craft-print",
- "craft-psd",
+ "craft-psd 0.1.0 (git+https://github.com/storytold/craft-libs?rev=2284a6bf76b3d629b5e5bb2ca71e1c319d8dae5f)",
  "craft-ui",
  "craft-update",
  "eframe",
@@ -5912,7 +5962,7 @@ name = "photocraft-web"
 version = "0.23.1"
 dependencies = [
  "craft-image-codecs",
- "craft-psd",
+ "craft-psd 0.1.0 (git+https://github.com/storytold/craft-libs?rev=2284a6bf76b3d629b5e5bb2ca71e1c319d8dae5f)",
  "eframe",
  "egui",
  "js-sys",
@@ -6979,9 +7029,9 @@ checksum = "eec689c0bc40ff2458a5977b6619cb718087084a18e02a131c599b62d05e1a5f"
 
 [[package]]
 name = "rustls-webpki"
-version = "0.103.15"
+version = "0.103.16"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f3c3cf1d8b1e7d4927e2d154c3fcb02979afb9939629c62cd9048d4f07b60ac2"
+checksum = "4443b1b6d39d7c663139942cc4558262562d2c84123bb6282ef177009ca8b281"
 dependencies = [
  "aws-lc-rs",
  "ring",
@@ -10058,9 +10108,9 @@ dependencies = [
 
 [[package]]
 name = "zip"
-version = "9.1.0"
+version = "9.1.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2886b00003a72c4ccee3f42cfc34908d33b2508a74d827dc2a4244706475c704"
+checksum = "1156b39d142a34b999c2310a50455e0cb3760bf7efad0122f796d813bee26ccb"
 dependencies = [
  "crc32fast",
  "flate2",

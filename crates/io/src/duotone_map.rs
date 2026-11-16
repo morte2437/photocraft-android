@@ -25,27 +25,16 @@ use craft_psd::aco::AcoColor;
 use photocraft_doc::adjust::CurvePoint;
 use photocraft_doc::{Duotone, DuotoneInk};
 
-/// Length of the block Photoshop writes.
-pub(crate) const BLOCK_LEN: usize = 524;
-/// Gray densities (%) of a curve's 13 points.
+use craft_psd_duotone::duotone as wire;
+#[cfg(test)]
+const BLOCK_LEN: usize = wire::BLOCK_LEN;
 const CURVE_AT: [u16; 13] = [0, 5, 10, 20, 30, 40, 50, 60, 70, 80, 90, 95, 100];
+#[cfg(test)]
 const NO_COLOR: [u8; 10] = [0xFF, 0xFF, 0, 0, 0, 0, 0, 0, 0, 0];
-const NAMES_AT: usize = 44;
-const CURVES_AT: usize = 300;
-const DOT_GAIN_AT: usize = 412;
-/// Image resource: the inks' Lab equivalents.
-pub(crate) const ALTERNATE_DUOTONE_COLORS: u16 = 1066;
+pub(crate) const ALTERNATE_DUOTONE_COLORS: u16 = wire::ALTERNATE_DUOTONE_COLORS;
 
-fn u16_at(b: &[u8], at: usize) -> Option<u16> {
-    b.get(at..at + 2).map(|s| u16::from_be_bytes([s[0], s[1]]))
-}
-
-/// The sRGB display colour of the 10-byte colour structure at `at`; `None` for a colour book or
-/// another space we can't show.
-fn display(b: &[u8], at: usize) -> Option<[f32; 3]> {
-    let space = u16_at(b, at)?;
-    let values = [u16_at(b, at + 2)?, u16_at(b, at + 4)?, u16_at(b, at + 6)?, u16_at(b, at + 8)?];
-    let c = crate::channel_map::decode_known_color(space, values)?;
+fn display([space, a, b, c, d]: wire::ColorRecord) -> Option<[f32; 3]> {
+    let c = crate::channel_map::decode_known_color(space, [a, b, c, d])?;
     Some(c.to_rgb().map(|v| v.clamp(0.0, 1.0)))
 }
 
@@ -54,27 +43,19 @@ fn display(b: &[u8], at: usize) -> Option<[f32; 3]> {
 /// an ink's colour can't be shown even so; it is then black here, and the caller shows the
 /// grey plate instead.
 pub(crate) fn parse(b: &[u8], alternate: Option<&[u8]>, unknown: &mut bool) -> Option<Vec<DuotoneInk>> {
-    if b.len() < DOT_GAIN_AT || u16_at(b, 0)? != 1 {
-        return None;
-    }
-    let n = usize::from(u16_at(b, 2)?);
-    if !(1..=4).contains(&n) {
-        return None;
-    }
-    (0..n)
+    let view = wire::DuotoneView::parse(b)?;
+    (0..view.ink_count())
         .map(|i| {
-            let alt = alternate.filter(|a| u16_at(a, 0) == Some(1) && u16_at(a, 2).is_some_and(|k| usize::from(k) > i));
-            let color = display(b, 4 + 10 * i).or_else(|| display(alt?, 4 + 10 * i)).unwrap_or_else(|| {
+            let raw = view.ink(i)?;
+            let color = display(raw.color).or_else(|| display(wire::alternate_color(alternate?, i)?)).unwrap_or_else(|| {
                 *unknown = true;
                 [0.0; 3]
             });
-            let name_at = NAMES_AT + 64 * i;
-            let len = usize::from(*b.get(name_at)?).min(63);
-            let name = String::from_utf8_lossy(b.get(name_at + 1..name_at + 1 + len)?).into_owned();
-            let curve_at = CURVES_AT + 28 * i;
+            let len = usize::from(raw.name[0]).min(63);
+            let name = String::from_utf8_lossy(&raw.name[1..1 + len]).into_owned();
             let mut curve: Vec<CurvePoint> = Vec::new();
             for (k, x) in CURVE_AT.iter().enumerate() {
-                let v = u16_at(b, curve_at + 2 * k)? as i16;
+                let v = raw.curve[k];
                 if v >= 0 {
                     curve.push(CurvePoint { input: f32::from(*x) / 100.0, output: (f32::from(v) / 1000.0).clamp(0.0, 1.0) });
                 }
@@ -91,40 +72,35 @@ pub(crate) fn parse(b: &[u8], alternate: Option<&[u8]>, unknown: &mut bool) -> O
 /// sampled at the 13 gray densities (the points on that grid as they are, the others left out),
 /// Photoshop's default dot gain and computed overprint colours.
 pub(crate) fn write(d: &Duotone) -> Vec<u8> {
-    let mut b = Vec::with_capacity(BLOCK_LEN);
+    use wire::{InkCount, InkRecord};
     let inks: Vec<&DuotoneInk> = d.inks.iter().take(4).collect();
-    b.extend_from_slice(&1u16.to_be_bytes());
-    b.extend_from_slice(&(inks.len().max(1) as u16).to_be_bytes());
-    for i in 0..4 {
-        match inks.get(i) {
+    let count = match inks.len() {
+        0 | 1 => InkCount::One,
+        2 => InkCount::Two,
+        3 => InkCount::Three,
+        _ => InkCount::Four,
+    };
+    let slots = std::array::from_fn(|i| {
+        let color = match inks.get(i) {
             Some(ink) => {
                 let q = |v: f32| (v.clamp(0.0, 1.0) * 65535.0).round() as u16;
                 let (space, v) = AcoColor::Rgb(ink.color.map(q)).to_record();
-                b.extend_from_slice(&space.to_be_bytes());
-                v.iter().for_each(|x| b.extend_from_slice(&x.to_be_bytes()));
+                [space, v[0], v[1], v[2], v[3]]
             }
-            None => b.extend_from_slice(&NO_COLOR),
-        }
-    }
-    for i in 0..4 {
+            None => wire::NO_COLOR,
+        };
         let mut name = [0u8; 64];
         if let Some(ink) = inks.get(i) {
             let bytes: Vec<u8> = ink.name.chars().map(|c| if c.is_ascii() { c as u8 } else { b'?' }).take(63).collect();
             name[0] = bytes.len() as u8;
             name[1..=bytes.len()].copy_from_slice(&bytes);
         }
-        b.extend_from_slice(&name);
-    }
-    for i in 0..4 {
         let values = curve_values(inks.get(i).map(|ink| ink.curve.as_slice()));
-        values.iter().for_each(|v| b.extend_from_slice(&v.to_be_bytes()));
-        b.extend_from_slice(&0i16.to_be_bytes());
-    }
-    b.extend_from_slice(&20u16.to_be_bytes());
-    for _ in 0..11 {
-        b.extend_from_slice(&NO_COLOR);
-    }
-    b
+        let mut curve = [0i16; 14];
+        curve[..13].copy_from_slice(&values);
+        InkRecord { color, name, curve }
+    });
+    wire::write_block(count, &slots, 20, &[wire::NO_COLOR; 11]).to_vec()
 }
 
 /// A curve's 13 values: an identity curve (or none) is 0 and 100 % only, as Photoshop writes it;
@@ -166,6 +142,53 @@ fn curve_values(curve: Option<&[CurvePoint]>) -> [i16; 13] {
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn original_write(d: &Duotone) -> Vec<u8> {
+        let mut b = Vec::with_capacity(BLOCK_LEN);
+        let inks: Vec<&DuotoneInk> = d.inks.iter().take(4).collect();
+        b.extend_from_slice(&1u16.to_be_bytes());
+        b.extend_from_slice(&(inks.len().max(1) as u16).to_be_bytes());
+        for i in 0..4 {
+            match inks.get(i) {
+                Some(ink) => {
+                    let q = |v: f32| (v.clamp(0.0, 1.0) * 65535.0).round() as u16;
+                    let (space, v) = AcoColor::Rgb(ink.color.map(q)).to_record();
+                    b.extend_from_slice(&space.to_be_bytes());
+                    v.iter().for_each(|x| b.extend_from_slice(&x.to_be_bytes()));
+                }
+                None => b.extend_from_slice(&NO_COLOR),
+            }
+        }
+        for i in 0..4 {
+            let mut name = [0u8; 64];
+            if let Some(ink) = inks.get(i) {
+                let bytes: Vec<u8> = ink.name.chars().map(|c| if c.is_ascii() { c as u8 } else { b'?' }).take(63).collect();
+                name[0] = bytes.len() as u8;
+                name[1..=bytes.len()].copy_from_slice(&bytes);
+            }
+            b.extend_from_slice(&name);
+        }
+        for i in 0..4 {
+            let values = curve_values(inks.get(i).map(|ink| ink.curve.as_slice()));
+            values.iter().for_each(|v| b.extend_from_slice(&v.to_be_bytes()));
+            b.extend_from_slice(&0i16.to_be_bytes());
+        }
+        b.extend_from_slice(&20u16.to_be_bytes());
+        for _ in 0..11 {
+            b.extend_from_slice(&NO_COLOR);
+        }
+        b
+    }
+
+    #[test]
+    fn shared_writer_matches_original_for_all_counts_and_name_policies() {
+        for n in 0..=6 {
+            let d = Duotone {
+                inks: (0..n).map(|i| ink(&format!("inké{i}{}", "x".repeat(70)), [0.1, 0.5, 0.9], &[(0.0, 0.2), (0.35, 0.6), (1.0, 0.8)])).collect(),
+                psd_raw: None,
+            };
+            assert_eq!(write(&d), original_write(&d));
+        }
+    }
 
     fn ink(name: &str, color: [f32; 3], curve: &[(f32, f32)]) -> DuotoneInk {
         let curve =

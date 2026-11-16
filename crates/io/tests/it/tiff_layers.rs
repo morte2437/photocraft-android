@@ -679,7 +679,7 @@ fn photoshop_transparency_and_spot_tiff(doc: &Document, layers: bool) -> Vec<u8>
     use craft_psd::{Compression, TaggedBlock};
 
     let opts = PsdExportOptions { merged_matte: false, merged_compression: Compression::Raw, ..Default::default() };
-    let (file, _) = document_to_psd_with(doc, &opts);
+    let (file, _) = document_to_psd_with(doc, &opts).unwrap();
     let planes = file.decode_merged().unwrap();
     let n = 16;
     assert_eq!(planes.len(), 5 * n);
