@@ -1620,7 +1620,7 @@ dependencies = [
 [[package]]
 name = "craft-psd"
 version = "0.1.0"
-source = "git+https://github.com/storytold/craft-libs?rev=09188c3bbfa443b089a3e022fad6abd7b464efda#09188c3bbfa443b089a3e022fad6abd7b464efda"
+source = "git+https://github.com/storytold/craft-libs?rev=040b5202f9ca2ecaedcaea9351fc095c0d3dc5e8#040b5202f9ca2ecaedcaea9351fc095c0d3dc5e8"
 dependencies = [
  "encoding_rs",
  "flate2",
@@ -1631,7 +1631,7 @@ dependencies = [
 [[package]]
 name = "craft-psd"
 version = "0.1.0"
-source = "git+https://github.com/storytold/craft-libs?rev=040b5202f9ca2ecaedcaea9351fc095c0d3dc5e8#040b5202f9ca2ecaedcaea9351fc095c0d3dc5e8"
+source = "git+https://github.com/storytold/craft-libs?rev=09188c3bbfa443b089a3e022fad6abd7b464efda#09188c3bbfa443b089a3e022fad6abd7b464efda"
 dependencies = [
  "encoding_rs",
  "flate2",
@@ -5740,8 +5740,8 @@ dependencies = [
  "craft-ora",
  "craft-pdf",
  "craft-pdn",
- "craft-psd 0.1.0 (git+https://github.com/storytold/craft-libs?rev=09188c3bbfa443b089a3e022fad6abd7b464efda)",
  "craft-psd 0.1.0 (git+https://github.com/storytold/craft-libs?rev=040b5202f9ca2ecaedcaea9351fc095c0d3dc5e8)",
+ "craft-psd 0.1.0 (git+https://github.com/storytold/craft-libs?rev=09188c3bbfa443b089a3e022fad6abd7b464efda)",
  "craft-svg",
  "craft-tiff 0.1.0 (git+https://github.com/storytold/craft-libs?rev=ad8faa1c136ce289e9f132c9137d0cd913bd4ef6)",
  "craft-xcf",
