@@ -71,10 +71,10 @@ fn png_psd_and_pcraft_decode_identically() {
             check_png(&photocraft_codecs::encode(&image, Format::Png, &Default::default()).unwrap(), &image);
         }
         let raw_opts = PsdExportOptions { merged_compression: Compression::Raw, merged_matte: false, ..Default::default() };
-        let merged = document_to_psd_with(&doc, &raw_opts).0.image_data.data;
+        let merged = document_to_psd_with(&doc, &raw_opts).unwrap().0.image_data.data;
         for compression in [Compression::Zip, Compression::ZipPrediction] {
             let opts = PsdExportOptions { merged_compression: compression, merged_matte: false, ..Default::default() };
-            let mut file = document_to_psd_with(&doc, &opts).0;
+            let mut file = document_to_psd_with(&doc, &opts).unwrap().0;
             // The IO exporter normally chooses Raw for float composites; also cover ZIP here.
             if depth == SampleType::F32 {
                 file.image_data = craft_psd::ImageData::encode(compression, &merged, &file.header).unwrap();
