@@ -175,12 +175,16 @@ fn apply_smart_filter(f: &SmartFilter, sm: &SmartObject, cur: &Surface, canvas: 
 
 /// The source placed in document pixels, before any smart filter.
 pub(super) fn place(name: &str, bytes: &[u8], doc: &Document, sm: &SmartObject) -> Result<Surface> {
+    place_with_svg(name, bytes, doc, sm, &mut |bytes, scale| svg_source_image_in(bytes, doc, scale))
+}
+
+fn place_with_svg(name: &str, bytes: &[u8], doc: &Document, sm: &SmartObject, svg: &mut impl FnMut(&[u8], f64) -> Result<SourceImage>) -> Result<Surface> {
     let fmt = doc.pixel_format();
     // A vector source is rendered at the placement's scale, and the placement is divided by
     // that scale so the rendered pixels land where the source units would.
     if sm.stack_mode.is_none() && sm.warp.is_none() && photocraft_io::svg::is_svg(bytes) {
         let k = vector_scale(sm);
-        let img = svg_source_image_in(bytes, doc, k)?;
+        let img = svg(bytes, k)?;
         return Ok(match &sm.perspective {
             Some(p) => {
                 let [h0, h1, h2, h3, h4, h5, h6, h7, h8] = *p;
@@ -198,7 +202,7 @@ pub(super) fn place(name: &str, bytes: &[u8], doc: &Document, sm: &SmartObject) 
     }
     let img = match sm.stack_mode {
         Some(mode) if photocraft_io::svg::is_svg(bytes) => convert_svg_source(stack_image(name, bytes, PixelFormat::RGBA32F, mode)?, doc)?,
-        None if photocraft_io::svg::is_svg(bytes) => svg_source_image_in(bytes, doc, 1.0)?,
+        None if photocraft_io::svg::is_svg(bytes) => svg(bytes, 1.0)?,
         Some(mode) => stack_image(name, bytes, fmt, mode)?,
         None => source_image(name, bytes, fmt)?,
     };
@@ -317,6 +321,33 @@ pub(crate) fn source_box(doc: &Document, sm: &SmartObject) -> Option<[f64; 4]> {
 /// linked file, or a PSD placed layer without embedded data): callers keep the existing cache.
 pub fn render(doc: &Document, sm: &SmartObject) -> Result<Option<Surface>> {
     render_in(doc, sm, &JobCtx::new())
+}
+
+/// Command-only rendering that retains usable SVG artwork and reports omitted embedded images.
+/// It deliberately bypasses both source and filter-stage caches: a later warningless render
+/// must not accidentally reuse an incomplete surface. Native previews remain strict.
+pub(crate) fn render_with_warnings(doc: &Document, sm: &SmartObject) -> Result<(Option<Surface>, Vec<String>)> {
+    let Some((name, bytes)) = source_bytes(&doc.metadata, &sm.source) else { return Ok((None, Vec::new())) };
+    if !photocraft_io::svg::is_svg(&bytes) || sm.vector_preview.is_some() || sm.stack_mode.is_some() {
+        return render(doc, sm).map(|surface| (surface, Vec::new()));
+    }
+    if !unapplied_filters(sm).is_empty() {
+        return Err(other("the smart object has unsupported visible filters"));
+    }
+    let mut warnings = Vec::new();
+    let placed = place_with_svg(&name, &bytes, doc, sm, &mut |bytes, scale| {
+        let (buf, omitted) = photocraft_io::svg::rasterize_bounded_with_warnings(bytes, scale as f32, 24_000_000)
+            .map_err(|e| other(format!("can't render the SVG smart object: {e}")))?;
+        warnings.extend(omitted);
+        // Preserve the normal renderer's exact built-in sRGB fast path.
+        let profile = crate::color_cmds::document_profile(doc);
+        if doc.mode == photocraft_color::ColorMode::Rgb && profile.to_bytes().as_ref() == craft_cms::Builtin::Srgb.profile().to_bytes().as_ref() {
+            return Ok(SourceImage { surface: Arc::new(super::source::buffer_to_surface(&buf, doc.pixel_format())), bounds: buf.rect });
+        }
+        let source = SourceImage { surface: Arc::new(super::source::buffer_to_surface(&buf, PixelFormat::RGBA32F)), bounds: buf.rect };
+        convert_svg_source(source, doc)
+    })?;
+    Ok((Some(apply_smart_filters(&placed, sm, doc.bounds())?), warnings))
 }
 
 /// [`render`], reporting progress per smart filter to `ctx` and stopping between filters once it

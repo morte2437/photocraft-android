@@ -422,7 +422,9 @@ fn saved_svg_with_an_unreadable_embedded_image_still_updates() {
     let (mut s, id) = session(8);
     let edited = r#"<svg xmlns="http://www.w3.org/2000/svg" width="8" height="6"><image width="4" height="6" href="data:image/bmp,BM"/><rect x="4" width="4" height="6" fill="blue"/></svg>"#;
     let params = request(&mut s, id, edited);
-    assert_eq!(s.execute(UPDATE, params).unwrap()["updated"], true);
+    let result = s.execute(UPDATE, params).unwrap();
+    assert_eq!(result["updated"], true);
+    assert!(result["warnings"].as_array().unwrap().iter().any(|w| w.as_str().unwrap().contains("embedded image was omitted")));
     assert_eq!(source(&s, id), edited.as_bytes());
 }
 

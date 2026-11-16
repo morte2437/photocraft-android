@@ -33,6 +33,7 @@ pub(crate) struct PlaceSteps {
     stage: Stage,
     /// Where the placed image lands, known once it is decoded.
     plan: Plan,
+    warnings: Vec<String>,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -63,7 +64,7 @@ impl PlaceSteps {
     /// `fine` cuts the work into pieces of a few milliseconds, as a session without worker
     /// threads needs; without it each stage is one unit of work.
     pub(crate) fn new(input: PlaceInput, fine: bool) -> Self {
-        Self { input, bytes: Arc::new(Vec::new()), fine, stage: Stage::Decode, plan: Plan::default() }
+        Self { input, bytes: Arc::new(Vec::new()), fine, stage: Stage::Decode, plan: Plan::default(), warnings: Vec::new() }
     }
 
     /// An import error as the engine reports it: a cancel stays one and a refused memory budget
@@ -157,6 +158,7 @@ impl PlaceSteps {
                 self.input.name
             )));
         }
+        self.warnings = imported.warnings;
         let src = imported.document;
         let (w, h) = (src.size.width as f64, src.size.height as f64);
         let (cw, ch) = self.input.canvas;
@@ -252,7 +254,13 @@ impl PlaceSteps {
             if let Some(doc) = &input.doc {
                 ctx.progress(0.9, "Rendering");
                 ctx.check()?;
-                if let Some(sharp) = crate::smart_cmds::render(doc, &so)? {
+                let (sharp, warnings) = crate::smart_cmds::render_with_warnings(doc, &so)?;
+                for warning in warnings {
+                    if !self.warnings.contains(&warning) {
+                        self.warnings.push(warning);
+                    }
+                }
+                if let Some(sharp) = sharp {
                     so.cache = Some(sharp);
                 }
             }
@@ -264,7 +272,16 @@ impl PlaceSteps {
             let px = px.ok_or_else(|| EngineError::Other(format!("{}: a frame's image must be a smart object", input.name)))?;
             LayerContent::Raster(px)
         };
-        Ok(Prepared { content, layer_name: stem(&input.name), label, scale, bounds, smart, frame: input.frame.as_ref().map(|(id, _)| *id) })
+        Ok(Prepared {
+            warnings: std::mem::take(&mut self.warnings),
+            content,
+            layer_name: stem(&input.name),
+            label,
+            scale,
+            bounds,
+            smart,
+            frame: input.frame.as_ref().map(|(id, _)| *id),
+        })
     }
 }
 

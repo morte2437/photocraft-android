@@ -118,7 +118,22 @@ fn unchanged_settings_are_not_encoded_again() {
     assert_eq!(encodes.load(Ordering::SeqCst), 3);
 
     let edited = Key { revision: 4, ..key };
-    assert_eq!(readout.update(edited, || || None, || {}), Estimate::Pending(None), "an edited document shows no size of the old one");
+    // Hold the new encode pending: an immediate None may complete before update returns.
+    let (gate, wait) = std::sync::mpsc::channel::<()>();
+    let pending = readout.update(
+        edited,
+        || {
+            move || {
+                let _ = wait.recv();
+                None
+            }
+        },
+        || {},
+    );
+    // Release even if the assertion fails, so no worker is left waiting.
+    gate.send(()).unwrap();
+    assert_eq!(pending, Estimate::Pending(None), "an edited document shows no size of the old one");
+    assert_eq!(answer(&mut readout, edited, || None), None, "the completed edit never reuses the old size");
 }
 
 /// Going back to settings already worked out shows their size at once, without encoding again;

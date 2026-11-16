@@ -327,6 +327,7 @@ fn update_contents_with_frame_budget(s: &mut Session, p: &Value, native: bool, f
     let import = if native { photocraft_io::svg::import_svg_preview_with_work } else { photocraft_io::svg::import_svg_bounded_with_work };
     let (imported, _) = import(&name, svg.as_bytes(), 4 * MAX_PIXELS).map_err(|error| bad(UPDATE, format!("can't import edited SVG contents: {error}")))?;
     let size = imported.document.size;
+    let mut warnings = imported.warnings;
     if native {
         // Shared instances normally borrow one immutable source and preview allocation. The
         // check is pure in those bytes and the claimed hash, so run it once per identity while
@@ -399,8 +400,15 @@ fn update_contents_with_frame_budget(s: &mut Session, p: &Value, native: bool, f
             let LayerContent::Smart(rendered) = display.content else { return Err(EngineError::NoLayer(display.id)) };
             let LayerContent::Smart(sm) = &mut replacement.content else { return Err(EngineError::NoLayer(replacement.id)) };
             sm.cache = rendered.cache;
-        } else if !crate::smart_cmds::refresh_layer(doc, replacement)? {
-            return Err(bad(UPDATE, "SVG contents could not be rendered"));
+        } else {
+            let LayerContent::Smart(sm) = &mut replacement.content else { return Err(EngineError::NoLayer(replacement.id)) };
+            let (surface, omitted) = crate::smart_cmds::render_with_warnings(doc, sm)?;
+            sm.cache = Some(surface.ok_or_else(|| bad(UPDATE, "SVG contents could not be rendered"))?);
+            for warning in omitted {
+                if !warnings.contains(&warning) {
+                    warnings.push(warning);
+                }
+            }
         }
         crate::smart_cmds::detach_psd(replacement);
     }
@@ -411,7 +419,7 @@ fn update_contents_with_frame_budget(s: &mut Session, p: &Value, native: bool, f
         }
         Ok(())
     })?;
-    Ok(json!({"layer":id.0,"contentsId":contents.0,"fingerprint":blake3::hash(&replacement_bytes).to_hex().to_string(),"updated":true}))
+    Ok(json!({"layer":id.0,"contentsId":contents.0,"fingerprint":blake3::hash(&replacement_bytes).to_hex().to_string(),"updated":true,"warnings":warnings}))
 }
 
 /// Menu-less export/update commands the shell uses for external editor save-back; none is

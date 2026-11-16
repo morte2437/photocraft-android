@@ -155,14 +155,58 @@ impl ByteSource for ZipSource<'_> {
 fn bundle_error(error: craft_pcraft_bundle::Error) -> FormatError {
     match error {
         craft_pcraft_bundle::Error::LimitExceeded { entry, limit } => FormatError::LimitExceeded(format!("`{entry}` exceeds {limit} bytes")),
-        // A ZIP member past its read bound arrives as a craft-zip error, not as `LimitExceeded`.
         craft_pcraft_bundle::Error::Zip(error) => crate::zip::map_read_error(error),
         other => FormatError::corrupt(other.to_string()),
     }
 }
 
-/// [`bundle_error`] for a directory save. A save decodes nothing, so craft-pcraft-bundle's `Io`
-/// there is a real I/O failure (a locked or read-only file, a full disk), not a damaged bundle.
+#[cfg(test)]
+mod bundle_error_tests {
+    use super::*;
+
+    #[test]
+    fn shared_save_io_errors_keep_the_native_io_type_and_message() {
+        let error = save_error(craft_pcraft_bundle::Error::Io("manifest publication failed".into()));
+        let FormatError::Io(error) = error else { panic!("I/O failure must remain typed") };
+        assert_eq!(error.kind(), std::io::ErrorKind::Other);
+        assert_eq!(error.to_string(), "manifest publication failed");
+    }
+
+    #[test]
+    fn direct_and_nested_zip_limits_remain_limits() {
+        let error = bundle_error(craft_pcraft_bundle::Error::LimitExceeded { entry: "manifest.json".into(), limit: 16 });
+        assert!(matches!(error, FormatError::LimitExceeded(message) if message == "`manifest.json` exceeds 16 bytes"));
+        for error in [
+            craft_zip::Error::TooManyEntries { declared: 3, limit: 2 },
+            craft_zip::Error::TooManyEndRecords(2),
+            craft_zip::Error::EntryTooLarge { name: "manifest.json".into(), limit: 16 },
+            craft_zip::Error::BudgetSpent { name: "manifest.json".into(), limit: 16 },
+        ] {
+            let message = format!("zip: {error}");
+            assert!(matches!(bundle_error(craft_pcraft_bundle::Error::Zip(error)), FormatError::LimitExceeded(found) if found == message));
+        }
+    }
+
+    #[test]
+    fn malformed_paths_archives_and_hashes_remain_corrupt() {
+        for error in [
+            craft_pcraft_bundle::Error::Io("invalid compressed frame".into()),
+            craft_pcraft_bundle::Error::InvalidPath("../manifest.json".into()),
+            craft_pcraft_bundle::Error::InvalidBundle("missing manifest".into()),
+            craft_pcraft_bundle::Error::HashMismatch("tiles/object.zst".into()),
+            craft_pcraft_bundle::Error::Zip(craft_zip::Error::NotZip("truncated".into())),
+            craft_pcraft_bundle::Error::Zip(craft_zip::Error::Entry { name: "manifest.json".into(), msg: "checksum".into() }),
+        ] {
+            let message = match &error {
+                craft_pcraft_bundle::Error::Zip(e) => format!("zip: {e}"),
+                _ => error.to_string(),
+            };
+            assert!(matches!(bundle_error(error), FormatError::Corrupt(found) if found == message));
+        }
+    }
+}
+
+/// Save failures are I/O errors; read-time decompression errors remain corrupt data.
 fn save_error(error: craft_pcraft_bundle::Error) -> FormatError {
     match error {
         craft_pcraft_bundle::Error::Io(message) => FormatError::Io(std::io::Error::other(message)),

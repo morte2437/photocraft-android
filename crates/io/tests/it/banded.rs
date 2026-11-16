@@ -43,7 +43,12 @@ fn layered_png_export_spans_bands() {
             let r = export(&d, "x.png", &ExportOptions::default()).unwrap();
             let img = photocraft_codecs::decode(&r.bytes).unwrap();
             assert_eq!(img.layout().has_alpha(), alpha < 1.0, "{depth:?} alpha {alpha}");
-            let got: Vec<f32> = img.to_rgba_f32().iter().map(|v| (v * scale).round()).collect();
+            let got: Vec<f32> = img
+                .to_rgba_f32(&photocraft_codecs::Limits::default())
+                .expect("the fixture fits the default decoded-image limits")
+                .iter()
+                .map(|v| (v * scale).round())
+                .collect();
             assert!(got == composite_q(&d, scale), "{depth:?} alpha {alpha}: pixels differ");
         }
     }
@@ -70,7 +75,12 @@ fn single_layer_native_export_strips_opaque_alpha() {
     let img = photocraft_codecs::decode(&r.bytes).unwrap();
     assert_eq!(img.sample_type(), photocraft_codecs::SampleType::U16);
     assert!(img.layout().has_alpha());
-    let got: Vec<f32> = img.to_rgba_f32().iter().map(|v| (v * 65535.0).round()).collect();
+    let got: Vec<f32> = img
+        .to_rgba_f32(&photocraft_codecs::Limits::default())
+        .expect("the fixture fits the default decoded-image limits")
+        .iter()
+        .map(|v| (v * 65535.0).round())
+        .collect();
     assert_eq!(got, composite_q(&d, 65535.0), "active vector mask: pixels differ");
 }
 

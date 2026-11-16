@@ -814,3 +814,14 @@ fn image_hrefs_to_local_files_are_never_read() {
         LayerContent::Raster(_)
     ));
 }
+
+#[test]
+fn warning_bearing_raster_preserves_readable_artwork_without_relaxing_strict_api() {
+    let bytes = br##"<svg xmlns="http://www.w3.org/2000/svg" width="8" height="8"><image width="4" height="4" href="data:image/bmp,BM"/><rect x="4" width="4" height="8" fill="#ff0000"/></svg>"##;
+    let (pixels, warnings) = svg::rasterize_bounded_with_warnings(bytes, 1.0, 24_000_000).unwrap();
+    assert_eq!(warnings.len(), 1);
+    assert!(warnings[0].contains("embedded image was omitted"));
+    assert_eq!(pixels.px[4 * 8 + 6], [1.0, 0.0, 0.0, 1.0]);
+    assert!(svg::rasterize_bounded(bytes, 1.0, 24_000_000).is_err());
+    assert!(svg::rasterize(bytes, 1.0).is_err());
+}

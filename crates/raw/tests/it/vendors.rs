@@ -76,6 +76,7 @@ fn nef_like_with_maker_tags() {
     let s = decode(&b, &Limits::default()).unwrap();
     assert_eq!(s.data, data);
     assert_eq!(s.cfa.as_ref().unwrap().phase(0, 0), [2, 1, 1, 0]);
+    assert!(s.warnings.iter().any(|w| w.contains("black level")));
     assert!(develop_sensor(&s, &DevelopOptions::default()).is_ok());
 }
 
@@ -109,11 +110,11 @@ fn other_raw_containers_are_recognised_but_unsupported() {
     cr3.extend_from_slice(&[0; 12]);
     assert_eq!(identify(&cr3), Some(RawFormat::Cr3));
     assert!(matches!(decode(&cr3, &Limits::default()), Err(RawError::Unsupported(_))));
-    // A bare RAF header has no CFA TIFF (like early FinePix files): recognised, unsupported.
+    // A bare RAF signature has no declared raw data: recognized, but malformed.
     let mut raf = b"FUJIFILMCCD-RAW 0201FF383501".to_vec();
     raf.resize(200, 0);
     assert_eq!(identify(&raf), Some(RawFormat::Raf));
-    assert!(decode(&raf, &Limits::default()).is_err());
+    assert!(matches!(decode(&raf, &Limits::default()), Err(RawError::Malformed(_))));
     assert_eq!(decode(b"not a raw file", &Limits::default()).unwrap_err(), RawError::NotRaw);
 }
 
@@ -182,6 +183,72 @@ fn assert_cr2_neutral(sensor: &Sensor) -> Developed {
 }
 
 #[test]
+fn cr2_model_cfa_phase_is_stable_for_every_border_parity_and_discloses_assumptions() {
+    // Canon data has red in the even columns; the red rows are even (RGGB at the data
+    // origin: 40D, 5D Mark III, …) or odd (GBRG: 7D, 550D, 5D Mark II, …). Odd image-area
+    // borders used to shift the assumed pattern and swap green with red/blue.
+    // This fixture omits CR2CFAPattern. Use the observed model fallback for
+    // green-first data; scene content cannot establish a missing source tag.
+    for (cfa, model) in [([0, 1, 1, 2], None), ([1, 2, 0, 1], Some(0x8000_0250))] {
+        for (l, t) in [(16, 4), (17, 4), (16, 5), (17, 5)] {
+            let b = cr2_phase_spec(cfa, l, t, model).build();
+            let s = decode(&b, &Limits::default()).unwrap();
+            assert_eq!(s.cfa.as_ref().unwrap().phase(0, 0), cfa, "cfa {cfa:?} borders ({l}, {t})");
+            // Both missing source values remain disclosed, even when the
+            // selected model/default layout agrees with the generated scene.
+            assert_eq!(s.warnings.len(), 2, "{:?}", s.warnings);
+            assert!(s.warnings.iter().any(|w| w.contains("colour filter phase")), "{:?}", s.warnings);
+            assert!(s.warnings.iter().any(|w| w.contains("white level") && w.contains("full sample range")), "{:?}", s.warnings);
+            let d = develop_sensor(&s, &DevelopOptions { orient: false, ..Default::default() }).unwrap();
+            let [r, g, bl] = grey_patch(&d, 192 / 2 - l);
+            // Neutral grey decodes neutral (a swapped phase gives a strong magenta or green cast).
+            assert!((r / g - 1.0).abs() < 0.02 && (bl / g - 1.0).abs() < 0.02, "cfa {cfa:?} borders ({l}, {t}): grey patch {r:.0} {g:.0} {bl:.0}");
+        }
+    }
+}
+
+#[test]
+fn cr2_untagged_scaled_gradients_keep_model_or_default_layout_and_warning() {
+    for (model, red_row, expected) in [(None, 0, [0, 1, 1, 2]), (Some(0x8000_0250), 1, [1, 2, 0, 1])] {
+        for scale in [1u16, 2, 4] {
+            let mut spec = cr2_phase_spec(expected, 0, 0, model);
+            spec.borders = None;
+            spec.data = (0..spec.width * spec.height)
+                .map(|i| {
+                    let (x, y) = (i % spec.width, i / spec.width);
+                    scale * if (x + y + red_row) & 1 == 1 { 1000 + 8 * x as u16 } else { 500 }
+                })
+                .collect();
+            let sensor = decode(&spec.build(), &Limits::default()).unwrap();
+            assert_eq!(sensor.cfa.as_ref().unwrap().phase(0, 0), expected, "model={model:?}, scale={scale}");
+            assert!(sensor.warnings.iter().any(|w| w.contains("colour filter phase")), "{:?}", sensor.warnings);
+            assert_eq!(sensor.data, spec.data);
+        }
+    }
+}
+
+#[test]
+fn cr2_cfa_phase_falls_back_to_the_model_table() {
+    // A flat black frame gives the measurement nothing to go on.
+    let flat = |model_id| {
+        let mut spec = cr2_phase_spec([0, 1, 1, 2], 16, 4, model_id);
+        spec.data.iter_mut().for_each(|v| *v = 512);
+        decode(&spec.build(), &Limits::default()).unwrap()
+    };
+    // EOS 7D (Canon model ID 0x80000250): green/blue first, still an assumed phase.
+    let s = flat(Some(0x8000_0250));
+    assert_eq!(s.cfa.as_ref().unwrap().phase(0, 0), [1, 2, 0, 1]);
+    assert!(s.warnings.iter().any(|w| w.contains("colour filter phase")), "{:?}", s.warnings);
+    // Unknown model: red/green first, with a warning.
+    let s = flat(Some(0x8000_0001));
+    assert_eq!(s.cfa.as_ref().unwrap().phase(0, 0), [0, 1, 1, 2]);
+    assert!(s.warnings.iter().any(|w| w.contains("colour filter phase")), "{:?}", s.warnings);
+    let s = flat(None);
+    assert_eq!(s.cfa.as_ref().unwrap().phase(0, 0), [0, 1, 1, 2]);
+    assert!(s.warnings.iter().any(|w| w.contains("colour filter phase")), "{:?}", s.warnings);
+}
+
+#[test]
 fn cr2_explicit_cfa_keeps_neutral_colour_across_phases_and_border_parity() {
     for (code, cfa) in [(1, [0, 1, 1, 2]), (2, [2, 1, 1, 0]), (3, [1, 2, 0, 1]), (4, [1, 0, 2, 1])] {
         for (l, t) in [(16, 4), (17, 4), (16, 5), (17, 5)] {
@@ -209,4 +276,52 @@ fn cr2_missing_or_unknown_cfa_discloses_model_and_default_fallback_through_devel
             assert!(d.warnings.iter().any(|w| w.contains("colour filter phase")));
         }
     }
+}
+
+fn cr2_phase_spec(cfa: [u8; 4], l: usize, t: usize, model_id: Option<u32>) -> Cr2Spec {
+    let (w, h) = (192usize, 96usize);
+    let wb = [2.0f32, 1.0, 1.5];
+    let colourful = scene(w, h);
+    let rgb: Vec<[f32; 3]> = (0..w * h)
+        .map(|i| {
+            let p = if i % w >= w / 2 { [0.4; 3] } else { colourful[i] };
+            [p[0] / wb[0], p[1] / wb[1], p[2] / wb[2]]
+        })
+        .collect();
+    let mut data = mosaic(&rgb, w, cfa, 512, 13000);
+    // Masked border: black.
+    for y in 0..h {
+        for x in 0..w {
+            if x < l || y < t {
+                data[y * w + x] = 512;
+            }
+        }
+    }
+    Cr2Spec {
+        width: w,
+        height: h,
+        data,
+        precision: 14,
+        components: 2,
+        slices: vec![96, 96],
+        borders: Some([l as u16, t as u16, w as u16 - 1, h as u16 - 1]),
+        wb_rggb: Some([2048, 1024, 1024, 1536]),
+        orientation: 1,
+        model_id,
+    }
+}
+
+fn grey_patch(d: &Developed, x0: usize) -> [f64; 3] {
+    let (w, h) = (d.width as usize, d.height as usize);
+    let mut sum = [0f64; 3];
+    let mut n = 0.0;
+    for y in 8..h - 8 {
+        for x in x0 + 8..w - 8 {
+            for (c, s) in sum.iter_mut().enumerate() {
+                *s += f64::from(d.rgb[(y * w + x) * 3 + c]);
+            }
+            n += 1.0;
+        }
+    }
+    sum.map(|s| s / n)
 }
