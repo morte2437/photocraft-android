@@ -713,18 +713,7 @@ pub(crate) fn quilt_knots(env: &Descriptor, key: &str, patches: usize) -> Option
 
 /// Text content and transform from a `TySh` block (best effort).
 pub fn parse_tysh(data: &[u8]) -> Option<(String, Affine)> {
-    let f = |at: usize| data.get(at..at + 8).map(|b| f64::from_be_bytes(b.try_into().unwrap_or([0; 8])));
-    let mut m = [0.0; 6];
-    for (i, v) in m.iter_mut().enumerate() {
-        *v = f(2 + i * 8)?;
-    }
-    // text version (2) at 50, descriptor version (4) at 52, descriptor at 56.
-    let rest = data.get(52..)?;
-    let text = parse_prefix_versioned(rest).and_then(|d| match d.get("Txt ") {
-        Some(Value::Text(t)) => Some(t.to_string_lossy()),
-        _ => None,
-    });
-    Some((text.unwrap_or_default(), Affine { m }))
+    craft_psd_tysh::text::envelope::parse_tysh_text_prefix(data).map(|(text, m)| (text, Affine { m }))
 }
 
 /// Parses a version-16 descriptor at the start of `data` (trailing bytes allowed).
