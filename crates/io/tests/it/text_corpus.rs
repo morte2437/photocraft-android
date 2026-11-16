@@ -84,7 +84,7 @@ fn corpus_text_layers() {
             let st = &t.runs[0].style;
             assert!(st.size_pt > 0.0 && st.postscript_name.is_some(), "{name}/{}: {st:?}", l.name);
             // Round trip of the model through our own TySh writer.
-            let rebuilt = photocraft_text::psd::build_tysh(t, doc.resolution_dpi, None);
+            let rebuilt = photocraft_text::psd::build_tysh(t, doc.resolution_dpi, None).unwrap();
             let mut back = photocraft_text::psd::text_layer_from_tysh(&rebuilt, doc.resolution_dpi).unwrap();
             if let Some(txt2) = &txt2 {
                 photocraft_text::psd::apply_txt2(&mut back, &rebuilt, txt2);
@@ -256,7 +256,7 @@ fn corpus_photoshop_path_text_opens_on_its_path() {
                     *k = k.transform(&photocraft_geom::Affine::translate(10.0, 0.0));
                 }
             }
-            t.psd_raw = Some(std::sync::Arc::new(photocraft_text::psd::build_tysh(t, edited.resolution_dpi, None)));
+            t.psd_raw = Some(std::sync::Arc::new(photocraft_text::psd::build_tysh(t, edited.resolution_dpi, None).unwrap()));
         }
         let out = photocraft_io::export(&edited, file, &Default::default()).unwrap().bytes;
         let back = photocraft_io::import(file, &out).unwrap().document;

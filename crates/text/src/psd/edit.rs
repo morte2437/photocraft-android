@@ -316,5 +316,5 @@ pub fn set_text_index(tysh: &[u8], index: i32) -> Option<Vec<u8>> {
             t.text.items.insert(at, (Id::new("TextIndex"), D::Integer(index)));
         }
     }
-    Some(write_tysh(&t))
+    write_tysh(&t)
 }

@@ -520,7 +520,7 @@ impl Ex<'_> {
                         .push(format!("layer \"{}\": area type is saved as paragraph text over its path's bounds (PSD area type is not written yet)", l.name));
                 }
                 // Text layers without PSD data (created here) get a generated TySh.
-                let generated = t.psd_raw.is_none().then(|| std::sync::Arc::new(photocraft_text::psd::build_tysh(t, self.dpi, None)));
+                let generated = if t.psd_raw.is_none() { photocraft_text::psd::build_tysh(t, self.dpi, None).map(std::sync::Arc::new) } else { None };
                 let src = t.psd_raw.as_ref().or(generated.as_ref());
                 // Character/paragraph style sheets from the document's styles.
                 let styled = src.and_then(|d| crate::text_styles_map::export_tysh(d, t, &self.text_styles, self.dpi)).map(std::sync::Arc::new);

@@ -267,7 +267,7 @@ fn psd_tysh_round_trips_orientation_and_writing_direction() {
     use crate::engine_data::Value as E;
     for o in [Orientation::Vertical, Orientation::Horizontal] {
         let t = TextLayer { orientation: o, ..vertical("縦書きAB", "Inter", 20.0) };
-        let bytes = crate::psd::build_tysh(&t, 72.0, None);
+        let bytes = crate::psd::build_tysh(&t, 72.0, None).unwrap();
         let back = crate::psd::text_layer_from_tysh(&bytes, 72.0).unwrap();
         assert_eq!(back.orientation, o);
         let parsed = crate::psd::parse_tysh(&bytes).unwrap();
@@ -277,9 +277,9 @@ fn psd_tysh_round_trips_orientation_and_writing_direction() {
     }
     // A file without `Ornt` but with a vertical writing direction imports as vertical.
     let t = TextLayer { orientation: Orientation::Vertical, ..vertical("ab", "Inter", 20.0) };
-    let mut parsed = crate::psd::parse_tysh(&crate::psd::build_tysh(&t, 72.0, None)).unwrap();
+    let mut parsed = crate::psd::parse_tysh(&crate::psd::build_tysh(&t, 72.0, None).unwrap()).unwrap();
     parsed.text.items.retain(|(k, _)| !k.is("Ornt"));
-    let back = crate::psd::text_layer_from_tysh(&crate::psd::write_tysh(&parsed), 72.0).unwrap();
+    let back = crate::psd::text_layer_from_tysh(&crate::psd::write_tysh(&parsed).unwrap(), 72.0).unwrap();
     assert_eq!(back.orientation, Orientation::Vertical);
 }
 

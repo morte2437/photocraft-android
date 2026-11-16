@@ -1084,8 +1084,10 @@ pub(super) fn engine_antialias(n: f64) -> Option<AntiAlias> {
 }
 
 /// Builds the `TySh` block for `layer`, patching its current `psd_raw` when present.
-/// `ink` is the layer's rendered bounds in text space (for `bounds`/`boundingBox`).
-pub fn build_tysh(layer: &TextLayer, dpi: f32, ink: Option<[f32; 4]>) -> Vec<u8> {
+/// `ink` is the layer's rendered bounds in text space (for `bounds`/`boundingBox`). `None` when
+/// the block can't be written (see [`super::write_tysh`]): the layer then has no `TySh`, as for an
+/// unreadable one, and PSD export writes it as pixels with a warning.
+pub fn build_tysh(layer: &TextLayer, dpi: f32, ink: Option<[f32; 4]>) -> Option<Vec<u8>> {
     let old = layer.psd_raw.as_deref().and_then(|d| parse_tysh(d));
     let template = old.as_ref().and_then(|t| engine_data(&t.text));
     let e = build_engine_data(layer, template, dpi);

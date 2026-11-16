@@ -113,7 +113,7 @@ fn tysh_with_font(text: &str, runs: &[Run], box_bounds: Option<[f64; 4]>, transf
         .with("TextIndex", D::Integer(0))
         .with("EngineData", D::RawData(photocraft_text::engine_data::write(&engine_data(text, runs, box_bounds, font))));
     // Unwarped type: Photoshop writes four zero f32s after the warp descriptor.
-    write_tysh(&TySh { transform, text: desc, warp: None, bounds: [0.0; 4] })
+    write_tysh(&TySh { transform, text: desc, warp: None, bounds: [0.0; 4] }).unwrap()
 }
 
 struct Case {
