@@ -36,9 +36,8 @@ const FILTER_ID: i32 = super::code(b"Dspl");
 pub(super) const TEMPLATE_KEY: &str = "__displacePsd";
 /// The embedded map (raw data).
 const MAP_KEY: &str = "DspD";
-/// `tdta` header: height, width (u32 LE) and mode (u16 LE).
-const HEADER: usize = 10;
 /// The only map layout seen in Photoshop files: two 8-bit planes.
+#[cfg(test)]
 const MODE_TWO_PLANES: u16 = 3;
 /// 8K × 8K: far beyond the observed document-sized maps, and bounds the f32 map we build.
 const MAX_MAP_PIXELS: usize = 1 << 26;
@@ -52,30 +51,7 @@ const MAX_TEMPLATE_BYTES: usize = 2 * MAX_MAP_PIXELS + (1 << 20);
 const FITS: [(&[u8], &str); 2] = [(b"StrF", "stretch"), (b"Tile", "tile")];
 const UNDEFINED: [(&[u8], &str); 2] = [(b"RptE", "repeat"), (b"WrpA", "wrap")];
 
-/// A parsed embedded map: size and the two 8-bit planes (borrowed from the blob).
-#[derive(Debug, PartialEq)]
-pub(super) struct EmbeddedMap<'a> {
-    pub width: usize,
-    pub height: usize,
-    pub horizontal: &'a [u8],
-    pub vertical: &'a [u8],
-}
-
-/// Parses an embedded displacement map; `None` for any other mode, a zero or oversized map, or a
-/// blob shorter than the header plus both planes.
-pub(super) fn parse_map(data: &[u8]) -> Option<EmbeddedMap<'_>> {
-    let u32_at = |i: usize| Some(u32::from_le_bytes(data.get(i..i + 4)?.try_into().ok()?));
-    let height = usize::try_from(u32_at(0)?).ok()?;
-    let width = usize::try_from(u32_at(4)?).ok()?;
-    let mode = u16::from_le_bytes(data.get(8..HEADER)?.try_into().ok()?);
-    let n = width.checked_mul(height)?;
-    if mode != MODE_TWO_PLANES || n == 0 || n > MAX_MAP_PIXELS {
-        return None;
-    }
-    let horizontal = data.get(HEADER..HEADER.checked_add(n)?)?;
-    let vertical = data.get(HEADER + n..HEADER.checked_add(n.checked_mul(2)?)?)?;
-    Some(EmbeddedMap { width, height, horizontal, vertical })
-}
+use craft_psd_displace::displace_map::{EmbeddedMap, parse_map};
 
 fn fltr_map(item: &Descriptor) -> Option<EmbeddedMap<'_>> {
     match get_desc(item, "Fltr")?.get(MAP_KEY)? {
@@ -222,12 +198,12 @@ pub fn embed_map(params: &J, map: &Image) -> Option<J> {
     let vertical = if map.ch >= 3 { 1 } else { 0 };
     let byte = |v: f32| (v.clamp(0.0, 1.0) * 255.0).round() as u8;
     let pixels = || map.data.chunks_exact(map.ch).take(n);
-    let mut planes = Vec::with_capacity(HEADER + 2 * n);
-    planes.extend(h.to_le_bytes());
-    planes.extend(w.to_le_bytes());
-    planes.extend(MODE_TWO_PLANES.to_le_bytes());
-    planes.extend(pixels().map(|px| px.first().map_or(0, |v| byte(*v))));
-    planes.extend(pixels().map(|px| px.get(vertical).map_or(0, |v| byte(*v))));
+    let planes = craft_psd_displace::displace_map::write_map_iter(
+        usize::try_from(w).ok()?,
+        usize::try_from(h).ok()?,
+        pixels().map(|px| px.first().map_or(0, |v| byte(*v))),
+        pixels().map(|px| px.get(vertical).map_or(0, |v| byte(*v))),
+    )?;
     let enumerated = |t: &str, v: &str| Value::Enumerated { type_id: Id::new(t), value: Id::new(v) };
     // The settings here are placeholders: the params' own replace them when the filter renders
     // and when it is written to PSD (`export_item`).
