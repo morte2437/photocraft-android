@@ -41,13 +41,15 @@ children (checked against Krita's merged image).
 
 ## Limits and safety
 
-The reader uses the bounded ZIP reader of `photocraft-format` (no ZIP64, CRC-checked), parses
-`maindoc.xml` with `roxmltree` (32 MiB cap; the DTD is declared by public id and not fetched),
-and decodes tiles with a bounds-checked LZF decoder that must produce exactly one tile. Tiles
-are at most 1024 px a side; canvases at most 300,000 px a side and 1 GiB of decoded pixels;
-8,192 nodes; nesting at most `MAX_GROUP_DEPTH`. Version 1 tile files (Krita 1.x) are refused.
-Malformed archives, XML, numbers, tile headers and tile data return errors; truncated and
-corrupted files are covered by tests.
+The shared `craft-kra` reader uses `craft-zip` for the archive (including ZIP64 directories,
+CRC-checked entry reads, and at most 100,000 entries) and `craft-xml` for `maindoc.xml`. The XML
+has a 32 MiB input limit and 512-level nesting limit; Krita's public DTD is not fetched, and an
+internal DTD subset is refused. A layer tile file may inflate to at most 1 GiB, and an ICC profile
+to 16 MiB. `craft-kra` also decodes tiles, with a bounds-checked LZF decoder that must produce
+exactly one tile. Tiles are at most 1024 px a side; canvases at most 300,000 px a side and 1 GiB
+of decoded pixels; 8,192 nodes; nesting at most `MAX_GROUP_DEPTH`. Version 1 tile files (Krita
+1.x) are refused. Malformed archives, XML, numbers, tile headers and tile data return errors;
+truncated and corrupted files are covered by tests.
 
 ## Verification
 
