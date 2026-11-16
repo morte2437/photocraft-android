@@ -8,8 +8,7 @@ fn sensor(bytes: &[u8]) -> Sensor {
     decode(bytes, &Limits::default()).unwrap()
 }
 
-/// The floating-point samples of `s`: craft-raw keeps float DNG data as `f32`, in the unit of its white level,
-/// instead of scaling it to 16 bits.
+/// Float DNG samples remain in their source white-level units, without U16 quantization.
 fn floats(s: &Sensor) -> &[f32] {
     s.float_data.as_deref().expect("floating-point samples")
 }
@@ -202,9 +201,8 @@ fn broken_monochrome_linear_raw_errors() {
     }
     let first: Vec<u8> = spec.data[..4].iter().flat_map(|v| v.to_le_bytes()).collect();
     let strip = b.windows(first.len()).position(|win| win == first.as_slice()).expect("strip data");
-    // Uncompressed rows missing from a cut strip are zero-filled (craft-raw's choice); a strip holding
-    // under 1/64 of its samples is no picture.
-    assert!(decode(&b[..strip + 2], &Limits::default()).is_err(), "truncated strip");
+    assert!(decode(&b[..strip + w], &Limits::default()).is_err(), "truncated strip");
+    assert!(decode(&b[..strip + 2], &Limits::default()).is_err(), "short truncated strip");
     // Two samples per pixel is no LinearRaw layout.
     let two = DngSpec { samples: 2, data: ramp(2 * w, h, 100, 4000), ..spec.clone() };
     let err = decode(&two.build(), &Limits::default()).unwrap_err().to_string();
@@ -261,9 +259,8 @@ fn metadata_is_read() {
     assert_eq!(s.color.as_shot_neutral, Some([0.5, 1.0, 0.8]));
     assert!((s.baseline_exposure - 0.5).abs() < 1e-6);
     assert_eq!(s.orientation, 6);
-    // craft-raw applies the table to the samples at decode.
-    assert!(s.linearization.is_none());
-    assert_eq!(s.data[0], 3000);
+    assert!(s.linearization.is_none(), "the shared decoder has already applied the table");
+    assert!(s.data.iter().all(|&sample| sample == 3000), "all stored1000 samples use the3x table");
     let d = develop_sensor(&s, &DevelopOptions::default()).unwrap();
     // Orientation 6 swaps the cropped 20×16 to 16×20.
     assert_eq!((d.width, d.height), (16, 20));
@@ -274,40 +271,49 @@ fn metadata_is_read() {
 
 /// An unrepresentable DefaultCropOrigin is refused; the whole active area is kept with a notice.
 #[test]
-fn enormous_double_crop_origin_leaves_the_active_area() {
+fn enormous_double_crop_origin_keeps_the_whole_active_area_with_warning() {
     let (w, h) = (16, 12);
-    let mut spec = DngSpec::cfa(w, h, vec![1000; w * h]);
-    spec.active_area = Some([2, 3, 10, 14]);
-    spec.default_crop = Some(([0, 0], [11, 8]));
-    spec.default_crop_origin_double = Some([1e300, 0.0]);
-
-    let s = sensor(&spec.build());
-    assert_eq!(s.crop, s.active);
+    for origin in [1e300, f64::INFINITY, f64::NAN, -1.] {
+        let mut spec = DngSpec::cfa(w, h, vec![1000; w * h]);
+        spec.active_area = Some([2, 3, 10, 14]);
+        spec.default_crop = Some(([0, 0], [11, 8]));
+        spec.default_crop_origin_double = Some([origin, 0.0]);
+        let s = sensor(&spec.build());
+        assert_eq!(s.active, Rect::new(3, 2, 11, 8));
+        assert_eq!(s.crop, Rect::new(3, 2, 11, 8), "invalid coordinates cannot create a clipped sliver");
+        assert_eq!(s.data, spec.data, "fallback preserves every stored sensor value");
+        assert!(s.warnings.iter().any(|warning| warning.contains("default crop")), "{origin}: {:?}", s.warnings);
+    }
 }
 
 /// craft-raw clips a crop that reaches past the active area and reports the adjustment.
 #[test]
-fn out_of_range_default_crop_is_clipped_to_the_active_area() {
+fn out_of_range_default_crop_uses_checked_intersection_with_warning() {
     let (w, h) = (16, 12);
     let mut spec = DngSpec::cfa(w, h, vec![1000; w * h]);
     spec.active_area = Some([2, 3, 10, 14]);
     spec.default_crop = Some(([10, 0], [5, 4]));
 
     let s = sensor(&spec.build());
-    // The 5 × 4 crop at (10, 0) keeps the 4 columns left in the 14-wide active area at x 3.
-    assert_eq!(s.crop, Rect::new(13, 2, 1, 4));
+    assert_eq!(s.active, Rect::new(3, 2, 11, 8));
+    assert_eq!(s.crop, Rect::new(13, 2, 1, 4), "[10,0,5,4] intersected with relative[0,0,11,8]");
+    assert_eq!(s.data, spec.data, "crop adjustment does not rewrite sensor samples");
+    assert!(s.warnings.iter().any(|warning| warning.contains("out-of-range") && warning.contains("default crop")), "{:?}", s.warnings);
 }
 
-/// DefaultCropSize defaults to the whole active area, which is clipped once the origin moves in.
+/// A missing DefaultCropSize uses the shared full-area default, intersected with the active area.
 #[test]
-fn default_crop_origin_without_size_is_clipped_to_the_active_area() {
+fn default_crop_origin_without_size_uses_checked_intersection_with_warning() {
     let (w, h) = (16, 12);
     let mut spec = DngSpec::cfa(w, h, vec![1000; w * h]);
     spec.active_area = Some([2, 3, 10, 14]);
     spec.default_crop_origin_double = Some([1.0, 1.0]);
 
     let s = sensor(&spec.build());
-    assert_eq!(s.crop, Rect::new(s.active.x + 1, s.active.y + 1, s.active.width - 1, s.active.height - 1));
+    assert_eq!(s.active, Rect::new(3, 2, 11, 8));
+    assert_eq!(s.crop, Rect::new(4, 3, 10, 7), "relative origin1,1 clips only the default area edges");
+    assert_eq!(s.data, spec.data);
+    assert!(s.warnings.iter().any(|warning| warning.contains("out-of-range") && warning.contains("default crop")), "{:?}", s.warnings);
 }
 
 /// #950: DefaultCropOrigin defaults to (0, 0), so a size-only crop starts at the active area's
@@ -530,12 +536,20 @@ fn smooth_scene_develops_with_every_method() {
 
 #[test]
 fn unsupported_variants_say_so() {
-    let mut spec = DngSpec::cfa(8, 8, vec![0; 64]);
-    spec.cfa = [0, 1, 2, 1]; // not Bayer
-    let s = sensor(&spec.build());
-    assert!(!s.cfa.as_ref().unwrap().is_bayer());
-    // 17-bit integer samples are no TIFF raw layout this reader knows.
-    let mut spec = DngSpec::cfa(8, 8, vec![0; 64]);
+    // The shared reader now supports periodic non-Bayer CFA. Prove the source
+    // pattern and constant-scene development rather than deleting its coverage.
+    let mut spec = DngSpec::cfa(8, 8, vec![1000; 64]);
+    let mut bayer = spec.clone();
+    bayer.white = 4000;
+    spec.white = 4000;
+    spec.cfa = [0, 1, 2, 1];
+    let sensor = sensor(&spec.build());
+    assert_eq!(sensor.data, spec.data);
+    assert_eq!(sensor.cfa.as_ref().unwrap().phase(0, 0), spec.cfa);
+    assert!(!sensor.cfa.as_ref().unwrap().is_bayer());
+    let options = DevelopOptions { white_balance: WhiteBalance::Multipliers([1.; 3]), ..Default::default() };
+    assert_eq!(develop_sensor(&sensor, &options).unwrap().rgb, develop(&bayer.build(), &options).unwrap().rgb);
+    // Integer sample widths above16 remain unsupported, never truncated toU16.
     spec.bits = 17;
     assert!(matches!(decode(&spec.build(), &Limits::default()), Err(RawError::Unsupported(_))));
 }
@@ -558,8 +572,8 @@ fn deflate_strips_round_trip() {
     for (name, bits, storage, be) in [
         ("deflate 16-bit", 16, DngStorage::DeflateStrips { rows: 16, predictor: 1 }, false),
         ("deflate 16-bit predictor 2", 16, DngStorage::DeflateStrips { rows: 16, predictor: 2 }, false),
-        // (No 12-bit predictor 2: libtiff applies the predictor to 8, 16, 32 and 64-bit samples only.)
         ("deflate 12-bit", 12, DngStorage::DeflateStrips { rows: 12, predictor: 1 }, false),
+        ("deflate 12-bit predictor 2", 12, DngStorage::DeflateStrips { rows: 12, predictor: 2 }, false),
         ("deflate 16-bit predictor 2 BE", 16, DngStorage::DeflateStrips { rows: 16, predictor: 2 }, true),
         ("deflate LinearRaw predictor 2", 16, DngStorage::DeflateStrips { rows: 40, predictor: 2 }, false),
     ] {
@@ -597,6 +611,12 @@ fn deflate_hostile_fails_cleanly() {
 /// stream (not in 16-bit containers), as the testgen writes them.
 #[test]
 fn deflate_8_bit_predictor_and_packed_12_bit() {
+    use std::io::Write as _;
+    let zlib = |bytes: &[u8]| {
+        let mut e = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
+        e.write_all(bytes).unwrap();
+        e.finish().unwrap()
+    };
     let (w, h) = (16usize, 4usize);
     // 8-bit, predictor 2: a row falling from 250 to 10 has deltas that wrap mod 256.
     let data8: Vec<u16> = (0..w * h).map(|i| if i % w < w / 2 { 250 } else { 10 }).collect();
@@ -605,13 +625,19 @@ fn deflate_8_bit_predictor_and_packed_12_bit() {
     spec.white = 255;
     spec.storage = DngStorage::DeflateStrips { rows: h, predictor: 2 };
     assert_eq!(sensor(&spec.build()).data, data8, "8-bit predictor 2");
-    // 12-bit packed: two samples in three bytes, MSB first.
+    // Independently frame two 12-bit samples in three bytes, MSB first. The
+    // fixture writer now emits valid packed samples too: verify its actual
+    // compressed payload against this separate construction before decoding.
     let data12: Vec<u16> = (0..w * h).map(|i| (i as u16 * 61) & 0xFFF).collect();
     let mut spec = DngSpec::cfa(w, h, data12.clone());
     spec.bits = 12;
     spec.white = 4095;
     spec.storage = DngStorage::DeflateStrips { rows: h, predictor: 1 };
-    assert_eq!(sensor(&spec.build()).data, data12, "12-bit packed");
+    let bytes = spec.build();
+    let packed: Vec<u8> = data12.chunks(2).flat_map(|p| [(p[0] >> 4) as u8, ((p[0] & 0xF) << 4 | p[1] >> 8) as u8, p[1] as u8]).collect();
+    let compressed = zlib(&packed);
+    assert!(bytes.windows(compressed.len()).any(|chunk| chunk == compressed.as_slice()), "fixture contains independently packed 12-bit strip");
+    assert_eq!(sensor(&bytes).data, data12, "12-bit packed");
 }
 
 // ---------------------------------------------------------------- JPEG XL (DNG 1.7)
@@ -740,13 +766,18 @@ fn floating_point_jpeg_xl_linear_raw_decodes() {
 
 /// Uncompressed floating-point strips (16-bit half floats here) decode too: craft-raw reads them as floats.
 #[test]
-fn uncompressed_floating_point_raw_data_decodes_as_floats() {
+fn uncompressed_float_raw_preserves_known_half_values_including_signed_hdr() {
     let (w, h) = (8, 4);
-    let mut spec = float_jxl_dng(&noise(w * h * 3, 16), w, h, None);
+    let mut spec = DngSpec::cfa(w, h, [0x3800u16, 0x3c00, 0x4000, 0xbc00].repeat(w * h * 3 / 4));
+    spec.samples = 3;
+    spec.white = 0;
+    spec.raw_extra = vec![(339, Val::Short(vec![3; 3]))];
     spec.storage = DngStorage::Strips { rows: h };
     let s = sensor(&spec.build());
     assert_eq!((s.width, s.height, s.samples), (w, h, 3));
-    assert_eq!(floats(&s).len(), w * h * 3);
+    assert!(s.data.is_empty());
+    assert_eq!(floats(&s), [0.5f32, 1.0, 2.0, -1.0].repeat(w * h * 3 / 4));
+    assert_eq!(s.white, [1.0; 3]);
 }
 
 /// WhiteLevel has one value per sample plane, kept per plane next to the unscaled floats.
@@ -767,6 +798,24 @@ fn poly(c: &[f64], x: f64) -> f64 {
     c.iter().rev().fold(0.0, |acc, c| acc * x + c).clamp(0.0, 1.0)
 }
 
+/// Compare deferred development against independently evaluated normalized samples.
+/// The reference uses the source's F32 domain and then the public polynomial formula,
+/// avoiding the old intermediate U16 quantization and any wider output tolerance.
+fn assert_polynomial_development(actual: &Sensor, normalized: Vec<f32>) {
+    let mut expected = actual.clone();
+    expected.float_data = Some(normalized);
+    expected.data.clear();
+    expected.linearization = None;
+    expected.polynomials.clear();
+    expected.white = [1.; 3];
+    expected.black = BlackLevels::uniform(0.);
+    let options = DevelopOptions { white_balance: WhiteBalance::Multipliers([1.; 3]), ..Default::default() };
+    let got = develop_sensor(actual, &options).unwrap();
+    let want = develop_sensor(&expected, &options).unwrap();
+    assert_eq!((got.width, got.height), (want.width, want.height));
+    assert_eq!(got.rgb, want.rgb, "deferred polynomial matches independently mapped source samples");
+}
+
 /// #8125: a lossy DNG's OpcodeList2 carries a MapPolynomial per plane, and its colours depend on
 /// it. craft-raw leaves the samples as stored and hands the polynomials on; development maps each
 /// plane through its own, on the linear reference values.
@@ -782,7 +831,9 @@ fn map_polynomial_maps_each_plane_of_floating_point_data() {
     ));
     let bytes = spec.build();
     let s = sensor(&bytes);
-    assert!(near(floats(&s), &unit(&data)));
+    let want: Vec<f32> = data.iter().enumerate().map(|(i, &v)| poly(&planes[i % 3], f64::from(f32::from(v) / 65535.)) as f32).collect();
+    assert!(near(floats(&s), &unit(&data)), "stored float values stay unprocessed until development");
+    assert_polynomial_development(&s, want);
     assert_eq!(s.polynomials.len(), planes.len());
     for (p, c) in s.polynomials.iter().zip(&planes) {
         assert_eq!(&p.coefficients, c);
@@ -808,8 +859,10 @@ fn map_polynomial_follows_the_linearization_table() {
     spec.linearization = Some(table.clone());
     spec.opcode_list2 = Some(testgen::map_polynomial_opcode_list([0, 0, h as u32, w as u32], &[(0, vec![0.0, 0.0, 1.0])]));
     let s = sensor(&spec.build());
-    assert!(s.linearization.is_none(), "applied at decode");
-    assert_eq!(s.data, data.iter().map(|&v| table[usize::from(v)]).collect::<Vec<_>>());
+    assert!(s.linearization.is_none(), "linearization applied at decode, polynomial deferred to development");
+    assert_eq!(s.data, data.iter().map(|&value| table[usize::from(value)]).collect::<Vec<_>>());
+    let want: Vec<f32> = data.iter().map(|&v| poly(&[0.0, 0.0, 1.0], f64::from(f32::from(table[usize::from(v)]) / 8190.)) as f32).collect();
+    assert_polynomial_development(&s, want);
     assert_eq!(s.polynomials.len(), 1);
 }
 
@@ -825,7 +878,7 @@ fn floating_point_raw_data_ignores_a_linearization_table() {
     assert!(near(floats(&s), &unit(&data)));
 }
 
-/// Floating-point samples are read into four bytes each before they become 16-bit: the limits
+/// Floating-point samples stay four bytes each: the limits
 /// are charged for that buffer, not for the two-byte result.
 #[test]
 fn floating_point_jpeg_xl_is_charged_four_bytes_a_sample() {
@@ -930,9 +983,10 @@ fn jpeg_xl_mismatches_are_errors() {
     // Codestream smaller than the strip.
     spec.jxl_segments = vec![jxl(&data[..w * 4 * 3], w, 4, 3, 16)];
     assert!(matches!(decode(&spec.build(), &Limits::default()), Err(RawError::Malformed(_))));
-    // Grey codestream for RGB samples.
+    // A grey codestream contradicts the RGB IFD: this is damaged framing,
+    // not a supported one-plane image or a conversion request.
     spec.jxl_segments = vec![jxl(&data[..w * h], w, h, 1, 16)];
-    assert!(decode(&spec.build(), &Limits::default()).is_err());
+    assert!(matches!(decode(&spec.build(), &Limits::default()), Err(RawError::Malformed(_))));
     // Not a codestream at all.
     spec.jxl_segments = vec![vec![0xff, 0x0a, 1, 2, 3, 4, 5]];
     assert!(matches!(decode(&spec.build(), &Limits::default()), Err(RawError::Malformed(_))));
@@ -940,7 +994,7 @@ fn jpeg_xl_mismatches_are_errors() {
 
 #[test]
 fn profile_gain_table_map_is_reported() {
-    let gain_table = |s: &Sensor| s.warnings.iter().any(|w| w.contains("gain table map"));
+    let gain_table = |s: &Sensor| s.warnings.iter().any(|w| w.contains("ProfileGainTableMap") || w.contains("gain table map"));
     let mut spec = DngSpec::cfa(8, 8, vec![500; 64]);
     assert!(!gain_table(&sensor(&spec.build())));
     // A well-formed ProfileGainTableMap (version 1, little-endian): one table of one gain. craft-raw
@@ -960,7 +1014,7 @@ fn profile_gain_table_map_is_reported() {
     assert!(gain_table(&s));
     let d = develop_sensor(&s, &DevelopOptions::default()).unwrap();
     for warnings in [&s.warnings, &d.warnings] {
-        assert!(warnings.iter().any(|w| w.contains("gain table map") && w.contains("not applied")), "{warnings:?}");
+        assert!(warnings.iter().any(|w| w.contains("ProfileGainTableMap") && w.contains("not applied")), "{warnings:?}");
         assert!(!warnings.iter().any(|w| w.contains("gain table map") && w.contains("omitted")), "{warnings:?}");
     }
 }
@@ -1092,7 +1146,8 @@ fn lossy_jpeg_levels_and_linearization_apply_to_stored_values() {
         spec.linearization = Some(table.clone());
         spec.storage = storage;
         let s = sensor(&spec.build());
-        assert!(s.linearization.is_none(), "applied at decode");
+        assert!(s.linearization.is_none(), "table already applied to stored samples");
+        assert_eq!(s.data, vec![40_000; w * h]);
         assert_eq!(s.white, [65535.0; 3], "the table's maximum is white");
         grey(&develop_sensor(&s, &DevelopOptions::default()).unwrap())
     };
@@ -1111,28 +1166,55 @@ fn lossy_jpeg_truncated_tile_errors() {
     assert!(matches!(decode(cut, &Limits::default()), Err(RawError::Malformed(_))), "a cut JPEG tile must not decode");
 }
 
-/// A tile JPEG whose header disagrees with the tile size fails the header check, before any
-/// pixel decode (a hostile SOF must not be able to size the decoder's buffers first).
+/// JPEG tiles must cover all visible pixels within bounded MCU padding. Hostile
+/// frame dimensions fail the header check before the decoder allocates pixels.
 #[test]
 fn lossy_jpeg_tile_dimension_mismatch_errors() {
     let (w, h) = (32, 32);
     let mut spec = lossy_spec(w, h, vec![100; w * h], DngStorage::LossyJpegTiles { width: 32, height: 32 });
     let small: Vec<u8> = (0..16 * 16).map(|i| (i % 16 * 16) as u8).collect();
     spec.lossy_segments = vec![baseline_jpeg(&small, 16, 16, 1)];
-    let err = decode(&spec.build(), &Limits::default()).unwrap_err().to_string();
-    assert!(err.contains("16 x 16") && err.contains("32 x 32"), "{err}");
-    // A tile JPEG is tolerated when it covers the part of the tile inside the image (edge tiles are
-    // often coded smaller or larger than nominal); one that leaves part of that uncovered is not.
+    let err = decode(&spec.build(), &Limits::default()).unwrap_err();
+    assert!(matches!(&err, RawError::Malformed(message) if message.contains("16 x 16") && message.contains("32 x 32") && message.contains("tile")), "{err}");
+    // Edge frames may cover only the visible image or bounded MCU padding.
+    // Neither path may omit visible rows or introduce zero-filled pixels.
     let (w, h) = (16, 12);
     let mut spec = lossy_spec(w, h, vec![100; w * h], DngStorage::LossyJpegTiles { width: 16, height: 16 });
-    spec.lossy_segments = vec![baseline_jpeg(&[100u8; 16 * 12], 16, 12, 1)];
-    let s = sensor(&spec.build());
-    assert_eq!((s.width, s.height), (w, h));
-    assert!(s.data.iter().all(|&v| v.abs_diff(100) <= 2));
-    for (tw, th) in [(12, 16), (16, 10), (10, 10)] {
+    for (tw, th) in [(16, 12), (16, 14), (16, 18), (18, 16)] {
+        spec.lossy_segments = vec![baseline_jpeg(&vec![100u8; tw * th], tw, th, 1)];
+        let s = sensor(&spec.build());
+        assert_eq!((s.width, s.height, s.data.len()), (w, h, w * h));
+        assert!(s.data.iter().all(|&v| v.abs_diff(100) <= 2), "{tw}x{th}: visible source pixels survive padding");
+    }
+    for (tw, th) in [(16, 11), (15, 16), (12, 16), (16, 10), (10, 10), (16, 33), (33, 16)] {
         spec.lossy_segments = vec![baseline_jpeg(&vec![100u8; tw * th], tw, th, 1)];
         assert!(matches!(decode(&spec.build(), &Limits::default()), Err(RawError::Malformed(_))), "{tw}x{th}");
     }
+    // The last strip can include padding, but it must cover its four visible rows.
+    let mut spec = lossy_spec(w, h, vec![100; w * h], DngStorage::LossyJpegStrips { rows: 8 });
+    spec.lossy_segments = vec![baseline_jpeg(&[100u8; 16 * 8], 16, 8, 1), baseline_jpeg(&[100u8; 16 * 8], 16, 8, 1)];
+    let padded = sensor(&spec.build());
+    assert_eq!(padded.data.len(), w * h);
+    assert!(padded.data.iter().all(|&v| v.abs_diff(100) <= 2));
+    spec.lossy_segments[1] = baseline_jpeg(&[100u8; 16 * 3], 16, 3, 1);
+    assert!(matches!(decode(&spec.build(), &Limits::default()), Err(RawError::Malformed(_))));
+}
+
+/// A tile with the wrong number of JPEG components (a colour JPEG in a CFA DNG, a gray one in a
+/// 3-sample LinearRaw DNG) is rejected rather than silently converted.
+#[test]
+fn lossy_jpeg_component_count_mismatch_errors() {
+    let (w, h) = (16, 16);
+    let mut cfa = lossy_spec(w, h, vec![90; w * h], DngStorage::LossyJpegTiles { width: 16, height: 16 });
+    cfa.lossy_segments = vec![baseline_jpeg(&vec![90u8; w * h * 3], w, h, 3)];
+    let err = decode(&cfa.build(), &Limits::default()).unwrap_err();
+    assert!(matches!(&err, RawError::Malformed(m) if m.contains("3 components")), "{err}");
+
+    let mut rgb = lossy_spec(w, h, vec![90; w * h * 3], DngStorage::LossyJpegTiles { width: 16, height: 16 });
+    rgb.samples = 3;
+    rgb.lossy_segments = vec![baseline_jpeg(&vec![90u8; w * h], w, h, 1)];
+    let err = decode(&rgb.build(), &Limits::default()).unwrap_err();
+    assert!(matches!(&err, RawError::Malformed(m) if m.contains("1 components")), "{err}");
 }
 
 /// A SOF claiming a 65535x65535 frame inside a 16x16 tile is refused at the header, under the

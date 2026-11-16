@@ -331,6 +331,28 @@ fn a_layer_decodes_with_every_compression() {
 }
 
 #[test]
+fn xcf_import_can_be_cancelled_while_parsing_layer_metadata() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    let mut img = TestImage::rgb8(3, 3);
+    img.layers.push(TestLayer::rgba("first", 3, 3, rgba(3, 3, |_, _| [1, 2, 3, 255])));
+    img.layers.push(TestLayer::rgba("second", 3, 3, rgba(3, 3, |_, _| [4, 5, 6, 255])));
+    let mut bytes = img.write();
+    // Make the second layer independently invalid. If cancellation is checked after parsing
+    // its metadata, this must produce a format error instead of `Cancelled`.
+    let second_name = bytes.windows(b"second\0".len()).position(|w| w == b"second\0").unwrap();
+    bytes[second_name - 4..second_name].copy_from_slice(&99u32.to_be_bytes());
+    assert!(matches!(super::import("invalid.xcf", &bytes, &Interrupt::NONE), Err(IoError::Xcf(_))));
+    let checks = AtomicUsize::new(0);
+    let cancel = || checks.fetch_add(1, Ordering::Relaxed) >= 1;
+
+    let result = super::import("cancel.xcf", &bytes, &Interrupt::cancel_only(&cancel));
+
+    assert!(matches!(result, Err(IoError::Cancelled)));
+    assert_eq!(checks.load(Ordering::Relaxed), 2, "cancellation stops before parsing the second layer");
+}
+
+#[test]
 fn every_truncation_errors_never_panics() {
     let mut img = TestImage::rgb8(20, 20);
     img.layers.push(TestLayer::rgba("A", 20, 20, rgba(20, 20, |x, y| [x as u8, y as u8, 0, 255])));

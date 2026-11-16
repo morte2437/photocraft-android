@@ -254,7 +254,7 @@ pub static CATALOG: &[(&[&str], &str, Option<&str>, &str)] = &[
     (&["Layer", "New"], "Group from Layers…", None, "layer.new.groupFromLayers"),
     (&["Layer", "New"], "---", None, "---"),
     (&["Layer", "New"], "Artboard…", None, "layer.new.artboard"),
-    (&["Layer", "New"], "Artboard from Group…", None, "layer.new.artboardFromGroup"),
+    (&["Layer", "New"], "Artboard from Group", None, "layer.new.artboardFromGroup"),
     (&["Layer", "New"], "Artboard from Layers…", None, "layer.new.artboardFromLayers"),
     (&["Layer", "New"], "Frame from Layers", None, "layer.new.frameFromLayers"),
     (&["Layer", "New"], "---", None, "---"),

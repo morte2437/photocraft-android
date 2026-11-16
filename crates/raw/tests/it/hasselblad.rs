@@ -45,13 +45,18 @@ fn metadata() {
     assert_eq!(sensor.active, Rect::new(0, 0, 16, 12));
     assert_eq!(sensor.black, BlackLevels::uniform(4096.0));
     assert_eq!(sensor.white, [64763.0; 3]);
+    let wb = sensor.camera_wb.unwrap();
+    assert!((wb[0] - 1.0 / 0.375).abs() < 1e-9, "{wb:?}");
+    assert!((wb[2] - 1.0 / 0.617).abs() < 1e-9, "{wb:?}");
     // craft-raw reads AsShotNeutral as the DNG colour tag; development turns it into multipliers.
     let neutral = sensor.color.as_shot_neutral.unwrap();
     assert!((neutral[0] - 0.375).abs() < 1e-9 && (neutral[2] - 0.617).abs() < 1e-9, "{neutral:?}");
-    assert_eq!((sensor.make.as_deref(), sensor.model.as_deref()), (Some("Hasselblad"), Some("Hasselblad X2D II 100C")));
+    assert_eq!((sensor.make.as_deref(), sensor.model.as_deref()), (Some("Hasselblad"), Some("X2D II 100C")));
     assert_eq!(sensor.orientation, 1);
-    // This fixture deliberately omits CFA tags; the RGGB fallback must remain visible to callers.
-    assert_eq!(sensor.warnings, ["the raw colour filter phase was assumed"]);
+    // This real-layout fixture deliberately has no CFAPattern tag. All source
+    // metadata is retained, while the decoder discloses its assumed RGGB phase.
+    assert_eq!(sensor.warnings.len(), 1, "{:?}", sensor.warnings);
+    assert!(sensor.warnings[0].contains("Bayer phase") && sensor.warnings[0].contains("fallback"), "{:?}", sensor.warnings);
 }
 
 #[test]
@@ -84,8 +89,12 @@ fn missing_levels_fall_back() {
     s.white = None;
     let sensor = decode(&s.build(), &Limits::default()).unwrap();
     assert_eq!(sensor.black, BlackLevels::uniform(0.0));
-    // craft-raw falls back to the full scale of the sample depth.
+    assert!(sensor.warnings.iter().any(|w| w.contains("black level")), "{:?}", sensor.warnings);
+    // Shared provenance identifies this as the declared-depth default. The
+    // non-DNG adapter must not silently rescale the stored samples afterward.
     assert_eq!(sensor.white, [f32::from(u16::MAX); 3]);
+    assert_eq!(sensor.data, s.data);
+    assert!(sensor.warnings.iter().any(|warning| warning.contains("white level")), "{:?}", sensor.warnings);
 }
 
 #[test]
@@ -132,5 +141,13 @@ fn truncated_strip_is_refused() {
 fn zero_dimensions_are_malformed() {
     let mut s = spec();
     s.width = 0;
-    assert!(decode(&s.build(), &Limits::default()).is_err());
+    assert!(matches!(decode(&s.build(), &Limits::default()), Err(RawError::Malformed(_))));
+}
+
+#[test]
+fn unknown_body_warns_about_the_assumed_phase() {
+    let mut s = spec();
+    s.model = "X2D 100C".into();
+    let sensor = decode(&s.build(), &Limits::default()).unwrap();
+    assert!(sensor.warnings.iter().any(|w| w.contains("Bayer phase")), "{:?}", sensor.warnings);
 }

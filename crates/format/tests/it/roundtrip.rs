@@ -688,6 +688,9 @@ fn directory_save_rejects_manifest_symlink_without_overwriting_target() {
 
     let doc = rich_doc(ColorMode::Rgb, SampleType::U8);
     let dir = temp_dir("symlink-manifest");
+    // The fixture inspects this directory even when preflight refuses the save before any
+    // object is written; empty bundles no longer create object directories eagerly.
+    std::fs::create_dir(dir.join("tiles")).unwrap();
     let outside = temp_dir("symlink-manifest-outside");
     let external_manifest = outside.join("external.json");
     std::fs::write(&external_manifest, b"keep manifest").unwrap();

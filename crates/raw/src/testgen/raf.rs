@@ -191,7 +191,7 @@ impl RafSpec {
         let u32b = |v: u32| if le { v.to_le_bytes() } else { v.to_be_bytes() };
         let strip = self.strip();
         let strip_at = 2048u32;
-        let entries: Vec<(u16, Vec<u32>)> = vec![
+        let mut entries: Vec<(u16, Vec<u32>)> = vec![
             (0xF001, vec![self.width as u32]),
             (0xF002, vec![self.height as u32]),
             (0xF003, vec![self.bits]),
@@ -201,8 +201,13 @@ impl RafSpec {
         ]
         .into_iter()
         .chain(matches!(self.packing, RafPacking::Words14).then(|| (0xF005, vec![(self.width * 14).div_ceil(32) as u32])))
+        // Padded narrow rows can occupy two bytes per sample, so stride alone
+        // cannot distinguish packed words from ordinary 16-bit containers.
+        .chain(matches!(self.packing, RafPacking::Words14).then(|| (0xF006, vec![1])))
         .chain(self.wb_grb.map(|w| (0xF00E, w.to_vec())))
         .collect();
+        // TIFF directories require ascending tags, including optional packing fields.
+        entries.sort_unstable_by_key(|(tag, _)| *tag);
         let mut out = if le { b"II*\0".to_vec() } else { b"MM\0*".to_vec() };
         out.extend_from_slice(&u32b(8));
         // IFD0: one entry, 0xF000 (type IFD) → the Fuji IFD at 26.

@@ -59,6 +59,7 @@ mod finite_command_params;
 mod flatten_background;
 mod gallery_colours;
 mod gauss_small_sigma;
+mod gaussian_edge_profile;
 mod gradient_overlay_strokes;
 mod guide_layout_limit;
 mod guide_layout_preview;
