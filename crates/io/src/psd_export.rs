@@ -421,6 +421,45 @@ impl Ex<'_> {
     /// overrides) plus regenerated adjustment/fill blocks. A preserved
     /// adjustment or fill block is reused verbatim while it still decodes to
     /// the layer's current parameters; otherwise it is regenerated.
+    /// Sets the `TySh` of type layer `t` (of `l`) in its blocks `raw`, warning when the layer can
+    /// only be written as pixels.
+    fn type_blocks(&mut self, l: &Layer, t: &photocraft_doc::TextLayer, raw: &mut Vec<([u8; 4], Vec<u8>)>) {
+        if matches!(t.shape, photocraft_doc::text::TextShape::Area { .. }) {
+            self.warnings.push(format!("layer \"{}\": area type is saved as paragraph text over its path's bounds (PSD area type is not written yet)", l.name));
+        }
+        match self.type_tysh(l, t) {
+            Some(d) => match raw.iter_mut().find(|(k, _)| k == b"TySh") {
+                Some(e) => e.1 = d.to_vec(),
+                None => raw.push((*b"TySh", d.to_vec())),
+            },
+            // No block to write (none generated for a layer without PSD data): drop an imported
+            // one too, or the file would reopen with the text from before the edit.
+            None => raw.retain(|(k, _)| k != b"TySh"),
+        }
+        if !raw.iter().any(|(k, _)| k == b"TySh") {
+            self.warnings.push(format!("layer \"{}\": text layer written as pixels (no TySh data)", l.name));
+        }
+    }
+
+    /// The `TySh` block to write for type layer `t` of `l`, or `None` to write it as pixels.
+    fn type_tysh(&self, l: &Layer, t: &photocraft_doc::TextLayer) -> Option<std::sync::Arc<Vec<u8>>> {
+        // Text layers without PSD data (created here) get a generated TySh.
+        let generated = t.psd_raw.is_none().then(|| photocraft_text::psd::build_tysh(t, self.dpi, None)).flatten().map(std::sync::Arc::new);
+        let src = t.psd_raw.as_ref().or(generated.as_ref())?;
+        // Character/paragraph style sheets from the document's styles.
+        let styled = crate::text_styles_map::export_tysh(src, t, &self.text_styles, self.dpi).map(std::sync::Arc::new);
+        // `TextIndex` names the layer's object in the document's `Txt2` (where the
+        // auto-kern mode lives); left at 0, every type layer would claim object 0 (#1348).
+        // Keep an unchanged preserved TySh byte-for-byte (corpus_tysh_lossless).
+        // Duplicate or out-of-range file TextIndex values must be renumbered,
+        // however, even when no style sheet needed rebuilding: otherwise two
+        // layers may read the same Txt2 object and acquire the wrong kerning.
+        let idx = self.text_index.get(&l.id).copied().unwrap_or(0);
+        let rewrite = styled.as_ref().or(generated.as_ref()).or_else(|| Some(src).filter(|d| photocraft_text::psd::text_index(d.as_slice()) != Some(idx)));
+        let fresh = rewrite.and_then(|d| photocraft_text::psd::set_text_index(d.as_slice(), idx)).map(std::sync::Arc::new);
+        Some(fresh.or(styled).unwrap_or_else(|| src.clone()))
+    }
+
     fn content_blocks(&mut self, l: &Layer) -> Vec<TaggedBlock> {
         let mut raw: Vec<([u8; 4], Vec<u8>)> = l.psd_blocks.iter().filter(|(k, _)| !REGENERATED.contains(&k)).map(|(k, d)| (*k, d.to_vec())).collect();
         // A stale multi-effects block would override the regenerated lfx2.
@@ -514,30 +553,7 @@ impl Ex<'_> {
                 let (w, h) = (self.canvas.width(), self.canvas.height());
                 crate::vector_map::shape_blocks(sh, &mut raw, w, h, self.dpi);
             }
-            LayerContent::Text(t) => {
-                if matches!(t.shape, photocraft_doc::text::TextShape::Area { .. }) {
-                    self.warnings
-                        .push(format!("layer \"{}\": area type is saved as paragraph text over its path's bounds (PSD area type is not written yet)", l.name));
-                }
-                // Text layers without PSD data (created here) get a generated TySh.
-                let generated = t.psd_raw.is_none().then(|| std::sync::Arc::new(photocraft_text::psd::build_tysh(t, self.dpi, None)));
-                let src = t.psd_raw.as_ref().or(generated.as_ref());
-                // Character/paragraph style sheets from the document's styles.
-                let styled = src.and_then(|d| crate::text_styles_map::export_tysh(d, t, &self.text_styles, self.dpi)).map(std::sync::Arc::new);
-                // `TextIndex` names the layer's object in the document's `Txt2` (where the
-                // auto-kern mode lives); left at 0, every type layer would claim object 0 (#1348).
-                // Keep an unchanged preserved TySh byte-for-byte (corpus_tysh_lossless).
-                // Duplicate or out-of-range file TextIndex values must be renumbered,
-                // however, even when no style sheet needed rebuilding: otherwise two
-                // layers may read the same Txt2 object and acquire the wrong kerning.
-                let idx = self.text_index.get(&l.id).copied().unwrap_or(0);
-                let rewrite = styled.as_ref().or(generated.as_ref()).or_else(|| src.filter(|d| photocraft_text::psd::text_index(d.as_slice()) != Some(idx)));
-                let fresh = rewrite.and_then(|d| photocraft_text::psd::set_text_index(d.as_slice(), idx)).map(std::sync::Arc::new);
-                set_principal(&mut raw, &[b"TySh"], fresh.as_ref().or(styled.as_ref().or(src)));
-                if !raw.iter().any(|(k, _)| k == b"TySh") {
-                    self.warnings.push(format!("layer \"{}\": text layer written as pixels (no TySh data)", l.name));
-                }
-            }
+            LayerContent::Text(t) => self.type_blocks(l, t, &mut raw),
             LayerContent::Smart(sm) => {
                 if let Some(preview) = self.smart.vector_preview(sm) {
                     raw.push((crate::vector_preview::PSD_KEY, preview.block.clone()));

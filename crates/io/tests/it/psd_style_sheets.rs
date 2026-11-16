@@ -78,7 +78,7 @@ fn layer(text: &str, ed: &E) -> photocraft_doc::TextLayer {
         .with("Ornt", D::Enumerated { type_id: Id::new("Ornt"), value: Id::new("Hrzn") })
         .with("TextIndex", D::Integer(0))
         .with("EngineData", D::RawData(photocraft_text::engine_data::write(ed)));
-    let data = write_tysh(&TySh { transform: Affine::translate(450.0, 300.0), text: desc, warp: None, bounds: [0.0; 4] });
+    let data = write_tysh(&TySh { transform: Affine::translate(450.0, 300.0), text: desc, warp: None, bounds: [0.0; 4] }).unwrap();
     let mut t = text_layer_from_tysh(&data, 72.0).expect("parses");
     // Import keeps the block, as for a layer read from a file.
     t.psd_raw = Some(std::sync::Arc::new(data));

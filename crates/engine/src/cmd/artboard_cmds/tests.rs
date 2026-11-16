@@ -623,7 +623,7 @@ fn add_imported_type(s: &mut Session, block: Rect) -> LayerId {
     s.edit("type", |doc, active| {
         let mut t = photocraft_doc::TextLayer { text: "Hello!".into(), font_family: "No Such Font".into(), size_pt: 26.0, ..Default::default() };
         t.transform = photocraft_geom::Affine::translate(f64::from(block.x0), f64::from(block.y1));
-        t.psd_raw = Some(std::sync::Arc::new(photocraft_text::psd::build_tysh(&t, 72.0, None)));
+        t.psd_raw = Some(std::sync::Arc::new(photocraft_text::psd::build_tysh(&t, 72.0, None).unwrap()));
         let fmt = doc.pixel_format();
         let mut cache = photocraft_raster::Surface::new(fmt);
         cache.fill_rect(block, &photocraft_raster::from_rgba(&fmt, [0.4, 0.2, 0.6, 1.0]));

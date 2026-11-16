@@ -85,7 +85,7 @@ fn numeric_styles_shape_different_outlines_and_keep_psd_identity() {
     let b = engine.layout(&layer("30"), 72.0);
     assert_ne!(a.lines[0].x1, b.lines[0].x1);
     let original = layer("30");
-    let bytes = crate::psd::build_tysh(&original, 72.0, None);
+    let bytes = crate::psd::build_tysh(&original, 72.0, None).unwrap();
     let reopened = crate::psd::text_layer_from_tysh(&bytes, 72.0).unwrap();
     assert_eq!(reopened.char_runs()[0].style.postscript_name.as_deref(), Some("UnrelatedPS30"));
     let c = engine.layout(&reopened, 72.0);

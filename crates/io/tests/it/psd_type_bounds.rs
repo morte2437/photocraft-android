@@ -112,8 +112,13 @@ fn tysh_with_font(text: &str, runs: &[Run], box_bounds: Option<[f64; 4]>, transf
         .with("boundingBox", rect("boundingBox"))
         .with("TextIndex", D::Integer(0))
         .with("EngineData", D::RawData(photocraft_text::engine_data::write(&engine_data(text, runs, box_bounds, font))));
-    // Unwarped type: Photoshop writes four zero f32s after the warp descriptor.
-    write_tysh(&TySh { transform, text: desc, warp: None, bounds: [0.0; 4] })
+    // Unwarped type: Photoshop writes four zero f32s after the warp descriptor. The writer refuses
+    // an unsafe transform, so hostile ones are put into the bytes as a file would carry them.
+    let mut data = write_tysh(&TySh { transform: Affine::IDENTITY, text: desc, warp: None, bounds: [0.0; 4] }).unwrap();
+    for (i, v) in transform.m.iter().enumerate() {
+        data[2 + i * 8..10 + i * 8].copy_from_slice(&v.to_be_bytes());
+    }
+    data
 }
 
 struct Case {

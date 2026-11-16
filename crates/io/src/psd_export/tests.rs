@@ -843,3 +843,22 @@ fn a_cancelled_save_stops_between_the_bands_of_a_layer() {
     }
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// A type layer whose `TySh` can't be rebuilt (here an unrepresentable transform, which the
+/// shared writer refuses) is written as pixels: the block imported with it describes the text
+/// before the edit, so it must not be saved back in its place.
+#[test]
+fn a_type_layer_without_a_writable_tysh_drops_its_imported_block() {
+    let mut doc = Document::new("t", photocraft_geom::Size::new(8, 6), ColorMode::Rgb, SampleType::U8);
+    let mut text = photocraft_doc::TextLayer { text: "edited".into(), ..Default::default() };
+    text.transform = photocraft_geom::Affine { m: [1.0, 0.0, 0.0, 1.0, 1.0e300, 0.0] };
+    assert!(text.psd_raw.is_none() && photocraft_text::psd::build_tysh(&text, 72.0, None).is_none());
+    let mut layer = Layer::new("T", LayerContent::Text(text));
+    let stale = photocraft_text::psd::build_tysh(&photocraft_doc::TextLayer { text: "before".into(), ..Default::default() }, 72.0, None).unwrap();
+    layer.psd_blocks = vec![(*b"TySh", std::sync::Arc::new(stale))];
+    doc.layers.push(layer);
+    let (file, warnings) = document_to_psd_with(&doc, &PsdExportOptions::default()).unwrap();
+    let written = file.layer_info.as_ref().unwrap().layers.iter().find(|l| l.name == b"T").unwrap();
+    assert!(!written.blocks.iter().any(|b| b.key == *b"TySh"), "the stale imported TySh is dropped");
+    assert!(warnings.iter().any(|w| w.contains("no TySh data")), "{warnings:?}");
+}

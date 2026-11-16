@@ -42,7 +42,7 @@ fn engine_data_antialias_matches_photoshop() {
         let raw = first_tysh(&corpus(&format!("text/antialias-{name}.psd")));
         let mut layer = photocraft_text::psd::text_layer_from_tysh(&raw, 72.0).unwrap();
         layer.psd_raw = None;
-        let ours = photocraft_text::psd::build_tysh(&layer, 72.0, None);
+        let ours = photocraft_text::psd::build_tysh(&layer, 72.0, None).unwrap();
         assert_eq!(engine_antialias(&ours), engine_antialias(&raw), "{name}");
     }
 }
@@ -55,7 +55,7 @@ fn tysh_trailing_bounds_match_photoshop() {
         let mut layer = photocraft_text::psd::text_layer_from_tysh(&raw, 72.0).unwrap();
         assert_eq!(layer.warp.is_some(), warped, "{file}");
         layer.psd_raw = None;
-        let ours = photocraft_text::psd::parse_tysh(&photocraft_text::psd::build_tysh(&layer, 72.0, Some(rect(&theirs, "bounds")))).unwrap();
+        let ours = photocraft_text::psd::parse_tysh(&photocraft_text::psd::build_tysh(&layer, 72.0, Some(rect(&theirs, "bounds"))).unwrap()).unwrap();
         assert_eq!(ours.bounds, theirs.bounds, "{file}");
         if warped {
             assert_eq!(theirs.bounds, rect(&theirs, "bounds"), "{file}");

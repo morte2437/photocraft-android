@@ -201,7 +201,7 @@ fn tabs_advance_to_the_next_default_tab_stop() {
 fn psd_round_trips_tabs() {
     for shape in [TextShape::Point, TextShape::Box { x: 0.0, y: 0.0, width: 300.0, height: 100.0 }] {
         let t = TextLayer { shape: shape.clone(), ..point("Name\tValue\n\tIndented", 20.0) };
-        let back = crate::psd::text_layer_from_tysh(&crate::psd::build_tysh(&t, 72.0, None), 72.0).unwrap();
+        let back = crate::psd::text_layer_from_tysh(&crate::psd::build_tysh(&t, 72.0, None).unwrap(), 72.0).unwrap();
         assert_eq!(back.text, t.text, "{shape:?}");
     }
 }
@@ -1017,7 +1017,7 @@ fn with_text_index(tysh: &[u8], index: i32) -> Vec<u8> {
     let mut t = crate::psd::parse_tysh(tysh).unwrap();
     t.text.items.retain(|(k, _)| !k.is("TextIndex"));
     t.text.items.push((craft_psd::descriptor::Id::new("TextIndex"), craft_psd::descriptor::Value::Integer(index)));
-    crate::psd::write_tysh(&t)
+    crate::psd::write_tysh(&t).unwrap()
 }
 
 /// Optical (and "0") kerning only lives in `Txt2`: import applies it when the layer's
@@ -1026,7 +1026,7 @@ fn with_text_index(tysh: &[u8], index: i32) -> Vec<u8> {
 fn txt2_carries_optical_kerning() {
     use photocraft_doc::text::Kerning;
     let t = styled("AVA", CharStyle::default());
-    let tysh = with_text_index(&crate::psd::build_tysh(&t, 72.0, None), 0);
+    let tysh = with_text_index(&crate::psd::build_tysh(&t, 72.0, None).unwrap(), 0);
     let mut back = crate::psd::text_layer_from_tysh(&tysh, 72.0).unwrap();
     assert!(back.char_runs().iter().all(|r| r.style.kerning == Kerning::Metrics));
     // "AVA\r": two optical characters, then manual ("0") for the last and the break.
@@ -1036,7 +1036,7 @@ fn txt2_carries_optical_kerning() {
     assert_eq!(modes, vec![(2, Kerning::Optical), (1, Kerning::Off)]);
     // Stale Txt2 (other text), another index or garbage: nothing changes, nothing panics.
     for (data, index) in [(txt2_with_modes("AVX", &[(4, 2)]), 0), (txt2_with_modes("AVA", &[(4, 2)]), 3), (b"<< /1 [ (x".to_vec(), 0), (Vec::new(), 0)] {
-        let tysh = with_text_index(&crate::psd::build_tysh(&t, 72.0, None), index);
+        let tysh = with_text_index(&crate::psd::build_tysh(&t, 72.0, None).unwrap(), index);
         let mut l = crate::psd::text_layer_from_tysh(&tysh, 72.0).unwrap();
         if let Some(txt2) = crate::psd::parse_txt2(&data) {
             crate::psd::apply_txt2(&mut l, &tysh, &txt2);
@@ -1067,7 +1067,7 @@ fn txt2_carries_opentype_features() {
     // Fractions on the rest.
     let text = "Il->36";
     let plain = styled(text, CharStyle { font_family: "Inter".into(), ..Default::default() });
-    let tysh = with_text_index(&crate::psd::build_tysh(&plain, 72.0, None), 0);
+    let tysh = with_text_index(&crate::psd::build_tysh(&plain, 72.0, None).unwrap(), 0);
     let styles = [(2, "/11 1 /18 true /19 false /20 true /25 true /85 2".to_string()), (5, "/11 1 /20 false /23 true /85 1".to_string())];
     let txt2 = crate::psd::parse_txt2(&txt2_with_styles(text, &styles)).unwrap();
     let mut back = crate::psd::text_layer_from_tysh(&tysh, 72.0).unwrap();
@@ -1111,7 +1111,7 @@ fn build_txt2_round_trips_kerning_modes() {
     use photocraft_doc::text::Kerning;
     let style = |kerning: Kerning, kern: f32| CharStyle { kerning, kern, ..Default::default() };
     let t = runs_of("AVAT", &[(2, style(Kerning::Optical, 0.0)), (1, style(Kerning::Metrics, 0.0)), (1, style(Kerning::Off, 0.0))]);
-    let tysh = with_text_index(&crate::psd::build_tysh(&t, 72.0, None), 0);
+    let tysh = with_text_index(&crate::psd::build_tysh(&t, 72.0, None).unwrap(), 0);
     let mut back = crate::psd::text_layer_from_tysh(&tysh, 72.0).unwrap();
     assert!(
         back.char_runs().iter().all(|r| r.style.kerning != Kerning::Optical),
@@ -1124,7 +1124,7 @@ fn build_txt2_round_trips_kerning_modes() {
     assert_eq!(modes, vec![(2, Kerning::Optical), (1, Kerning::Metrics), (1, Kerning::Off)]);
     // A manual kern (a nonzero pair value) is the manual mode, as in the EngineData pair fields.
     let manual = runs_of("AB", &[(1, style(Kerning::Metrics, 50.0)), (1, style(Kerning::Metrics, 0.0))]);
-    let tysh = with_text_index(&crate::psd::build_tysh(&manual, 72.0, None), 0);
+    let tysh = with_text_index(&crate::psd::build_tysh(&manual, 72.0, None).unwrap(), 0);
     let mut back = crate::psd::text_layer_from_tysh(&tysh, 72.0).unwrap();
     let txt2 = crate::psd::parse_txt2(&crate::psd::build_txt2(&[(0, &manual)], None)).unwrap();
     crate::psd::apply_txt2(&mut back, &tysh, &txt2);
@@ -1456,7 +1456,7 @@ fn photoshop_txt2(modes: &[(usize, i64)]) -> Vec<u8> {
 fn unchanged_txt2_is_written_back_byte_for_byte() {
     use photocraft_doc::text::Kerning;
     let prev = photoshop_txt2(&[(2, 1), (2, 1)]);
-    let tysh = with_text_index(&crate::psd::build_tysh(&styled("AVA", CharStyle::default()), 72.0, None), 0);
+    let tysh = with_text_index(&crate::psd::build_tysh(&styled("AVA", CharStyle::default()), 72.0, None).unwrap(), 0);
     let mut t = crate::psd::text_layer_from_tysh(&tysh, 72.0).unwrap();
     crate::psd::apply_txt2(&mut t, &tysh, &crate::psd::parse_txt2(&prev).unwrap());
     assert!(t.char_runs().iter().all(|r| r.style.kerning == Kerning::Metrics));
@@ -1497,7 +1497,7 @@ fn edited_txt2_keeps_the_files_styles_and_objects() {
         assert_eq!(r.path(&["0", "0", "6", "2"]).and_then(E::as_f64), Some(14.5), "the leading survives");
     }
     // And it reads back with the edited modes.
-    let tysh = with_text_index(&crate::psd::build_tysh(&t, 72.0, None), 0);
+    let tysh = with_text_index(&crate::psd::build_tysh(&t, 72.0, None).unwrap(), 0);
     let mut back = crate::psd::text_layer_from_tysh(&tysh, 72.0).unwrap();
     crate::psd::apply_txt2(&mut back, &tysh, &out);
     let modes: Vec<(usize, Kerning)> = back.char_runs().iter().map(|r| (r.len, r.style.kerning)).collect();
@@ -1714,7 +1714,7 @@ fn txt2_runs_that_dont_cover_the_text_are_regenerated() {
 fn hostile_text_index_is_ignored_not_sized() {
     use crate::engine_data::Value as E;
     let t = runs_of("AB", &[(2, CharStyle::default())]);
-    let tysh = crate::psd::build_tysh(&t, 72.0, None);
+    let tysh = crate::psd::build_tysh(&t, 72.0, None).unwrap();
     assert_eq!(crate::psd::text_index(&crate::psd::set_text_index(&tysh, 0).unwrap()), Some(0));
     assert_eq!(crate::psd::text_index(&crate::psd::set_text_index(&tysh, crate::psd::MAX_TEXT_INDEX).unwrap()), Some(crate::psd::MAX_TEXT_INDEX));
     for hostile in [crate::psd::MAX_TEXT_INDEX + 1, i32::MAX] {
@@ -1740,7 +1740,7 @@ fn psd_text_fill_is_enabled_in_runs_and_new_default_styles() {
     ];
     for shape in [TextShape::Point, TextShape::Box { x: 0.0, y: 0.0, width: 300.0, height: 200.0 }] {
         t.shape = shape;
-        let tysh = crate::psd::parse_tysh(&crate::psd::build_tysh(&t, 72.0, None)).unwrap();
+        let tysh = crate::psd::parse_tysh(&crate::psd::build_tysh(&t, 72.0, None).unwrap()).unwrap();
         let data = crate::psd::engine_data(&tysh.text).unwrap();
         let runs = data.path(&["EngineDict", "StyleRun", "RunArray"]).unwrap().as_array().unwrap();
         assert_eq!(runs.len(), 2);
@@ -1751,7 +1751,7 @@ fn psd_text_fill_is_enabled_in_runs_and_new_default_styles() {
             let sheets = data.path(&[key, "StyleSheetSet"]).unwrap().as_array().unwrap();
             assert_eq!(sheets[0].path(&["StyleSheetData", "FillFlag"]).and_then(crate::engine_data::Value::as_bool), Some(true));
         }
-        let back = crate::psd::text_layer_from_tysh(&crate::psd::write_tysh(&tysh), 72.0).unwrap();
+        let back = crate::psd::text_layer_from_tysh(&crate::psd::write_tysh(&tysh).unwrap(), 72.0).unwrap();
         assert_eq!(back.text, t.text);
         assert_eq!(back.runs.len(), t.runs.len());
         for (actual, expected) in back.runs.iter().zip(&t.runs) {
@@ -1767,7 +1767,7 @@ fn psd_text_fill_is_enabled_after_editing_a_legacy_export() {
     use crate::engine_data::Value as E;
     // A legacy PhotoCraft export has a normal style and character runs without FillFlag.
     let mut t = point("Before", 40.0);
-    let mut legacy = crate::psd::parse_tysh(&crate::psd::build_tysh(&t, 72.0, None)).unwrap();
+    let mut legacy = crate::psd::parse_tysh(&crate::psd::build_tysh(&t, 72.0, None).unwrap()).unwrap();
     fn remove_fill_flags(value: &mut E) {
         match value {
             E::Dict(items) => {
@@ -1787,9 +1787,9 @@ fn psd_text_fill_is_enabled_after_editing_a_legacy_export() {
             *value = craft_psd::descriptor::Value::RawData(crate::engine_data::write(&data));
         }
     }
-    t.psd_raw = Some(crate::psd::write_tysh(&legacy).into());
+    t.psd_raw = Some(crate::psd::write_tysh(&legacy).unwrap().into());
     t.text = "After".into();
-    let tysh = crate::psd::parse_tysh(&crate::psd::build_tysh(&t, 72.0, None)).unwrap();
+    let tysh = crate::psd::parse_tysh(&crate::psd::build_tysh(&t, 72.0, None).unwrap()).unwrap();
     let data = crate::psd::engine_data(&tysh.text).unwrap();
     let runs = data.path(&["EngineDict", "StyleRun", "RunArray"]).unwrap().as_array().unwrap();
     assert!(!runs.is_empty());
@@ -1813,7 +1813,7 @@ fn psd_round_trips_manual_kerning() {
     ];
     for runs in cases {
         let t = runs_of("AVAT", &runs.iter().map(|&(len, kerning, kern)| (len, CharStyle { kerning, kern, ..s.clone() })).collect::<Vec<_>>());
-        let back = crate::psd::text_layer_from_tysh(&crate::psd::build_tysh(&t, 72.0, None), 72.0).unwrap();
+        let back = crate::psd::text_layer_from_tysh(&crate::psd::build_tysh(&t, 72.0, None).unwrap(), 72.0).unwrap();
         let per = |t: &TextLayer| t.char_runs().iter().flat_map(|r| std::iter::repeat_n((r.style.kerning, r.style.kern), r.len)).collect::<Vec<_>>();
         let mut want = per(&t);
         // The last character's mode has no EngineData slot (it reads back as Metrics unless
@@ -1841,7 +1841,7 @@ fn psd_round_trips_antialias_opentype_and_warp() {
         let mut t = styled("1/2 Swash", style.clone());
         t.antialias = aa;
         t.warp = Some(TextWarp { style: "warpFlag".into(), value: -35.0, horizontal_distortion: 10.0, vertical_distortion: 0.0, horizontal: false });
-        let bytes = crate::psd::build_tysh(&t, 72.0, None);
+        let bytes = crate::psd::build_tysh(&t, 72.0, None).unwrap();
         let back = crate::psd::text_layer_from_tysh(&bytes, 72.0).unwrap();
         assert_eq!(back.antialias, aa);
         assert_eq!(back.warp, t.warp);
@@ -1865,7 +1865,7 @@ fn psd_engine_data_keeps_only_oldstyle_among_numeral_tags() {
         ..Default::default()
     };
     let t = styled("0123456789", style);
-    let bytes = crate::psd::build_tysh(&t, 72.0, None);
+    let bytes = crate::psd::build_tysh(&t, 72.0, None).unwrap();
     let back = crate::psd::text_layer_from_tysh(&bytes, 72.0).expect("tysh");
     let runs = back.char_runs();
     let mut got: Vec<&str> = runs[0].style.features.iter().map(|f| f.tag.as_str()).collect();
@@ -1890,12 +1890,12 @@ fn legacy_tysh(source: &TextLayer, transform: Affine, anchor: [f64; 2], engine: 
                 .with("Btom", D::UnitFloat { unit: *b"#Pnt", value: anchor[1] + r[3] }),
         )
     };
-    let mut tysh = crate::psd::parse_tysh(&crate::psd::build_tysh(source, 72.0, None)).unwrap();
+    let mut tysh = crate::psd::parse_tysh(&crate::psd::build_tysh(source, 72.0, None).unwrap()).unwrap();
     tysh.transform = transform;
     tysh.text.items.retain(|(key, _)| !key.is("bounds") && !key.is("boundingBox"));
     tysh.text.items.push((Id::new("bounds"), rect("bounds", logical)));
     tysh.text.items.push((Id::new("boundingBox"), rect("boundingBox", ink)));
-    crate::psd::write_tysh(&tysh)
+    crate::psd::write_tysh(&tysh).unwrap()
 }
 
 fn assert_transform_near(got: Affine, want: Affine, tolerance: f64, what: &str) {
@@ -1934,7 +1934,7 @@ fn legacy_tysh_point_origin_imports_and_round_trips_on_canvas() {
         assert_eq!(placed, expected_pixels.surface.content_bounds(), "{align:?}: raster placement");
 
         let native = engine.layout(&imported, 72.0).bounds();
-        let round_trip = crate::psd::text_layer_from_tysh(&crate::psd::build_tysh(&imported, 72.0, native), 72.0).unwrap();
+        let round_trip = crate::psd::text_layer_from_tysh(&crate::psd::build_tysh(&imported, 72.0, native).unwrap(), 72.0).unwrap();
         assert_transform_near(round_trip.transform, expected, 0.01, &format!("{align:?}: round trip"));
 
         // A valid frame may equal the old ink-corner estimate. It must still win over refinement.
@@ -2556,19 +2556,19 @@ fn txt2_frame_places_point_text_at_its_anchor() {
     let mut t = point("2", 100.0);
     t.transform = Affine::translate(-1000.0, -2000.0);
     // Photoshop's text space: anchor at (1100, 2050), ink above its baseline.
-    let tysh = with_text_index(&crate::psd::build_tysh(&t, 72.0, Some([1100.0, 1980.0, 1160.0, 2050.0])), 0);
+    let tysh = with_text_index(&crate::psd::build_tysh(&t, 72.0, Some([1100.0, 1980.0, 1160.0, 2050.0])).unwrap(), 0);
     let txt2 = crate::psd::parse_txt2(&txt2_with_frame("2", Some([1000.0, 2100.0]), [1.0, 0.0, 0.0, 1.0, 100.0, -50.0])).unwrap();
     let mut l = crate::psd::text_layer_from_tysh(&tysh, 72.0).unwrap();
     crate::psd::apply_txt2_frame(&mut l, &tysh, &txt2);
     let o = l.transform.apply(photocraft_geom::Point::new(0.0, 0.0));
     assert!((o.x - 100.0).abs() < 1e-3 && (o.y - 50.0).abs() < 1e-3, "anchor at {o:?}");
     // Already folded in (bounds near the origin): unchanged; another text: unchanged.
-    let tysh = with_text_index(&crate::psd::build_tysh(&t, 72.0, Some([0.0, -70.0, 60.0, 0.0])), 0);
+    let tysh = with_text_index(&crate::psd::build_tysh(&t, 72.0, Some([0.0, -70.0, 60.0, 0.0])).unwrap(), 0);
     let mut l = crate::psd::text_layer_from_tysh(&tysh, 72.0).unwrap();
     let before = l.transform;
     crate::psd::apply_txt2_frame(&mut l, &tysh, &txt2);
     assert_eq!(l.transform, before);
-    let tysh = with_text_index(&crate::psd::build_tysh(&t, 72.0, Some([1100.0, 1980.0, 1160.0, 2050.0])), 0);
+    let tysh = with_text_index(&crate::psd::build_tysh(&t, 72.0, Some([1100.0, 1980.0, 1160.0, 2050.0])).unwrap(), 0);
     let other = crate::psd::parse_txt2(&txt2_with_frame("3", Some([1000.0, 2100.0]), [1.0, 0.0, 0.0, 1.0, 100.0, -50.0])).unwrap();
     let mut l = crate::psd::text_layer_from_tysh(&tysh, 72.0).unwrap();
     let before = l.transform;
@@ -2586,7 +2586,7 @@ fn with_bounds(tysh: &[u8], r: [f64; 4]) -> Vec<u8> {
     }
     t.text.items.retain(|(k, _)| !k.is("bounds"));
     t.text.items.push((Id::new("bounds"), Value::Descriptor(d)));
-    crate::psd::write_tysh(&t)
+    crate::psd::write_tysh(&t).unwrap()
 }
 
 /// #1317: a text box whose `BoxBounds` are in its `Txt2` frame's space is moved by the frame's
@@ -2597,7 +2597,7 @@ fn txt2_frame_moves_box_text_onto_its_bounds() {
     let mut t = styled("Casemiro 45", CharStyle { size_pt: 25.0, ..Default::default() });
     t.shape = TextShape::Box { x: 500.0, y: 600.0, width: 300.0, height: 90.0 };
     t.transform = Affine::translate(-700.0, -300.0);
-    let built = with_text_index(&crate::psd::build_tysh(&t, 72.0, None), 0);
+    let built = with_text_index(&crate::psd::build_tysh(&t, 72.0, None).unwrap(), 0);
     let tysh = with_bounds(&built, [960.0, 300.0, 1260.0, 390.0]);
     let txt2 = crate::psd::parse_txt2(&txt2_with_frame("Casemiro 45", None, [1.0, 0.0, 0.0, 1.0, 460.0, -300.0])).unwrap();
     let mut l = crate::psd::text_layer_from_tysh(&tysh, 72.0).unwrap();
@@ -2651,7 +2651,7 @@ fn shared_missing_glyph_protection_follows_the_setting() {
 fn translate_tysh_moves_only_the_translation() {
     let mut t = point("Hello!", 26.0);
     t.transform = Affine { m: [1.5, 0.0, 0.0, 1.5, 80.0, 340.0] };
-    let tysh = crate::psd::build_tysh(&t, 72.0, Some([0.0, -20.0, 300.0, 4.0]));
+    let tysh = crate::psd::build_tysh(&t, 72.0, Some([0.0, -20.0, 300.0, 4.0])).unwrap();
     let moved = crate::psd::translate_tysh(&tysh, -8.0, -279.0).unwrap();
     let back = crate::psd::parse_tysh(&moved).unwrap();
     assert_eq!(back.transform.m, [1.5, 0.0, 0.0, 1.5, 72.0, 61.0]);
@@ -2672,17 +2672,17 @@ fn tysh_trailing_bounds_are_f32() {
         std::array::from_fn(|i| f32::from_be_bytes(t[i * 4..i * 4 + 4].try_into().unwrap()))
     };
     let ink = [0.0, -34.316406, 288.90625, 15.058594];
-    let plain = crate::psd::build_tysh(&point("Type", 20.0), 72.0, Some(ink));
+    let plain = crate::psd::build_tysh(&point("Type", 20.0), 72.0, Some(ink)).unwrap();
     assert_eq!(tail(&plain), [0.0; 4]);
     let warped = TextLayer {
         warp: Some(TextWarp { style: "warpArc".into(), value: 50.0, horizontal_distortion: 0.0, vertical_distortion: 0.0, horizontal: true }),
         ..point("Type", 20.0)
     };
-    let bytes = crate::psd::build_tysh(&warped, 72.0, Some(ink));
+    let bytes = crate::psd::build_tysh(&warped, 72.0, Some(ink)).unwrap();
     assert_eq!(tail(&bytes), ink);
     let parsed = crate::psd::parse_tysh(&bytes).unwrap();
     assert_eq!(parsed.bounds, ink);
-    assert_eq!(crate::psd::write_tysh(&parsed), bytes);
+    assert_eq!(crate::psd::write_tysh(&parsed).unwrap(), bytes);
 }
 
 /// EngineData's `AntiAlias` numbers as Photoshop writes them, beside the `AntA` descriptor:
@@ -2693,11 +2693,11 @@ fn engine_data_antialias_numbers_match_photoshop() {
     use photocraft_doc::text::AntiAlias;
     for (mode, n) in [(AntiAlias::None, 0), (AntiAlias::Crisp, 1), (AntiAlias::Strong, 2), (AntiAlias::Smooth, 3), (AntiAlias::Sharp, 4)] {
         let t = TextLayer { antialias: mode, ..point("Type", 20.0) };
-        let mut tysh = crate::psd::parse_tysh(&crate::psd::build_tysh(&t, 72.0, None)).unwrap();
+        let mut tysh = crate::psd::parse_tysh(&crate::psd::build_tysh(&t, 72.0, None).unwrap()).unwrap();
         let e = crate::psd::engine_data(&tysh.text).unwrap();
         assert_eq!(e.path(&["EngineDict", "AntiAlias"]).and_then(crate::engine_data::Value::as_f64), Some(f64::from(n)), "{mode:?}");
         tysh.text.items.retain(|(k, _)| !k.is("AntA"));
-        let back = crate::psd::text_layer_from_tysh(&crate::psd::write_tysh(&tysh), 72.0).unwrap();
+        let back = crate::psd::text_layer_from_tysh(&crate::psd::write_tysh(&tysh).unwrap(), 72.0).unwrap();
         assert_eq!(back.antialias, mode, "{n}");
     }
 }
@@ -2880,7 +2880,7 @@ fn text_rebuild_preserves_imported_font_metadata() {
 fn font_metadata_survives_tysh_and_named_style_rewrites() {
     use crate::engine_data::Value as E;
     let source = point("Original", 24.0);
-    let mut tysh = crate::psd::parse_tysh(&crate::psd::build_tysh(&source, 72.0, None)).unwrap();
+    let mut tysh = crate::psd::parse_tysh(&crate::psd::build_tysh(&source, 72.0, None).unwrap()).unwrap();
     let mut data = crate::psd::engine_data(&tysh.text).unwrap();
     for (key, marker) in [("ResourceDict", 17), ("DocumentResources", 29)] {
         let E::Array(fonts) = data.get_mut(key).unwrap().get_mut("FontSet").unwrap() else { panic!("font array") };
@@ -2894,12 +2894,12 @@ fn font_metadata_survives_tysh_and_named_style_rewrites() {
             *value = craft_psd::descriptor::Value::RawData(crate::engine_data::write(&data));
         }
     }
-    let raw = crate::psd::write_tysh(&tysh);
+    let raw = crate::psd::write_tysh(&tysh).unwrap();
     let mut imported = crate::psd::text_layer_from_tysh(&raw, 72.0).unwrap();
     // The IO importer retains the raw block separately from the parsed text model.
     imported.psd_raw = Some(raw.into());
     imported.text = "Edited".into();
-    let rebuilt = crate::psd::build_tysh(&imported, 72.0, None);
+    let rebuilt = crate::psd::build_tysh(&imported, 72.0, None).unwrap();
     let styled = crate::psd_styles::write_style_sheets(&rebuilt, &imported, &photocraft_doc::TextStyles::default(), 72.0).unwrap();
     for bytes in [&rebuilt, &styled] {
         let parsed = crate::psd::parse_tysh(bytes).unwrap();
@@ -3637,7 +3637,7 @@ fn every_legacy_style_key_is_compared() {
 fn legacy_auto_kern_is_read_on_import() {
     use photocraft_doc::text::Kerning;
     let t = styled("AVA", CharStyle::default());
-    let tysh = with_text_index(&crate::psd::build_tysh(&t, 72.0, None), 0);
+    let tysh = with_text_index(&crate::psd::build_tysh(&t, 72.0, None).unwrap(), 0);
     for (mode, want) in [(0, Kerning::Off), (1, Kerning::Metrics), (2, Kerning::Optical)] {
         let txt2 = crate::psd::parse_txt2(&styled_era_txt2("AVA", "ArialMT", 13.0, mode)).unwrap();
         let mut back = crate::psd::text_layer_from_tysh(&tysh, 72.0).unwrap();

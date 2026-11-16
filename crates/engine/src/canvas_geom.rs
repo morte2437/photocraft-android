@@ -78,7 +78,7 @@ fn retag_text(dpi: f32, t: &mut TextLayer) {
     }
     let mut eng = photocraft_text::shared().lock().unwrap_or_else(|e| e.into_inner());
     let layout = eng.layout(t, dpi);
-    t.psd_raw = Some(Arc::new(photocraft_text::psd::build_tysh(t, dpi, layout.bounds())));
+    t.psd_raw = photocraft_text::psd::build_tysh(t, dpi, layout.bounds()).map(Arc::new);
 }
 
 /// Sets the document resolution keeping every type layer's size in pixels, as Photoshop does (its

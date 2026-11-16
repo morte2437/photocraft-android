@@ -693,7 +693,7 @@ fn text_and_smart_detected() {
     let mut f = testgen::small(Version::Psd, Compression::Raw);
     for (name, key) in [("t", b"TySh"), ("s", b"PlLd"), ("sh", b"vscg")] {
         // Type identification needs readable type data, not an eight-byte malformed stub.
-        let data = if key == b"TySh" { photocraft_text::psd::build_tysh(&photocraft_doc::TextLayer::default(), 72.0, None) } else { vec![0; 8] };
+        let data = if key == b"TySh" { photocraft_text::psd::build_tysh(&photocraft_doc::TextLayer::default(), 72.0, None).unwrap() } else { vec![0; 8] };
         f.layers_mut().push(LayerRecord {
             name: name.as_bytes().to_vec(),
             blocks: vec![TaggedBlock::unicode_name(name), TaggedBlock::new(*key, data)],
