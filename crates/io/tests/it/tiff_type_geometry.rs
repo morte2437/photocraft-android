@@ -29,7 +29,7 @@ fn document_in(mode: ColorMode, depth: SampleType) -> Document {
 #[test]
 fn photoshop_mixed_order_tiff_import_keeps_editable_geometry_and_pixels() {
     let doc = document();
-    let (psd, _) = document_to_psd_with(&doc, &PsdExportOptions::default());
+    let (psd, _) = document_to_psd_with(&doc, &PsdExportOptions::default()).unwrap();
     let canonical = &psd.layers()[0].block(b"TySh").unwrap().data;
     let encoded = export(&doc, "test.tif", &ExportOptions { tiff_layers: true, ..Default::default() }).unwrap();
     let mut image = photocraft_codecs::decode(&encoded.bytes).unwrap();
@@ -64,7 +64,7 @@ fn layered_tiff_export_keeps_tysh_text_descriptor_big_endian() {
         (ColorMode::Cmyk, SampleType::U16),
     ] {
         let doc = document_in(mode, depth);
-        let (psd, _) = document_to_psd_with(&doc, &PsdExportOptions::default());
+        let (psd, _) = document_to_psd_with(&doc, &PsdExportOptions::default()).unwrap();
         let canonical = &psd.layers()[0].block(b"TySh").unwrap().data;
         let encoded = export(&doc, "test.tif", &ExportOptions { tiff_layers: true, ..Default::default() }).unwrap();
         let (_, layers) = photocraft_codecs::tiff_photoshop_tags(&encoded.bytes);
@@ -98,7 +98,7 @@ fn layered_tiff_export_keeps_tysh_text_descriptor_big_endian() {
 fn foreign_or_unsafe_type_keeps_cached_pixels_without_editable_geometry() {
     let doc = document();
     for foreign in [true, false] {
-        let (mut psd, _) = document_to_psd_with(&doc, &PsdExportOptions::default());
+        let (mut psd, _) = document_to_psd_with(&doc, &PsdExportOptions::default()).unwrap();
         let block = psd.layer_info.as_mut().unwrap().layers[0].blocks.iter_mut().find(|b| b.key == *b"TySh").unwrap();
         if foreign {
             // A foreign-order marker must be respected even if the descriptor could parse.
@@ -119,7 +119,7 @@ fn foreign_or_unsafe_type_keeps_cached_pixels_without_editable_geometry() {
 #[test]
 fn canonical_type_the_typed_reader_rejects_stays_type_and_saves_its_block() {
     let doc = document();
-    let (mut psd, _) = document_to_psd_with(&doc, &PsdExportOptions::default());
+    let (mut psd, _) = document_to_psd_with(&doc, &PsdExportOptions::default()).unwrap();
     let block = psd.layer_info.as_mut().unwrap().layers[0].blocks.iter_mut().find(|b| b.key == *b"TySh").unwrap();
     // A text descriptor version the typed reader doesn't know; the matrix is ordinary.
     block.data[52..56].copy_from_slice(&17u32.to_be_bytes());
@@ -129,6 +129,6 @@ fn canonical_type_the_typed_reader_rejects_stays_type_and_saves_its_block() {
     let LayerContent::Text(t) = &opened.layers[0].content else { panic!("canonical type must stay a type layer") };
     let LayerContent::Text(before) = &doc.layers[0].content else { panic!("source type") };
     assert_eq!(t.transform, before.transform);
-    let (saved, _) = document_to_psd_with(&opened, &PsdExportOptions::default());
+    let (saved, _) = document_to_psd_with(&opened, &PsdExportOptions::default()).unwrap();
     assert_eq!(saved.layers()[0].block(b"TySh").map(|b| &b.data), Some(&raw), "PSD save must keep the type block");
 }

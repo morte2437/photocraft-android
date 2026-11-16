@@ -501,7 +501,7 @@ mod allocation_tests {
                 assert!(export_global_blocks(&loaded).unwrap_err().contains("Oversized retained pattern"));
                 for force_psb in [false, true] {
                     let opts = crate::PsdExportOptions { force_psb, ..Default::default() };
-                    let (file, warnings) = crate::document_to_psd_with(&loaded, &opts);
+                    let (file, warnings) = crate::document_to_psd_with(&loaded, &opts).unwrap();
                     assert!(
                         warnings.iter().any(|w| w.contains("Oversized retained pattern") && w.contains("omitted from PSD/PSB")),
                         "{mode:?} {depth:?}: {warnings:?}"

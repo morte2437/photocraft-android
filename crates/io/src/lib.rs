@@ -1244,7 +1244,7 @@ fn export_stages_with_renderer(
         // The preview is rendered first, while only the document is in memory: its full-size
         // render would otherwise come on top of the finished file model (#6607).
         let preview = opts.image_previews.then(|| psd_thumbnail::resource(doc));
-        let (mut file, mut warnings) = with_span(ctl, 0.0, PSD_MODEL_DONE, |ctl| psd_export::document_to_psd_interruptible(doc, &o, ctl));
+        let (mut file, mut warnings) = with_span(ctl, 0.0, PSD_MODEL_DONE, |ctl| psd_export::document_to_psd_interruptible(doc, &o, ctl))?;
         // A cancelled conversion stops early with an incomplete model: never write it.
         ctl.check().map_err(|_| IoError::Cancelled)?;
         if !doc.metadata.text.is_empty() {

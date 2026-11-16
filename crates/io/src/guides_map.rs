@@ -18,50 +18,13 @@
 
 use photocraft_doc::{Document, Guides};
 
-/// Grid and Guides, version 2 (positions, directions and colours).
-pub const GUIDES_V2: u16 = 1092;
-/// One GUID per guide, in 1092's order.
-pub const GUIDE_IDS: u16 = 1097;
-/// Photoshop's default guide colour (Cyan, `#4affff`), which 1092 also stores for guides
-/// that use the preference colour.
+pub use craft_psd_guides::guides::{GUIDE_IDS, GUIDES_V2, GuideV2, ids_count};
+/// Photoshop's default colour continues to follow the app preference.
 pub const DEFAULT_GUIDE_RGB: [u8; 3] = [0x4a, 0xff, 0xff];
 
-/// One guide of a 1092 resource.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub struct GuideV2 {
-    /// Position in 1/32 px.
-    pub location: i32,
-    pub vertical: bool,
-    pub rgb: [u8; 3],
-}
-
-fn be_u32(data: &[u8], at: usize) -> Option<u32> {
-    let b = data.get(at..at.checked_add(4)?)?;
-    Some(u32::from_be_bytes([b[0], b[1], b[2], b[3]]))
-}
-
-/// The guides of a 1092 resource, or `None` when it is not version 2 or is cut short.
+/// Decode the shared wire representation; document matching remains app policy.
 pub fn parse_v2(data: &[u8]) -> Option<Vec<GuideV2>> {
-    if be_u32(data, 0)? != 2 {
-        return None;
-    }
-    let count = usize::try_from(be_u32(data, 12)?).ok()?;
-    // Each guide takes 9 bytes: a count the data can't hold is not a 1092 we understand.
-    if count > data.len().saturating_sub(16) / 9 {
-        return None;
-    }
-    (0..count)
-        .map(|i| {
-            let at = 16 + i * 9;
-            let g = data.get(at..at + 9)?;
-            Some(GuideV2 { location: i32::from_be_bytes([g[0], g[1], g[2], g[3]]), vertical: g[4] != 1, rgb: [g[6], g[7], g[8]] })
-        })
-        .collect()
-}
-
-/// The number of entries a 1097 resource declares.
-pub fn ids_count(data: &[u8]) -> Option<u32> {
-    be_u32(data, 0)
+    craft_psd_guides::guides::parse_v2(data).map(Iterator::collect)
 }
 
 /// The document's guides as 1092 would store them, sorted.

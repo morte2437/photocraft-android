@@ -41,17 +41,7 @@ pub(crate) fn photoshop_spot_plane(plane: &mut [u8], sample: SampleType) {
 /// new document's channels 3, 4, 5, … in every colour mode (RGB, CMYK, Gray and Lab, in its PSDs
 /// and TIFFs alike), so these do too. `transparency`: the merged image's transparency channel
 /// comes first, with identifier 0 (Photoshop's transparent PSD lists `0, 3, 4, 5`).
-pub(crate) fn alpha_identifiers(transparency: bool, count: usize) -> Vec<u8> {
-    let mut out = Vec::with_capacity(count.saturating_add(1).saturating_mul(4));
-    if transparency {
-        out.extend_from_slice(&0u32.to_be_bytes());
-    }
-    for i in 0..count {
-        let id = 3u32.saturating_add(u32::try_from(i).unwrap_or(u32::MAX));
-        out.extend_from_slice(&id.to_be_bytes());
-    }
-    out
-}
+pub(crate) use craft_psd::tiff::layered::alpha_identifiers;
 
 /// Resource 1077 for `channels` (in file order): a version, then 13 bytes per channel (colour
 /// space, four components, opacity, kind). Every corpus file, Photoshop's included, uses 13;
