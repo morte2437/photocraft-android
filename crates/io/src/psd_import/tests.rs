@@ -627,3 +627,16 @@ fn legacy_conversion_refuses_before_waiting_for_the_decode_gate() {
     drop(_guard);
     handle.join().expect("worker thread");
 }
+
+#[test]
+fn unicode_names_preserve_empty_lossy_and_terminator_policy() {
+    let names: &[&[u16]] = &[&[], &[0xd800, 65, 0, 0], &[0xd83d, 0xde00], &[65, 0, 66]];
+    let mut data = Vec::new();
+    for name in names {
+        data.extend((name.len() as u32).to_be_bytes());
+        data.extend(name.iter().flat_map(|u| u.to_be_bytes()));
+    }
+    assert_eq!(unicode_names(&data), ["", "\u{fffd}A", "😀", "A\0B"]);
+    data.extend([0, 0, 0, 2, 0, 65]);
+    assert_eq!(unicode_names(&data), ["", "\u{fffd}A", "😀", "A\0B"]);
+}

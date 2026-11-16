@@ -30,6 +30,10 @@ photocraft-compose = { workspace = true }
 photocraft-algo = { workspace = true }
 craft-psd = { workspace = true }
 craft-psd-displace = { package = "craft-psd", version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "2823525586851bf81ccfe9daf838c7a4cafb8ab9" }
+craft-psd-names = { package = "craft-psd", git = "https://github.com/storytold/craft-libs", rev = "040b5202f9ca2ecaedcaea9351fc095c0d3dc5e8", version = "0.1.0" }
+craft-psd-channels = { package = "craft-psd", git = "https://github.com/storytold/craft-libs", rev = "5e2bc54a48c9f03e7ce4eca42775ce5cc051f5d6", version = "0.1.0" }
+craft-psd-duotone = { package = "craft-psd", version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "b9c22554ce0fd2caccdb53b417082a2ff2ef178f" }
+craft-psd-guides = { package = "craft-psd", version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "589842f0da5c5a11e71f39b70092dcb918b92f39" }
 photocraft-codecs = { workspace = true }
 photocraft-formats = { workspace = true }
 photocraft-raw = { workspace = true }

@@ -89,3 +89,26 @@ fn exported_text_parses_back_with_the_same_values() {
         }
     }
 }
+
+#[test]
+fn shared_writer_keeps_empty_and_quoted_titles_and_red_fastest_order() {
+    let mut s = session(32);
+    for (title, escaped) in [("", ""), ("A \"look\"", "A 'look'")] {
+        let result = s.execute("file.export.colorLookupTables", json!({"size": 2, "title": title})).unwrap();
+        let text = result["cube"].as_str().unwrap();
+        assert_eq!(text.lines().nth(1).unwrap(), format!("TITLE \"{escaped}\""));
+        assert_eq!(
+            data_lines(text),
+            [
+                "1.000000 1.000000 1.000000",
+                "0.000000 1.000000 1.000000",
+                "1.000000 0.000000 1.000000",
+                "0.000000 0.000000 1.000000",
+                "1.000000 1.000000 0.000000",
+                "0.000000 1.000000 0.000000",
+                "1.000000 0.000000 0.000000",
+                "0.000000 0.000000 0.000000",
+            ]
+        );
+    }
+}
