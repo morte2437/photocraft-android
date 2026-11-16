@@ -325,7 +325,7 @@ fn document_to_psd_direct_api() {
 #[test]
 fn big_document_goes_psb_with_warning() {
     let d = photocraft_doc::Document::new("big", photocraft_geom::Size::new(30_001, 1), ColorMode::Grayscale, SampleType::U8);
-    let (f, w) = document_to_psd_with(&d, &PsdExportOptions::default());
+    let (f, w) = document_to_psd_with(&d, &PsdExportOptions::default()).unwrap();
     assert_eq!(f.header.version, craft_psd::Version::Psb);
     assert!(w.iter().any(|w| w.contains("PSB")));
 }
