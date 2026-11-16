@@ -1,5 +1,6 @@
 use super::preview::{Base, Preview, cancel_preview, compute_base, plan_params, points_limit, rebase, refresh};
 use super::{CMD, CafOpts, CafTool, CafWorkspace, MAX_CAF_EDITS, MAX_CAF_POINTS, PROXY_SIDE, PhotocraftApp, REMEMBERED, Rect, Step, Value};
+use super::{JobEvent, JobId, JobOutcome, PendingFill, json};
 
 /// Opens the workspace on the active layer and its selection.
 pub fn open(app: &mut PhotocraftApp) -> Result<(), String> {
@@ -7,6 +8,7 @@ pub fn open(app: &mut PhotocraftApp) -> Result<(), String> {
         return Err("Content-Aware Fill needs a selection on a pixel layer".into());
     }
     let st = app.session.active().ok_or("no document")?;
+    let document = st.doc.id;
     let layer = st.active_layer.ok_or("no active layer")?;
     let canvas = st.doc.bounds();
     let revision = st.revision;
@@ -18,6 +20,7 @@ pub fn open(app: &mut PhotocraftApp) -> Result<(), String> {
         let _ = opts.apply(saved);
     }
     let mut w = CafWorkspace {
+        document,
         layer,
         layer_name: name,
         canvas,
@@ -51,6 +54,7 @@ pub fn open(app: &mut PhotocraftApp) -> Result<(), String> {
         center: [f64::from(canvas.x0 + canvas.x1) / 2.0, f64::from(canvas.y0 + canvas.y1) / 2.0],
         hover: None,
         preview: Preview::default(),
+        pending_fill: None,
         error: None,
     };
     w.brush_add = w.opts.sampling == "custom";
@@ -79,13 +83,24 @@ fn remember(app: &mut PhotocraftApp, opts: &CafOpts) {
 /// Apply: fill with the current state (one history step); the workspace stays open.
 pub fn apply(app: &mut PhotocraftApp) -> Result<Value, String> {
     let Some(w) = app.distort.caf.as_mut() else { return Err("Content-Aware Fill is not open".into()) };
+    if w.pending_fill.is_some() {
+        return Err("Content-Aware Fill is still processing".into());
+    }
     w.end_stroke();
+    w.pressed = false;
     let p = plan_params(w, true);
     let opts = w.opts.clone();
     remember(app, &opts);
     let r = app.run(CMD, p);
-    if r.is_ok() {
-        refresh(app);
+    match &r {
+        Ok(v) if v.get("pending").and_then(Value::as_bool) == Some(true) => {
+            let job = v.get("job").and_then(Value::as_u64).map(JobId).ok_or("background Content-Aware Fill returned no job id")?;
+            if let Some(w) = app.distort.caf.as_mut() {
+                w.pending_fill = Some(PendingFill { job, close_on_success: false });
+            }
+        }
+        Ok(_) => refresh(app),
+        Err(_) => {}
     }
     r
 }
@@ -94,9 +109,63 @@ pub fn apply(app: &mut PhotocraftApp) -> Result<Value, String> {
 /// leaves the workspace open with the error in its panel, so the areas can be fixed and OK
 /// pressed again instead of the work being thrown away.
 pub fn commit(app: &mut PhotocraftApp) {
-    match apply(app) {
-        Ok(_) => close(app),
-        Err(e) => report(app, e),
+    if let Err(e) = commit_fill(app) {
+        report(app, e);
+    }
+}
+
+/// The control channel's OK result; a pending result is accepted, not yet committed.
+pub(super) fn commit_fill(app: &mut PhotocraftApp) -> Result<Value, String> {
+    let r = apply(app)?;
+    if r.get("pending").and_then(Value::as_bool) == Some(true) {
+        let job = r.get("job").and_then(Value::as_u64).map(JobId).ok_or("background Content-Aware Fill returned no job id")?;
+        let pending =
+            app.distort.caf.as_mut().and_then(|w| w.pending_fill.as_mut()).filter(|p| p.job == job).ok_or("Content-Aware Fill job is no longer pending")?;
+        pending.close_on_success = true;
+        Ok(json!({"committed": false, "pending": true, "job": job.0}))
+    } else {
+        close(app);
+        Ok(json!({"committed": true, "result": r}))
+    }
+}
+
+/// A background fill ended (see `jobs_ui::on_event`). Only the job this workspace started on its
+/// own document counts. A failed or cancelled fill keeps the workspace open with the reason in
+/// its panel, as a failed synchronous OK does; a successful OK closes it, a successful Apply
+/// refreshes it.
+pub(crate) fn on_job_event(app: &mut PhotocraftApp, e: &JobEvent) {
+    if e.command != CMD {
+        return;
+    }
+    let Some(w) = app.distort.caf.as_mut() else { return };
+    let Some(pending) = w.pending_fill.filter(|p| p.job == e.id) else { return };
+    w.pending_fill = None;
+    if e.document != Some(w.document) {
+        return;
+    }
+    match &e.outcome {
+        JobOutcome::Done(_) => {}
+        JobOutcome::Failed(err) => {
+            w.error = Some(err.clone());
+            return;
+        }
+        JobOutcome::Cancelled => {
+            w.error = Some("cancelled".into());
+            return;
+        }
+    }
+    let document = w.document;
+    // Another document is active: the workspace is dropped with it (`distort_ui::drop_foreign`).
+    if !app.session.active().is_some_and(|st| st.doc.id == document) {
+        return;
+    }
+    if pending.close_on_success {
+        close(app);
+    } else {
+        if let Some(w) = app.distort.caf.as_mut() {
+            w.error = None;
+        }
+        refresh(app);
     }
 }
 
@@ -113,7 +182,11 @@ pub(super) fn report(app: &mut PhotocraftApp, e: String) {
 pub fn cancel(app: &mut PhotocraftApp) {
     if let Some(w) = app.distort.caf.as_ref() {
         let opts = w.opts.clone();
+        let pending_job = w.pending_fill.map(|p| p.job);
         remember(app, &opts);
+        if let Some(job) = pending_job {
+            app.session.cancel_job(job);
+        }
     }
     close(app);
 }

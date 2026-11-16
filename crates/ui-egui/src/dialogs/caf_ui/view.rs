@@ -202,6 +202,9 @@ fn caf_props_panel(
         let o = [("current".to_string(), tl!("Current Layer")), ("new".to_string(), tl!("New Layer")), ("duplicate".to_string(), tl!("Duplicate Layer"))];
         widgets::dropdown(ui, "caf-output", tl!("Output To"), &mut w.opts.output, &o, 140.0);
     });
+    if w.pending_fill.is_some() {
+        ui.label(tl!("Working…"));
+    }
     if let Some(e) = w.error.as_ref().or(w.preview.error.as_ref()) {
         ui.label(egui::RichText::new(e.as_str()).color(t.danger).size(11.0));
     }
@@ -239,11 +242,11 @@ fn caf_preview_panel(ui: &mut egui::Ui, painter: &egui::Painter, t: &Tokens, w: 
         ui.put(sp, egui::Spinner::new().size(16.0));
     }
     let presp = ui.interact(pv_area, egui::Id::unique("caf-preview-view"), Sense::click_and_drag());
-    if presp.dragged() {
+    if w.pending_fill.is_none() && presp.dragged() {
         let d = presp.drag_delta();
         w.preview.center = [w.preview.center[0] - f64::from(d.x / pv.zoom), w.preview.center[1] - f64::from(d.y / pv.zoom)];
     }
-    if presp.hovered() {
+    if w.pending_fill.is_none() && presp.hovered() {
         let scroll = ui.input(|i| i.smooth_scroll_delta.y);
         if scroll != 0.0 {
             w.preview.zoom = (w.preview.zoom * (scroll / 200.0).exp()).clamp(0.01, 32.0);
@@ -281,11 +284,18 @@ pub fn show(app: &mut PhotocraftApp, ctx: &egui::Context) {
     let mut dragging = false;
     egui::Area::new(egui::Id::unique("caf-workspace")).order(egui::Order::Foreground).fixed_pos(screen.min).show(ctx, |ui| {
         let Some(w) = app.distort.caf.as_mut() else { return };
+        let busy = w.pending_fill.is_some();
         let before = w.opts.clone();
         w.texture_limit = ctx.input(|i| i.max_texture_side);
         let (full, _) = ui.allocate_exact_size(screen.size(), Sense::hover());
         let painter = ui.painter().clone();
         painter.rect_filled(full, 0.0, t.chrome);
+        // Create Cancel before disabling its parent so a pending job stays cancellable.
+        let foot = ERect::from_min_size(pos2(full.right() - PANEL_W + 10.0, full.bottom() - 48.0), vec2(PANEL_W - 20.0, 32.0));
+        let mut fb = ui.new_child(egui::UiBuilder::new().max_rect(foot).layout(egui::Layout::right_to_left(egui::Align::Center)));
+        if busy {
+            ui.disable();
+        }
         // Title strip.
         let title = ERect::from_min_size(full.min, vec2(full.width(), 30.0));
         painter.rect_filled(title, 0.0, t.dock);
@@ -329,10 +339,11 @@ pub fn show(app: &mut PhotocraftApp, ctx: &egui::Context) {
             .show(&mut props, |ui| caf_props_panel(ui, w, &t, &mut reset_what, &mut new_sampling, &mut rebase_needed));
         // Footer, in Photoshop's order on every platform: reset all at the left, then OK, Apply,
         // Cancel against the right edge.
-        let foot = ERect::from_min_size(pos2(right.left() + 10.0, right.bottom() - 48.0), vec2(PANEL_W - 20.0, 32.0));
-        let mut fb = ui.new_child(egui::UiBuilder::new().max_rect(foot).layout(egui::Layout::right_to_left(egui::Align::Center)));
         if widgets::secondary_button(&mut fb, tl!("Cancel"), 70.0).clicked() {
             action = Some("cancel");
+        }
+        if busy {
+            fb.disable();
         }
         if widgets::secondary_button(&mut fb, tl!("Apply"), 70.0).clicked() {
             action = Some("apply");
@@ -355,7 +366,7 @@ pub fn show(app: &mut PhotocraftApp, ctx: &egui::Context) {
             w.zoom = ((area.width() - 40.0) / cw).min((area.height() - 40.0) / chh).clamp(0.01, 4.0);
         }
         let resp = ui.interact(area, egui::Id::unique("caf-view"), Sense::click_and_drag());
-        if resp.hovered() {
+        if !busy && resp.hovered() {
             let scroll = ui.input(|i| i.smooth_scroll_delta.y);
             if scroll != 0.0
                 && let Some(hp) = resp.hover_pos()
@@ -410,10 +421,11 @@ pub fn show(app: &mut PhotocraftApp, ctx: &egui::Context) {
         clip.rect_stroke(img, 0.0, Stroke::new(1.0, t.separator), egui::StrokeKind::Outside);
         // Mouse → tools (Space, the middle button or the Hand pan).
         let pan = ui.input(|i| i.key_down(egui::Key::Space) || i.pointer.middle_down()) || w.tool == CafTool::Hand;
-        if pan && resp.dragged() {
+        if !busy && pan && resp.dragged() {
             let dl = resp.drag_delta();
             w.center = [w.center[0] - f64::from(dl.x / w.zoom), w.center[1] - f64::from(dl.y / w.zoom)];
-        } else if !pan
+        } else if !busy
+            && !pan
             && resp.is_pointer_button_down_on()
             && let Some(pp) = resp.interact_pointer_pos()
         {
@@ -430,7 +442,7 @@ pub fn show(app: &mut PhotocraftApp, ctx: &egui::Context) {
             }
             dragging = true;
         }
-        if w.pressed && !resp.is_pointer_button_down_on() {
+        if !busy && w.pressed && !resp.is_pointer_button_down_on() {
             w.pressed = false;
             let q = w.hover.unwrap_or(w.center);
             events.push(ToolEvent::Up { x: q[0], y: q[1] });

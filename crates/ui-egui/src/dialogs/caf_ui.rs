@@ -25,8 +25,9 @@
 
 use egui::{Align2, Color32, FontId, Pos2, Rect as ERect, Sense, Stroke, TextureHandle, pos2, vec2};
 use photocraft_algo::content_aware::{SamplingStroke, paint_strokes};
-use photocraft_doc::LayerId;
+use photocraft_doc::{DocId, LayerId};
 use photocraft_engine::edit_menu_cmds::{MAX_CAF_EDITS, MAX_CAF_POINTS};
+use photocraft_engine::jobs::{JobEvent, JobId, JobOutcome};
 use photocraft_geom::Rect;
 use serde_json::{Value, json};
 
@@ -41,6 +42,7 @@ mod preview;
 mod view;
 
 pub use controls::{control, keys, pointer};
+pub(crate) use lifecycle::on_job_event;
 pub use lifecycle::{apply, cancel, commit, open};
 #[cfg(test)]
 use preview::plan_params;
@@ -218,6 +220,7 @@ fn stroke_json(s: &SamplingStroke) -> Value {
 }
 
 pub struct CafWorkspace {
+    document: DocId,
     pub layer: LayerId,
     layer_name: String,
     canvas: Rect,
@@ -261,7 +264,14 @@ pub struct CafWorkspace {
     center: [f64; 2],
     hover: Option<[f64; 2]>,
     preview: Preview,
+    pending_fill: Option<PendingFill>,
     pub error: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct PendingFill {
+    job: JobId,
+    close_on_success: bool,
 }
 
 impl CafWorkspace {
@@ -283,6 +293,8 @@ impl CafWorkspace {
             "sampledProxyPixels": sampled,
             "proxyScale": self.k,
             "settings": self.opts.to_json(),
+            "pending": self.pending_fill.is_some(),
+            "pendingJob": self.pending_fill.map(|p| p.job.0),
             "previewReady": self.preview.tex.is_some() && self.preview.shown == self.preview.want,
             "previewError": self.preview.error,
             "error": self.error,
