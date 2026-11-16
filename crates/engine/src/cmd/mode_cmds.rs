@@ -66,9 +66,11 @@ pub(crate) fn rotate_arbitrary(s: &mut Session, p: &Value) -> Result<Value> {
     rotate_arbitrary_with(s, p, true)
 }
 
-/// [`rotate_arbitrary`]; `keep_counts` leaves the count points where they were (Image Rotation,
-/// #11762). The Crop tool's straighten turn moves them with the image, as before.
-pub(crate) fn rotate_arbitrary_with(s: &mut Session, p: &Value, keep_counts: bool) -> Result<Value> {
+/// [`rotate_arbitrary`]; `image_rotation` is true on the Image Rotation path and decides two
+/// things there: count points stay where they were (#11762) and the selection is dropped, in the
+/// same history step, so one undo brings it back (#14507). The Crop tool's straighten turn and the
+/// Ruler's Straighten pass false: they move count points with the image and warp the selection.
+pub(crate) fn rotate_arbitrary_with(s: &mut Session, p: &Value, image_rotation: bool) -> Result<Value> {
     const CMD: &str = "image.rotation.arbitrary";
     // At full precision: an f32 angle can grow the canvas 1 px past what `rotated_size` gives callers.
     let angle = p.get("angle").and_then(Value::as_f64).unwrap_or(0.0);
@@ -138,7 +140,7 @@ pub(crate) fn rotate_arbitrary_with(s: &mut Session, p: &Value, keep_counts: boo
             // What Free Transform leaves alone: unlinked vector masks, gradient angles, artboards…
             crate::canvas_geom::transform_layer_geometry(l, &a, false, dpi);
         }
-        if keep_counts {
+        if image_rotation {
             crate::canvas_geom::keeping_count_points(doc, |doc| crate::canvas_geom::transform_doc_marks(doc, &a));
         } else {
             crate::canvas_geom::transform_doc_marks(doc, &a);
@@ -146,7 +148,9 @@ pub(crate) fn rotate_arbitrary_with(s: &mut Session, p: &Value, keep_counts: boo
         for ch in doc.channels.iter_mut().chain(doc.quick_mask.as_mut()) {
             ch.surface = crate::transform_cmds::warp_gray(&ch.surface, &h, interp)?;
         }
-        if let Some(sel) = &doc.selection {
+        if image_rotation {
+            doc.selection = None;
+        } else if let Some(sel) = &doc.selection {
             doc.selection = Some(crate::transform_cmds::warp_gray(sel, &h, Interp::Bilinear)?).filter(|s| !s.content_bounds().is_empty());
         }
         // Type, shapes and smart objects re-render from their new geometry; type in a missing
@@ -828,5 +832,8 @@ pub fn display_document(doc: &Document) -> Option<Document> {
     Some(out)
 }
 
+#[cfg(test)]
+#[path = "rotate_canvas_selection_tests.rs"]
+mod rotate_canvas_selection_tests;
 #[cfg(test)]
 mod tests;

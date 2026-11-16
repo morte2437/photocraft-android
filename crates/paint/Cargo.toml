@@ -13,6 +13,8 @@ photocraft-color = { workspace = true }
 photocraft-raster = { workspace = true }
 serde = { workspace = true }
 rustc-hash = { workspace = true }
+# The tile serde form and commands that take file bytes as base64 text.
+base64 = "0.23"
 
 # Large tips rasterize, accumulate and composite in parallel (the same pixels as serially).
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]

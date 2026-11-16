@@ -398,7 +398,8 @@ fn resample_off_keeps_pixel_dimensions_in_the_dialog() {
     let f = fields(&h);
     assert_eq!((num(&f, "width"), num(&f, "height"), num(&f, "resolution")), (100.0, 50.0, 72.0), "{f:?}");
     assert!(h.query_by_label("100 px × 50 px").is_some(), "the Dimensions line shows the kept pixels");
-    assert!(h.query_by_label_contains("20K (was 20K)").is_some(), "the Image Size estimate is unchanged");
+    // 100 x 50 x 3 bytes, unchanged, so no "(was …)" (#14768).
+    assert!(h.query_by_label("14.6K").is_some(), "the Image Size estimate is unchanged");
     crate::dialogs::confirm(h.state_mut(), id).unwrap();
     let doc = &h.state().session.active().unwrap().doc;
     assert_eq!((doc.size, doc.resolution_dpi), (photocraft_doc::Size::new(100, 50), 72.0));

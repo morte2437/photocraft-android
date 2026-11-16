@@ -822,7 +822,7 @@ mod tests {
         finish_custom_shape(&mut app, [4.0, 4.0, 20.0, 20.0], true, json!("#ff0000"), Value::Null);
         let d = app.session.active().unwrap();
         let l = d.doc.layer(d.active_layer.unwrap()).unwrap();
-        assert_eq!(l.name, "Star");
+        assert_eq!(l.name, "Star 1");
         assert!(matches!(l.content, photocraft_doc::LayerContent::Shape(_)));
     }
 

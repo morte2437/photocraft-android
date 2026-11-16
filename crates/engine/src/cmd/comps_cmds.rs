@@ -457,8 +457,12 @@ fn comps_to_files(s: &mut Session, p: &Value) -> Result<Value> {
         _ if flag(p, "selectedOnly", false) => vec![comp_param(&doc, &json!({}), cmd)?],
         _ => doc.layer_comps.iter().map(|c| c.id).collect(),
     };
+    let matching: Vec<(usize, &LayerComp)> = doc.layer_comps.iter().enumerate().filter(|(_, c)| chosen.contains(&c.id)).collect();
+    if matching.is_empty() {
+        return Err(bad(cmd, "no matching layer comps"));
+    }
     let mut files = Vec::new();
-    for (i, c) in doc.layer_comps.iter().enumerate().filter(|(_, c)| chosen.contains(&c.id)) {
+    for (i, c) in matching.iter().copied() {
         let mut one = (*doc).clone();
         apply_comp(&mut one, c, false);
         one.last_applied_comp = Some(c.id);
@@ -466,8 +470,11 @@ fn comps_to_files(s: &mut Session, p: &Value) -> Result<Value> {
         save_doc(&one, &path, save)?;
         files.push(path);
     }
-    if files.is_empty() {
-        return Err(bad(cmd, "no matching layer comps"));
+    // Like the reference application, leave the document on the last exported comp, one "Apply Layer Comp" state each.
+    // A run that fails while writing returns before this point and leaves the document and its history as they were.
+    let ids: Vec<u32> = matching.iter().map(|(_, c)| c.id).collect();
+    for id in ids {
+        apply(s, id, "Apply Layer Comp")?;
     }
     Ok(json!({"files": files}))
 }
@@ -552,3 +559,7 @@ pub fn specs() -> Vec<CommandSpec> {
 #[cfg(test)]
 #[path = "comps_cmds/tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "comps_cmds/layer_comps_to_files_history_tests.rs"]
+mod layer_comps_to_files_history_tests;

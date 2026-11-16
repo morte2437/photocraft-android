@@ -127,7 +127,8 @@ pub(super) fn conditional_to(_: &str, p: &Value) -> Option<Descriptor> {
     for key in ["then", "else"] {
         if let Some(name) = jstr(p, key) {
             let mut items = vec![ReferenceItem::Name { class: class("Actn"), name: UnicodeString::new_nul(name) }];
-            if let Some(set) = jstr(p, "set") {
+            let scope = if key == "then" { "thenSet" } else { "elseSet" };
+            if let Some(set) = jstr(p, scope).or_else(|| jstr(p, "set")) {
                 items.push(ReferenceItem::Name { class: class("ASet"), name: UnicodeString::new_nul(set) });
             }
             d = d.with(key, D::Reference(items));
@@ -347,8 +348,11 @@ pub(super) fn canvas_size_from(d: &Descriptor) -> Mapped {
     if let Some(r) = get_bool(d, "Rltv") {
         p.insert("relative".into(), r.into());
     }
-    let v = get_enum(d, "Vrtc").unwrap_or_else(|| "Cntr".into());
-    let h = get_enum(d, "Hrzn").unwrap_or_else(|| "Cntr".into());
+    let (v, h) = match (get_enum(d, "Vrtc"), get_enum(d, "Hrzn")) {
+        // A step with neither anchor key anchors at the top left; with one, the other axis centres.
+        (None, None) => ("Top".into(), "Left".into()),
+        (v, h) => (v.unwrap_or_else(|| "Cntr".into()), h.unwrap_or_else(|| "Cntr".into())),
+    };
     let anchor = match (v.as_str(), h.as_str()) {
         ("Top", "Left") => "topLeft",
         ("Top", "Cntr") => "top",

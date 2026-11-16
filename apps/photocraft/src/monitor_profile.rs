@@ -372,7 +372,8 @@ fn parse_reply(out: &str) -> Detection {
         let b64 = b64.trim();
         // An ICC profile starts with its size and carries `acsp` at offset 36; anything else is
         // treated as no profile (the engine then says the display has none).
-        let icc = (!b64.is_empty()).then(|| base64_decode(b64)).flatten().filter(|b| b.len() >= 132 && b.get(36..40) == Some(b"acsp"));
+        let icc =
+            (!b64.is_empty()).then(|| photocraft_engine::paint::tile::b64_decode(b64)).flatten().filter(|b| b.len() >= 132 && b.get(36..40) == Some(b"acsp"));
         let profile_name = Some(profile_name.trim().to_string()).filter(|n| !n.is_empty());
         displays.push(Display { id, name, frame: [x, top, w, h], profile_name, icc: icc.map(std::sync::Arc::new) });
     }
@@ -400,50 +401,9 @@ fn display_id(s: &str) -> Option<u32> {
     })
 }
 
-/// Standard base64 (RFC 4648, with padding) → bytes; `None` on any invalid character.
-#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
-fn base64_decode(s: &str) -> Option<Vec<u8>> {
-    let val = |c: u8| -> Option<u32> {
-        Some(match c {
-            b'A'..=b'Z' => c - b'A',
-            b'a'..=b'z' => c - b'a' + 26,
-            b'0'..=b'9' => c - b'0' + 52,
-            b'+' => 62,
-            b'/' => 63,
-            _ => return None,
-        } as u32)
-    };
-    let s = s.trim_end_matches('=').as_bytes();
-    let mut out = Vec::with_capacity(s.len() * 3 / 4);
-    for chunk in s.chunks(4) {
-        let mut acc = 0u32;
-        for (i, c) in chunk.iter().enumerate() {
-            acc |= val(*c)? << (18 - 6 * i);
-        }
-        let n = match chunk.len() {
-            4 => 3,
-            3 => 2,
-            2 => 1,
-            _ => return None,
-        };
-        out.extend_from_slice(&acc.to_be_bytes()[1..1 + n]);
-    }
-    Some(out)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn base64() {
-        assert_eq!(base64_decode("aGVsbG8=").as_deref(), Some(&b"hello"[..]));
-        assert_eq!(base64_decode("aGVsbG8h").as_deref(), Some(&b"hello!"[..]));
-        assert_eq!(base64_decode("aGk=").as_deref(), Some(&b"hi"[..]));
-        assert_eq!(base64_decode("").as_deref(), Some(&b""[..]));
-        assert!(base64_decode("a").is_none());
-        assert!(base64_decode("a$==").is_none());
-    }
 
     #[test]
     fn helper_replies() {
@@ -510,18 +470,7 @@ mod tests {
     }
 
     fn base64_encode(b: &[u8]) -> String {
-        const A: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-        let mut s = String::new();
-        for c in b.chunks(3) {
-            let n = c.iter().enumerate().fold(0u32, |n, (i, v)| n | u32::from(*v) << (16 - 8 * i));
-            for i in 0..=c.len() {
-                s.push(A[(n >> (18 - 6 * i) & 63) as usize] as char);
-            }
-        }
-        while !s.len().is_multiple_of(4) {
-            s.push('=');
-        }
-        s
+        photocraft_engine::paint::tile::b64_encode(b)
     }
 
     /// On a Mac, every display is read, and the profiles parse as RGB profiles.

@@ -542,7 +542,7 @@ fn shapes_place_as_shape_layers() {
     let r = s.execute("shape.presets.place", json!({"preset": "Heart", "rect": [10, 10, 40, 20], "fill": "#ff0000"})).unwrap();
     let id = LayerId(r["layer"].as_u64().unwrap());
     let l = s.active().unwrap().doc.layer(id).unwrap().clone();
-    assert_eq!(l.name, "Heart");
+    assert_eq!(l.name, "Heart 1");
     let LayerContent::Shape(sh) = &l.content else { panic!("not a shape layer") };
     let (x0, y0, x1, y1) = sh.path.control_bounds().unwrap();
     // Keep aspect: 20 px tall, centred horizontally in the 40 px rect.

@@ -10,6 +10,53 @@ pub(super) fn blur(m: &mut Map, size: f32) {
     }
 }
 
+/// The Size 1 kernel of a measured effect (#14933 Inner Shadow, #14950 Outer Glow).
+///
+/// [`box_width`] floors every box at one pixel and a width-1 box is the identity, so `blur(m, 1.0)`
+/// moves nothing: an Inner Shadow keeps the hard inverted alpha, which the clip to the layer then
+/// removes completely, and an Outer Glow keeps the hard layer alpha, which reaches no pixel outside
+/// the edge. The reference application spreads the coverage one pixel instead. Split the width-1 box
+/// into the two half taps its edge falls on — ½ at −½ px and ½ at +½ px — and take it twice, the way
+/// [`tent`] takes a box: the result is `¼ ½ ¼` at radius 1, one pixel of quarter-strength ramp on
+/// either side of a hard edge and nothing past it. That is what both issues measure (inner shadow
+/// G 96 then 128 inwards; outer glow R 128 then 255 outwards, the Range 50 % doubling the ¼).
+///
+/// Effects whose Size 1 profile is measured ask for this at their own map call site. Every other
+/// blur user, and every width of at least 2 px, stays on the tent.
+pub(super) const SIZE_ONE_TAPS: [f32; 3] = [0.25, 0.5, 0.25];
+
+/// [`SIZE_ONE_TAPS`] in the (radius, weights) shape [`tent_kernel`] returns, so a GPU program
+/// convolves exactly what the CPU map applies.
+pub fn size_one_kernel() -> (i32, Vec<f32>) {
+    (1, SIZE_ONE_TAPS.to_vec())
+}
+
+/// [`SIZE_ONE_TAPS`] over a map: one pass along each axis, zero outside the map (what the GPU's
+/// `fs_mblur` and [`tent_direct`] do for any kernel). The taps are exact binary fractions, so an
+/// anti-aliased edge and a hard one both land on the same values on both compositors.
+pub(super) fn size_one_blur(m: &mut Map) {
+    let (w, h) = (m.w, m.h);
+    if w == 0 || h == 0 {
+        return;
+    }
+    let (rw, rh) = (w as i64, h as i64);
+    let [t0, t1, t2] = SIZE_ONE_TAPS;
+    let mut a = vec![0.0f32; m.v.len()];
+    for y in 0..h {
+        for x in 0..w {
+            let (sx, sy) = (x as i64, y as i64);
+            a[y * w + x] = t0 * m.get(sx - 1, sy) + t1 * m.get(sx, sy) + t2 * m.get(sx + 1, sy);
+        }
+    }
+    let at = |x: i64, y: i64| -> f32 { if x < 0 || y < 0 || x >= rw || y >= rh { 0.0 } else { a[y as usize * w + x as usize] } };
+    for y in 0..h {
+        for x in 0..w {
+            let (sx, sy) = (x as i64, y as i64);
+            m.v[y * w + x] = t0 * at(sx, sy - 1) + t1 * at(sx, sy) + t2 * at(sx, sy + 1);
+        }
+    }
+}
+
 /// Grows the shape by `r` pixels (anti-aliased), keeping the original soft edge. Distances use
 /// the 5 × 5 chamfer metric, as for strokes: Photoshop's spread of a group drop shadow around an
 /// ellipse (ag-psd group-drop-shadows) is round at 0° and 45° and falls short in between, peaking

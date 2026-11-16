@@ -944,7 +944,7 @@ pub(crate) fn freeform_finish_owned(app: &mut PhotocraftApp, points: &[[f64; 3]]
     let (mut pen, closed) = pen;
     pen.owner = Some(owner);
     if let Err(e) = commit_path_named(app, &pen, closed, true) {
-        app.ui.pen = Some(PenPath { commit_failed: true, ..pen });
+        app.ui.pen = Some(PenPath { commit_failed: true, freeform_origin: true, ..pen });
         app.ui.status = e;
         app.ui.status_error = true;
     }

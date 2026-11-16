@@ -32,6 +32,45 @@ pub(crate) fn wh_readout(ur: &photocraft_engine::prefs::UnitsAndRulers, dpi: f64
     [ur.format(wh[0], dpi, extent[0]), ur.format(wh[1], dpi, extent[1])]
 }
 
+/// The Info panel's ruler cells (#11991), shown while the Ruler tool is active and a ruler is
+/// drawn: the angle and length(s), and the point and size the X/Y and W/H cells show instead of
+/// the pointer's and the selection's.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct RulerRows {
+    /// "A:" and then "L:" (a plain ruler) or "L1:" and "L2:" (a protractor), with their values.
+    pub(crate) measure: Vec<(&'static str, String)>,
+    /// The start point (a plain ruler) or the second arm's end (a protractor), in document pixels.
+    pub(crate) point: [f64; 2],
+    /// End minus start, signed and y down, for a plain ruler. A protractor's is not measured, so
+    /// W/H keep showing what they show today.
+    pub(crate) size: Option<[f64; 2]>,
+}
+
+/// [`RulerRows`] for the active document, or `None` with another tool or no ruler. Lengths are in
+/// the ruler unit with 2 decimals and the angle has 1 decimal and "°"; the options bar's Use
+/// Measurement Scale never changes them, as measured.
+pub(crate) fn ruler_rows(app: &PhotocraftApp) -> Option<RulerRows> {
+    if app.ui.tool != crate::state::Tool::Ruler {
+        return None;
+    }
+    let doc = &app.session.active()?.doc;
+    let r = doc.measurement.ruler?;
+    // A unit scale: the Info panel reads pixels converted to the ruler unit, never the scale.
+    let info = photocraft_engine::analysis_cmds::ruler_info(&r, &Default::default());
+    let g = |k: &str| info[k].as_f64();
+    let units = &app.session.prefs().units_and_rulers;
+    let dpi = f64::from(doc.resolution_dpi);
+    let length = |px: f64| {
+        let v = units.rulers.from_px(px, dpi, f64::from(doc.size.width), units.point_size.per_inch());
+        format!("{v:.2}")
+    };
+    let angle = format!("{:.1}°", g("angle")?);
+    match r.protractor {
+        None => Some(RulerRows { measure: vec![("A:", angle), ("L:", length(g("l1")?))], point: r.start, size: Some([g("w")?, g("h")?]) }),
+        Some(q) => Some(RulerRows { measure: vec![("A:", angle), ("L1:", length(g("l1")?)), ("L2:", length(g("l2")?))], point: q, size: None }),
+    }
+}
+
 /// Photoshop's Info panel: colour under the pointer (RGB and CMYK), position, selection size.
 pub(super) fn info_panel(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
     let t = Tokens::get(ui.ctx());
@@ -51,7 +90,8 @@ pub(super) fn info_panel(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
     let sel = st.doc.selection.as_ref().map(photocraft_compose::bounds::content_bounds).map(|r| [r.width() as f64, r.height() as f64]);
     // With the Crop tool, W and H are the pending frame's, as in Photoshop (#3145).
     let crop = crate::crop_ui::info_size(app);
-    let wh = crop.or(sel);
+    let ruler = ruler_rows(app);
+    let wh = ruler.as_ref().and_then(|r| r.size).or(crop).or(sel);
     let pos = hover_pixel(app);
     // While a guide is dragged (#5728), the Info panel shows its position in one axis only, even
     // when the pointer is outside the canvas (ruler drags do not update `hover_doc` there).
@@ -83,6 +123,20 @@ pub(super) fn info_panel(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
         }
     });
     widgets::hairline(ui);
+    // The Ruler tool's angle and length(s) (#11991).
+    if let Some(r) = &ruler {
+        ui.columns(2, |cols| {
+            for (i, (k, v)) in r.measure.iter().enumerate() {
+                row(&mut cols[usize::from(i > 0)], k, v.clone());
+            }
+        });
+        widgets::hairline(ui);
+    }
+    // With a ruler, X/Y are its point instead of the pointer's (#11991).
+    let (guide_x, guide_y) = match &ruler {
+        Some(r) => (Some(r.point[0]), Some(r.point[1])),
+        None => (guide_x, guide_y),
+    };
     ui.columns(2, |cols| {
         let dash = || "—".to_string();
         // Measured from the rulers' zero point (#2955).
@@ -152,3 +206,7 @@ pub(crate) fn sampler_readouts(app: &mut PhotocraftApp) -> std::sync::Arc<Vec<Va
     app.info_samplers = Some((key, v.clone()));
     v
 }
+
+#[cfg(test)]
+#[path = "info_ruler_tests.rs"]
+mod info_ruler_tests;

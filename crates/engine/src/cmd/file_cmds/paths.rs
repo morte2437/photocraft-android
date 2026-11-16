@@ -81,11 +81,17 @@ pub(super) fn list_files(dir: &str, _include_non_images: bool) -> Result<Vec<Str
     Err(EngineError::Other(format!("cannot list {dir}: no file system on the web")))
 }
 
+/// The web has no folder entries to filter: every name passes, as before.
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn openable_name(_path: &str) -> bool {
+    true
+}
+
 /// Whether a folder entry is one the batch commands open: an `OPENABLE` extension, an extension
 /// of a format `photocraft-codecs` reads in this build, or GIMP's gzipped `.xcf.gz`, whose last
 /// extension alone says nothing.
 #[cfg(not(target_arch = "wasm32"))]
-pub(super) fn openable_name(path: &str) -> bool {
+pub(crate) fn openable_name(path: &str) -> bool {
     let lower = file_name(path).to_ascii_lowercase();
     lower.ends_with(".xcf.gz")
         || lower.rsplit_once('.').is_some_and(|(_, ext)| OPENABLE.contains(&ext) || photocraft_codecs::from_extension(ext).is_some_and(|f| f.caps().read))

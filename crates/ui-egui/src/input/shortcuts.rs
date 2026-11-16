@@ -705,7 +705,8 @@ fn handle_pen_and_work_path_keys(app: &mut PhotocraftApp, ctx: &egui::Context, f
     // A Pen path's points are uncommitted gesture state, not History entries (#1466).
     // Intercept Cmd/Ctrl+Z before the normal Edit › Undo shortcut, as well as unmodified
     // Backspace/Delete. Once the last anchor is removed, regular Undo works again.
-    if app.ui.pen.as_ref().is_some_and(|pen| !pen.knots.is_empty()) {
+    // A failed draft retained after changing tools does not own the new tool's keys.
+    if app.ui.pen.as_ref().is_some_and(|pen| pen.owns_undo(app.ui.tool) && !pen.knots.is_empty()) {
         let mods = ctx.input(|i| i.modifiers);
         // Not while a Free Transform or Crop box owns Undo: Edit › Undo steps the box.
         let command_undo = !crate::vector_ui::box_steps(app, "edit.undo")
@@ -1056,9 +1057,10 @@ fn select_tool_by_key(app: &mut PhotocraftApp, ctx: &egui::Context, pressed: &im
         if cycle_shift || pressed(k) {
             let before = app.ui.tool;
             let mut group: Vec<Tool> = Tool::ALL.iter().copied().filter(|x| x.key() == t.key() && crate::tool_shortcuts::uses_default(app, *x)).collect();
-            // Shift+key cycles in toolbar flyout order.
+            // Shift+key cycles in the toolbar layout's order, across slots (Edit › Toolbar).
             if cycle_shift {
-                group.sort_by_key(|x| crate::panels::toolbar::toolbar_position(*x));
+                let order = crate::panels::toolbar::layout_order(&app.session.prefs().toolbar);
+                group.sort_by_key(|x| order.iter().position(|t| t == x).unwrap_or(usize::MAX));
             }
             let next_tool = match group.iter().position(|x| *x == app.ui.tool) {
                 Some(i) if shift_switch && !cycle_shift => group[i],
