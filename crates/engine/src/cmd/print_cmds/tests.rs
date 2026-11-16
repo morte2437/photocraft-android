@@ -1310,28 +1310,44 @@ mod cups {
     }
 }
 
+/// #5884, #8272: a Windows image without a loadable Windows.Data.Pdf.dll or prntvpt.dll reports
+/// an error instead of aborting at the delay-load stub. The checks run against a fixture
+/// `System32`, so they don't depend on what the host has installed.
 #[cfg(target_os = "windows")]
 #[test]
-fn windows_pdf_component_is_detected_by_loading_its_dll() {
-    // #5884: a Windows image without a loadable Windows.Data.Pdf.dll reports an error instead of
-    // aborting at the delay-load stub.
+fn windows_print_components_are_detected_by_loading_their_dlls() {
+    let system_dll_loads = |name| dll_loads(&system_dll(&system_root(), name));
     let dir = tempfile::tempdir().unwrap();
-    let dll = windows_pdf_dll(dir.path());
-    assert!(!windows_pdf_loads(&dll));
-    // Present but not loadable counts as missing.
     std::fs::create_dir(dir.path().join("System32")).unwrap();
-    std::fs::write(&dll, b"MZ").unwrap();
-    assert!(!windows_pdf_loads(&dll));
-    let root = std::env::var_os("SystemRoot").unwrap();
-    // The real DLL may be missing or unloadable on a stripped image; the check follows the loader.
-    let system = windows_pdf_dll(std::path::Path::new(&root));
-    assert_eq!(require_windows_pdf().is_ok(), windows_pdf_loads(&system));
+    for name in [WINDOWS_PDF_DLL, PRINT_TICKET_DLL] {
+        let dll = system_dll(dir.path(), name);
+        assert!(!dll_loads(&dll), "{name}: missing");
+        // Present but not loadable counts as missing.
+        std::fs::write(&dll, b"MZ").unwrap();
+        assert!(!dll_loads(&dll), "{name}: not loadable");
+    }
+    // Both stubs fail to load, so both checks report the missing component.
+    assert!(require_print_tickets_at(dir.path()).is_err());
+    assert!(require_windows_pdf_at(dir.path()).is_err());
+    // With a loadable prntvpt.dll (the host's, copied in) only the PDF check still fails: it
+    // checks Windows.Data.Pdf.dll itself, not just the Print Ticket API.
+    let tickets = system_dll(dir.path(), PRINT_TICKET_DLL);
+    if system_dll_loads(PRINT_TICKET_DLL) && std::fs::copy(system_dll(&system_root(), PRINT_TICKET_DLL), &tickets).is_ok() {
+        assert_eq!(require_print_tickets_at(dir.path()).is_ok(), dll_loads(&tickets));
+        assert!(require_windows_pdf_at(dir.path()).is_err(), "Windows.Data.Pdf.dll is still a stub");
+    }
+    // The wrappers follow the loader on the real Windows directory (a stripped image may lack either).
+    let host_tickets = system_dll_loads(PRINT_TICKET_DLL);
+    assert_eq!(require_print_tickets().is_ok(), host_tickets);
+    assert_eq!(require_windows_pdf().is_ok(), system_dll_loads(WINDOWS_PDF_DLL) && host_tickets);
 }
 
+/// Off Windows there are no Windows print components to check, so both checks pass.
 #[cfg(not(target_os = "windows"))]
 #[test]
 fn the_windows_pdf_check_is_a_no_op_elsewhere() {
     assert!(require_windows_pdf().is_ok());
+    assert!(require_print_tickets().is_ok());
 }
 
 /// A 500 × 1000 pt document (72 ppi) on A3 (841.89 × 1190.55 pt): its height sets the fit.
