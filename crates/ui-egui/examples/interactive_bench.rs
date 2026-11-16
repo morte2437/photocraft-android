@@ -27,6 +27,9 @@ use photocraft_engine::Session;
 use photocraft_geom::Rect;
 use serde_json::{Value, json};
 
+#[path = "support/bench_import.rs"]
+mod bench_import;
+
 fn arg(args: &[String], name: &str) -> Option<String> {
     args.iter().position(|a| a == name).and_then(|i| args.get(i + 1).cloned())
 }
@@ -103,6 +106,9 @@ struct Bench {
     rows: Vec<(String, f64, f64, f64, f64)>,
     /// Per row (same order as `rows`): the metadata for `--json` (`cargo xtask perf`).
     extra: Vec<RowExtra>,
+    /// Rows that failed (row name, reason), for `--json`: `cargo xtask perf` reports the reason
+    /// as that scenario's error, and the other rows still count.
+    errors: Vec<(String, String)>,
     rss: photocraft_testkit::perf::RssSampler,
 }
 
@@ -130,18 +136,38 @@ impl Bench {
     /// `CPU fallback` or `CPU canvas`), so a fallback is never presented as a GPU result. The cold
     /// sample's path is kept beside the warm row's (see [`RowExtra`]).
     fn time_path(&mut self, name: &str, report_path: bool, mut f: impl FnMut(&mut Self) -> (f64, &'static str)) {
+        self.try_time_path(name, report_path, |b| Ok(f(b)));
+    }
+
+    /// [`Self::time`] for an operation that can fail, such as opening a file the import refuses.
+    fn try_time(&mut self, name: &str, mut f: impl FnMut(&mut Self) -> Result<f64, String>) {
+        self.try_time_path(name, false, |b| f(b).map(|t| (t, "")));
+    }
+
+    /// [`Self::time_path`] for an operation that can fail: the first error is recorded as the
+    /// row's error (see [`Bench::errors`]) instead of a timing, and the bench goes on to the next
+    /// row.
+    fn try_time_path(&mut self, name: &str, report_path: bool, mut f: impl FnMut(&mut Self) -> Result<(f64, &'static str), String>) {
         if self.only.as_ref().is_some_and(|o| !name.contains(o.as_str())) {
-            f(self);
+            if let Err(e) = f(self) {
+                self.fail(name, e);
+            }
             return;
         }
         self.rss.reset();
-        let (cold, cold_path) = f(self);
+        let (cold, cold_path) = match f(self) {
+            Ok(v) => v,
+            Err(e) => return self.fail(name, e),
+        };
         let faults0 = photocraft_testkit::perf::minor_faults();
         let mut v = Vec::with_capacity(self.reps);
         let mut path = "";
         let mut fallback = false;
         for _ in 0..self.reps {
-            let (t, p) = f(self);
+            let (t, p) = match f(self) {
+                Ok(v) => v,
+                Err(e) => return self.fail(name, e),
+            };
             fallback |= p == "CPU fallback";
             path = p;
             v.push(t);
@@ -164,6 +190,12 @@ impl Bench {
         let shown = if report_paths { format!("{name} ({path})") } else { name.to_string() };
         println!("{shown:<44} {med:>9.1} ms   (min {:>8.1}, max {:>8.1}, cold {:>8.1}{cold_tag}{fl})", v[0], v[v.len() - 1], cold);
         self.rows.push((shown, med, v[0], v[v.len() - 1], cold));
+    }
+
+    /// Records that row `name` failed with `error` (see [`Bench::errors`]).
+    fn fail(&mut self, name: &str, error: String) {
+        println!("{name:<44} ERROR {error}");
+        self.errors.push((name.to_string(), error));
     }
 
     /// Composite `region` of `doc`, wait for the GPU, and report which path drew it.
@@ -412,7 +444,8 @@ fn write_report(b: &Bench, args: &[String], w: u32, h: u32) {
             r
         })
         .collect();
-    let context = json!({"gpu_adapter": b.gpu.as_ref().map(|g| g.adapter_name.as_str())});
+    let errors: Vec<Value> = b.errors.iter().map(|(name, error)| json!({"name": name, "error": error})).collect();
+    let context = json!({"gpu_adapter": b.gpu.as_ref().map(|g| g.adapter_name.as_str()), "errors": errors});
     let report = json!({"width": w, "height": h, "gpu": b.gpu.is_some(), "context": context, "rows": rows});
     std::fs::write(&out, serde_json::to_string_pretty(&report).unwrap()).expect("write json");
 }
@@ -429,6 +462,7 @@ fn main() {
         only: arg(&args, "--only"),
         rows: Vec::new(),
         extra: Vec::new(),
+        errors: Vec::new(),
         rss: photocraft_testkit::perf::RssSampler::start(std::time::Duration::from_millis(2)),
     };
     println!("document {w}×{h} ({:.1} MP), 8-bit RGB, {} reps, {}", (w * h) as f64 / 1e6, reps, if b.gpu.is_some() { "GPU canvas" } else { "CPU canvas" });
@@ -573,12 +607,12 @@ fn main() {
         psd = photocraft_io::export(&d, "x.psd", &Default::default()).expect("psd").bytes;
         ms(t)
     });
-    b.time("open .psd (3 layers) + refresh", |b| {
+    b.try_time("open .psd (3 layers) + refresh", |b| {
         let t = Instant::now();
-        let d = photocraft_io::import("x.psd", &psd).expect("psd").document;
+        let d = bench_import::import("x.psd", &psd)?.document;
         let mut s2 = Session::new();
         s2.open_document(d, None);
-        ms(t) + b.refresh(&s2, true)
+        Ok(ms(t) + b.refresh(&s2, true))
     });
     b.time("flatten (CPU compositor, 3 layers)", |_| {
         let d = doc(&s);
@@ -654,18 +688,73 @@ mod reporting_tests {
             only: None,
             rows: Vec::new(),
             extra: Vec::new(),
+            errors: Vec::new(),
             rss: photocraft_testkit::perf::RssSampler::start(std::time::Duration::from_millis(2)),
         }
     }
 
-    /// Write `b`'s report to a temporary file and return its rows.
-    fn report_rows(b: &Bench) -> Vec<Value> {
+    /// Write `b`'s report to a temporary file and return it.
+    fn report(b: &Bench) -> Value {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("report.json");
         let args = ["--json".to_string(), path.to_string_lossy().into_owned()];
         write_report(b, &args, 40, 32);
         let text = std::fs::read_to_string(&path).expect("read report");
-        serde_json::from_str::<Value>(&text).expect("report json")["rows"].as_array().expect("report rows").clone()
+        serde_json::from_str::<Value>(&text).expect("report json")
+    }
+
+    /// Write `b`'s report to a temporary file and return its rows.
+    fn report_rows(b: &Bench) -> Vec<Value> {
+        report(b)["rows"].as_array().expect("report rows").clone()
+    }
+
+    /// A row whose operation fails is reported with its reason, where `cargo xtask perf` reads
+    /// it, and the rows after it are still timed and reported.
+    #[test]
+    fn a_failed_row_is_reported_with_its_reason_and_the_bench_goes_on() {
+        let mut b = bench(3);
+        let mut calls = 0;
+        b.try_time("refused row", |_| {
+            calls += 1;
+            Err("x.psd: refused".to_string())
+        });
+        let mut warm_failure = 0;
+        b.try_time("fails when warm", |_| {
+            warm_failure += 1;
+            if warm_failure < 3 { Ok(1.0) } else { Err("out of memory".to_string()) }
+        });
+        b.time("later row", |_| 2.0);
+        assert_eq!(calls, 1, "a failed row is not retried");
+        assert_eq!(warm_failure, 3, "a row stops at its first failure");
+        let report = report(&b);
+        let rows = report["rows"].as_array().expect("report rows");
+        assert_eq!(rows.len(), 1, "{rows:?}");
+        assert_eq!(rows[0]["name"], "later row");
+        assert_eq!(rows[0]["median_ms"], 2.0);
+        assert_eq!(
+            report["context"]["errors"],
+            json!([{"name": "refused row", "error": "x.psd: refused"}, {"name": "fails when warm", "error": "out of memory"}])
+        );
+    }
+
+    /// The benches open their PSDs under the benchmark budget, which the free-memory budget
+    /// would refuse on a busy machine: here none is free at all.
+    #[test]
+    fn the_bench_budget_opens_a_psd_that_free_memory_refuses() {
+        let mut doc = Document::new("budget", Size::new(64, 48), ColorMode::Rgb, SampleType::U8);
+        let mut photo = Layer::raster("photo", doc.pixel_format());
+        if let Some(s) = photo.surface_mut() {
+            s.fill_rect(doc.bounds(), &[0.4, 0.5, 0.6, 1.0]);
+        }
+        doc.layers = vec![photo];
+        let psd = photocraft_io::export(&doc, "x.psd", &Default::default()).expect("export psd").bytes;
+        let no_free_memory = photocraft_io::memory::MemorySnapshot { available_ram: Some(0), swap_free: None, commit_headroom: None };
+        photocraft_io::memory::with_mock_memory(no_free_memory, || {
+            let refused = photocraft_io::import("x.psd", &psd);
+            assert!(matches!(refused, Err(photocraft_io::IoError::PsdImportBudget { .. })), "{:?}", refused.map(|_| ()));
+            let opened = bench_import::import("x.psd", &psd).expect("the bench budget admits it");
+            assert_eq!(opened.document.size, Size::new(64, 48));
+        });
     }
 
     /// A cold CPU fallback must not relabel GPU warm samples or sort their raw timings.
