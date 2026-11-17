@@ -1,4 +1,6 @@
-use super::edit::{TEMPLATE_NODES, edited_object, fits, is_stub, names_one_frame, new_object, pad_frames, td_edited_object, with_modes};
+use super::edit::{
+    TEMPLATE_NODES, compact, copies_fit_plus, edited_object, fits, is_stub, names_one_frame, new_object, pad_frames, td_edited_object, with_modes,
+};
 use super::import::{OPENTYPE_KEYS, TXT2_FEATURES, TXT2_STYLISTIC_SETS, kern_units, manual, object_frame, pair_runs, parse_txt2, postscript_for, real};
 use super::{
     AntiAlias, Caps, CharStyle, Color, ColorMode, D, Descriptor, E, FontBaseline, Id, Kerning, Orientation, ParagraphStyle, TextAlign, TextLayer, TextShape,
@@ -206,13 +208,34 @@ fn char_spans(layer: &TextLayer) -> Vec<(usize, i64)> {
 /// (`/11`). Photoshop reads the character style from here rather than from EngineData, and quit
 /// on a run holding only the auto-kern mode. `None` when `base` has no style dictionary or is
 /// larger than a template may be (it is copied once per run).
-fn txt2_style_runs(layer: &TextLayer, base: &E, fonts: &mut Vec<E>, dpi: f32, seed_empty: bool) -> Option<Vec<E>> {
+fn txt2_style_runs(layer: &TextLayer, base: &E, fonts: &mut Vec<E>, dpi: f32, seed_empty: bool) -> Result<Option<Vec<E>>, Txt2Error> {
     if !matches!(base.path(&["0", "0", "6"]), Some(E::Dict(_))) || !fits(base, &mut { TEMPLATE_NODES }) {
-        return None;
+        return Ok(None);
     }
     let k = if dpi.is_finite() && dpi > 0.0 { dpi / 72.0 } else { 1.0 };
     let runs = layer.char_runs();
     let spans = char_spans(layer);
+    // A template too large to copy once per run is compacted rather than given up on: falling
+    // back would keep the file's old style runs, so the edit would not reach the saved file.
+    let compacted;
+    // Each run can gain up to TXT2_ADDED_KEYS keys the template may lack (size, leading, features...).
+    const TXT2_ADDED_KEYS: usize = 18;
+    const TXT2_ADDED_KEY_BYTES: usize = 32;
+    let base = if copies_fit_plus(base, spans.len(), TXT2_ADDED_KEYS, TXT2_ADDED_KEY_BYTES) {
+        base
+    } else {
+        let Some(c) = compact(base, &["0", "0", "6"]).filter(|c| copies_fit_plus(c, spans.len(), TXT2_ADDED_KEYS, TXT2_ADDED_KEY_BYTES)) else {
+            return Ok(None);
+        };
+        // The fill colour is written into the style's paint dictionary (`/53`): compacting must not
+        // drop it, or the saved run would have no colour at all.
+        let paint = ["0", "0", "6", "53"];
+        if base.path(&paint).is_some() && c.path(&paint).is_none() {
+            return Err(Txt2Error::FillColourDropped);
+        }
+        compacted = c;
+        &compacted
+    };
     let default = CharStyle::default();
     let mut out = Vec::with_capacity(spans.len());
     let mut looked_up = std::collections::HashMap::new();
@@ -220,7 +243,7 @@ fn txt2_style_runs(layer: &TextLayer, base: &E, fonts: &mut Vec<E>, dpi: f32, se
         let s = runs.get(ri).map_or(&default, |r| &r.style);
         let font = *looked_up.entry(postscript_for(s)).or_insert_with_key(|name| txt2_font(fonts, name, seed_empty));
         let mut run = base.clone();
-        let style = run.get_mut("0")?.get_mut("0")?.get_mut("6")?;
+        let Some(style) = run.get_mut("0").and_then(|r| r.get_mut("0")).and_then(|r| r.get_mut("6")) else { return Ok(None) };
         if let Some(font) = font {
             style.set("0", E::Int(font));
         }
@@ -247,8 +270,26 @@ fn txt2_style_runs(layer: &TextLayer, base: &E, fonts: &mut Vec<E>, dpi: f32, se
         run.set("1", E::Int(n));
         out.push(run);
     }
-    Some(out)
+    Ok(Some(out))
 }
+
+/// Why [`build_txt2_at`] refused to write a block.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Txt2Error {
+    /// A text style's fill-colour dictionary is too large to copy into each style run; writing the
+    /// runs without it would lose the requested colour.
+    FillColourDropped,
+}
+
+impl std::fmt::Display for Txt2Error {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::FillColourDropped => f.write_str("a text style's fill colour is too large to rewrite, so its style cannot be restyled"),
+        }
+    }
+}
+
+impl std::error::Error for Txt2Error {}
 
 /// Whether the style runs of a `Txt2` text model (`/6 /0`) agree with `layer`'s character runs
 /// on every key [`txt2_style_runs`] writes, the auto-kern mode aside ([`with_modes`] refits that
@@ -473,9 +514,29 @@ fn td_restyled(entry: &E, layer: &TextLayer, fonts: &mut Vec<E>, dpi: f32) -> Op
     }
     let k = if dpi.is_finite() && dpi > 0.0 { dpi / 72.0 } else { 1.0 };
     let runs = layer.char_runs();
+    let spans = char_spans(layer);
+    // As in `txt2_style_runs`: compact a template too large to copy per run, so the edit still
+    // reaches this copy instead of the entry keeping its old style.
+    let compacted;
+    // Each run can gain the `Features` keys set below (17 + 7 option flags + the style-set mask), the run
+    // `Length`, and the paint `Type`/`Values`; a bound on their nodes and key bytes (longest key 21 bytes).
+    const TD_ADDED_KEYS: usize = 40;
+    const TD_ADDED_KEY_BYTES: usize = 1024;
+    let base = if copies_fit_plus(base, spans.len(), TD_ADDED_KEYS, TD_ADDED_KEY_BYTES) {
+        base
+    } else {
+        compacted = compact(base, &["RunData", "StyleSheet", "Features"]).filter(|c| copies_fit_plus(c, spans.len(), TD_ADDED_KEYS, TD_ADDED_KEY_BYTES))?;
+        // As for the Txt2 runs: a restyle that would drop the fill colour dictionary is not made, so
+        // the entry keeps the colour the file has rather than none.
+        let paint = ["RunData", "StyleSheet", "Features", "FillColor"];
+        if base.path(&paint).is_some() && compacted.path(&paint).is_none() {
+            return None;
+        }
+        &compacted
+    };
     let default = CharStyle::default();
     let mut out = Vec::new();
-    for (ri, n) in char_spans(layer) {
+    for (ri, n) in spans {
         let s = runs.get(ri).map_or(&default, |r| &r.style);
         let mut run = base.clone();
         let features = run.get_mut("RunData")?.get_mut("StyleSheet")?.get_mut("Features")?;
@@ -655,12 +716,14 @@ fn fresh_point_text_object(frame: usize, text: &str) -> E {
 /// is kept, and a block whose content comes out unchanged is returned byte for byte (#2374:
 /// Photoshop refused files whose `Txt2` an unedited save had stripped).
 pub fn build_txt2(objects: &[(i32, &TextLayer)], previous: Option<&[u8]>) -> Vec<u8> {
-    build_txt2_at(objects, previous, 72.0)
+    // A refused restyle keeps the file's block as it was.
+    build_txt2_at(objects, previous, 72.0).unwrap_or_else(|_| previous.map(<[u8]>::to_vec).unwrap_or_default())
 }
 
 /// [`build_txt2`] for a document of `dpi` (the style runs of new and edited objects carry sizes
-/// in the document's points, as EngineData does).
-pub fn build_txt2_at(objects: &[(i32, &TextLayer)], previous: Option<&[u8]>, dpi: f32) -> Vec<u8> {
+/// in the document's points, as EngineData does). An error when a restyle would lose a style's
+/// fill colour ([`Txt2Error`]); nothing is written then.
+pub fn build_txt2_at(objects: &[(i32, &TextLayer)], previous: Option<&[u8]>, dpi: f32) -> Result<Vec<u8>, Txt2Error> {
     let prev = previous.and_then(parse_txt2);
     let prev_objects: &[E] = prev.as_ref().and_then(|p| p.path(&["1", "1"]).and_then(E::as_array)).unwrap_or(&[]);
     let mut slots: Vec<E> = prev_objects.to_vec();
@@ -791,14 +854,32 @@ pub fn build_txt2_at(objects: &[(i32, &TextLayer)], previous: Option<&[u8]>, dpi
         // from these runs, so the template's (or the old text's) would show, and come back on
         // reopen. They are built on one of the object's own runs, every key Photoshop wrote kept;
         // without a template run, a minimal base is filled the same way (#10308).
-        let styled = (!unchanged)
-            .then(|| {
-                let file_base = (!is_stub(&object)).then(|| model.path(&["6", "0"]).and_then(E::as_array).and_then(<[E]>::first).cloned()).flatten();
-                let base = file_base.or_else(|| native.then(minimal_txt2_style_run))?;
-                txt2_style_runs(layer, &base, &mut fonts, dpi, seed_empty)
-            })
-            .flatten();
-        let file_runs = reuse.then(|| model.path(&["6", "0"]).and_then(E::as_array)).flatten().and_then(|runs| with_modes(runs, &modes));
+        let styled = if unchanged {
+            None
+        } else {
+            let file_base = (!is_stub(&object)).then(|| model.path(&["6", "0"]).and_then(E::as_array).and_then(<[E]>::first).cloned()).flatten();
+            match file_base.or_else(|| native.then(minimal_txt2_style_run)) {
+                Some(base) => txt2_style_runs(layer, &base, &mut fonts, dpi, seed_empty)?,
+                None => None,
+            }
+        };
+        // The file's own runs, moved out of the model (it gets the runs written below), so keeping
+        // them copies nothing.
+        let file_runs = if reuse && styled.is_none() {
+            model
+                .get_mut("6")
+                .and_then(|r| r.get_mut("0"))
+                .and_then(|r| match std::mem::replace(r, E::Array(Vec::new())) {
+                    E::Array(runs) => Some(runs),
+                    other => {
+                        *r = other;
+                        None
+                    }
+                })
+                .and_then(|runs| with_modes(runs, &modes))
+        } else {
+            None
+        };
         let runs = styled.or(file_runs).unwrap_or_else(|| {
             modes
                 .iter()
@@ -888,13 +969,13 @@ pub fn build_txt2_at(objects: &[(i32, &TextLayer)], previous: Option<&[u8]>, dpi
     if let (Some(bytes), Some(p)) = (previous, &prev)
         && *p == outer
     {
-        return bytes.to_vec();
+        return Ok(bytes.to_vec());
     }
-    match outer {
+    Ok(match outer {
         E::Dict(items) => ed::write_bare(&items),
         // Unreachable: `parse_txt2` and the fallback above both yield a dictionary.
         _ => ed::write_bare(&[]),
-    }
+    })
 }
 
 /// Updates (or creates) an EngineData tree for `layer`.
@@ -1155,4 +1236,61 @@ pub fn build_tysh(layer: &TextLayer, dpi: f32, ink: Option<[f32; 4]>) -> Option<
     let warped = warp.as_ref().is_some_and(|w| enum_value(w, "warpStyle").is_some_and(|s| s != "warpNone"));
     let bounds = if warped { [l, t, r, b] } else { [0.0; 4] };
     write_tysh(&TySh { transform: layer.transform, text, warp, bounds })
+}
+
+#[cfg(test)]
+mod copy_budget_tests {
+    use super::{CharStyle, E, TextLayer, td_restyled, txt2_style_runs};
+    use photocraft_doc::text::TextRun;
+
+    /// A style edit on a layer whose template holds an oversized value still writes the layer's
+    /// style (from the compacted template), rather than giving up and keeping the old runs.
+    #[test]
+    fn an_oversized_template_still_takes_the_new_style() {
+        let style = E::Dict(vec![("1".into(), E::Real(12.0)), ("99".into(), E::String("x".repeat(1 << 20)))]);
+        let base = E::Dict(vec![("0".into(), E::Dict(vec![("0".into(), E::Dict(vec![("6".into(), style)]))])), ("1".into(), E::Int(1))]);
+        // 100 single-letter runs alternating sizes: 100 copies of 1 MiB are past the budget.
+        let text = "ab".repeat(50);
+        let runs = (0..100).map(|i| TextRun { len: 1, style: CharStyle { size_pt: if i % 2 == 0 { 30.0 } else { 40.0 }, ..Default::default() } }).collect();
+        let layer = TextLayer { text, runs, ..Default::default() };
+        let out = txt2_style_runs(&layer, &base, &mut Vec::new(), 72.0, false).unwrap().expect("styled runs");
+        assert!(out.len() >= 100);
+        assert!(out.iter().all(|r| r.path(&["0", "0", "6", "99"]).is_none()));
+        let size = |r: &E| {
+            r.path(&["0", "0", "6", "1"]).and_then(|v| match v {
+                E::Real(f) => Some(*f),
+                E::Int(i) => Some(*i as f64),
+                _ => None,
+            })
+        };
+        assert_eq!(size(&out[0]), Some(30.0));
+        assert_eq!(size(&out[1]), Some(40.0));
+    }
+
+    /// A template whose fill-colour dictionary is past the copy budget cannot be restyled without
+    /// losing the colour: refused, not written colourless.
+    #[test]
+    fn an_oversized_fill_colour_refuses_the_restyle() {
+        let paint = E::Dict(vec![("0".into(), E::Dict(vec![("99".into(), E::String("x".repeat(1 << 20)))]))]);
+        let style = E::Dict(vec![("1".into(), E::Real(12.0)), ("53".into(), paint)]);
+        let base = E::Dict(vec![("0".into(), E::Dict(vec![("0".into(), E::Dict(vec![("6".into(), style)]))])), ("1".into(), E::Int(1))]);
+        let text = "ab".repeat(50);
+        let runs = (0..100).map(|i| TextRun { len: 1, style: CharStyle { size_pt: if i % 2 == 0 { 30.0 } else { 40.0 }, ..Default::default() } }).collect();
+        let layer = TextLayer { text, runs, ..Default::default() };
+        assert_eq!(txt2_style_runs(&layer, &base, &mut Vec::new(), 72.0, false), Err(super::Txt2Error::FillColourDropped));
+    }
+
+    /// The legacy `TextObjects` copy: an oversized fill-colour dictionary is not compacted away, so
+    /// the entry is left with the colour the file has instead of a colourless restyle.
+    #[test]
+    fn an_oversized_legacy_fill_colour_keeps_the_entry() {
+        let colour = E::Dict(vec![("Color".into(), E::Dict(vec![("Pad".into(), E::String("x".repeat(1 << 20)))]))]);
+        let features = E::Dict(vec![("FillColor".into(), colour)]);
+        let run = E::Dict(vec![("RunData".into(), E::Dict(vec![("StyleSheet".into(), E::Dict(vec![("Features".into(), features)]))]))]);
+        let entry = E::Dict(vec![("Model".into(), E::Dict(vec![("StyleRun".into(), E::Dict(vec![("RunArray".into(), E::Array(vec![run]))]))]))]);
+        let text = "ab".repeat(50);
+        let runs = (0..100).map(|i| TextRun { len: 1, style: CharStyle { size_pt: if i % 2 == 0 { 30.0 } else { 40.0 }, ..Default::default() } }).collect();
+        let layer = TextLayer { text, runs, ..Default::default() };
+        assert_eq!(td_restyled(&entry, &layer, &mut Vec::new(), 72.0), None);
+    }
 }

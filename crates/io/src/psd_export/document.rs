@@ -204,8 +204,14 @@ fn export_supported_document(
     // as Photopea reject it (#3514). Keep the block when the file had one (round-trip its pen
     // positions/extras), a layer is Optical (#1348), or a layer carries stylistic sets / other
     // Txt2-only features (#10308).
-    let txt2 = (previous.is_some() || photocraft_text::psd::needs_txt2(&text_layers))
-        .then(|| photocraft_text::psd::build_txt2_at(&text_layers, previous.as_deref(), ex.dpi));
+    // A restyle that would lose a style's fill colour is refused: the file's own block stays as it
+    // was, and the export says so.
+    let txt2 = (previous.is_some() || photocraft_text::psd::needs_txt2(&text_layers)).then(|| {
+        photocraft_text::psd::build_txt2_at(&text_layers, previous.as_deref(), ex.dpi).unwrap_or_else(|e| {
+            ex.warnings.push(format!("type styles were not updated in the file's text block: {e}"));
+            previous.clone().unwrap_or_default()
+        })
+    });
     for (sig, key, data) in preserved {
         // With no type layers left the opened file's `Txt2` describes text that is gone (fonts and
         // layout caches, often most of the file): Photoshop drops it, and so does the save (#9563).
