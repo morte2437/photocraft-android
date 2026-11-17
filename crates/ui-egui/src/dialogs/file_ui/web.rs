@@ -177,6 +177,10 @@ fn web_pane(app: &PhotocraftApp, ui: &mut egui::Ui, size: egui::Vec2, p: Option<
         let l1 = if ratio > 1.001 { format!("{l1}  ·  Proxy preview") } else { l1 };
         ui.add(egui::Label::new(egui::RichText::new(l1).color(t.text).size(11.5)).truncate());
         ui.add(egui::Label::new(egui::RichText::new(l2).color(t.text_dim).size(11.0)).truncate());
+        // Before anything is written: slices past the resolve limit are left out of the export.
+        if let Some(w) = photocraft_doc::slices::overflow_warning(&doc) {
+            ui.add(egui::Label::new(egui::RichText::new(w).color(t.warning).size(11.0)).truncate());
+        }
     });
 }
 
@@ -643,6 +647,10 @@ fn save_for_web(app: &mut PhotocraftApp, p: Value) -> Result<Value, String> {
     app.sync_views();
     app.ui.status =
         crate::i18n::trn(crate::i18n::current(), r["files"].as_array().map_or(0, Vec::len) as u64, "Saved for Web: {n} file", "Saved for Web: {n} files");
+    // Warnings (such as ignored slices) go in the status line: the dialog closes on success.
+    if let Some(w) = r["warnings"].as_array().filter(|w| !w.is_empty()) {
+        app.ui.status = format!("{} ({})", app.ui.status, w.iter().filter_map(Value::as_str).collect::<Vec<_>>().join("; "));
+    }
     app.ui.status_error = false;
     Ok(r)
 }

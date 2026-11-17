@@ -49,6 +49,20 @@ fn estimates_preserve_last_successful_export_settings() {
 
 /// The next launch's dialog seeds from the preferences: `file_menu` is not saved, so a complete
 /// export remembers its settings in `prefs.dialogs` too, as Fill and the filter dialogs do.
+/// Stored slices past the resolve limit are reported by the estimate as well as by the export.
+#[test]
+fn the_estimate_reports_ignored_slices() {
+    let mut s = session(8);
+    s.edit("slices", |doc, _| {
+        let n = photocraft_doc::slices::MAX_RESOLVED_SLICES + 2;
+        doc.slices.list = (0..n).map(|i| photocraft_doc::Slice { id: i as u32 + 1, rect: Rect::new(0, 0, 8, 8), ..Default::default() }).collect();
+        Ok(())
+    })
+    .unwrap();
+    let estimate = s.execute("file.export.saveForWebLegacy", json!({"format": "png24"})).unwrap();
+    assert!(estimate["warnings"].as_array().unwrap().iter().any(|w| w.as_str().is_some_and(|w| w.starts_with("2 stored slices"))), "{estimate}");
+}
+
 #[test]
 fn a_complete_export_remembers_its_settings_in_the_preferences() {
     let dir = tmp("remember_settings");
