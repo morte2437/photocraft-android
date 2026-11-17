@@ -33,8 +33,20 @@ jobs:
     uses: storytold/craft-common-actions/.github/workflows/freebsd.yml@main
     with:
       craft-fonts-ref: b076417b5880bd4154bd22f00695b1d28c6bea83
-      cargo-build-extra-args: "--features heif"
+      # Build every target with the profile the tests use. Plain `cargo build --all-targets` builds
+      # test targets with the dev profile, so ui-egui's lib tests (about 390k lines, 7700 tests)
+      # were compiled at opt-level 1 rather than Cargo.toml's test-profile opt-level 0, and that
+      # rustc ran the 12 GB guest out of memory (SIGKILL, nightly and dispatched runs on both
+      # legs).
+      cargo-build-extra-args: "--features heif --profile test"
+      # The test commands reuse that build only if they resolve the same features. `-p
+      # photocraft-ui-egui` (or `--exclude photocraft-ui-egui`) leaves out the other members'
+      # feature requests, so egui, epaint and the crates above them got new hashes and the test
+      # step rebuilt ui-egui's lib tests, where that rustc was SIGKILLed again. So ui-egui is
+      # tested with the build's selection, `--workspace --features heif`. Excluding
+      # photocraft-gpu leaves the resolution unchanged; its own command rebuilds only its graph.
       # The VM's software Vulkan driver crashes (SIGSEGV) when several tests set up a device at
-      # once, so photocraft-gpu's tests run one at a time, like ui-egui's integration tests.
-      custom-test-command: "CARGO_PROFILE_DEV_DEBUG=0 cargo test --workspace --locked --features heif --exclude photocraft-ui-egui --exclude photocraft-gpu && CARGO_PROFILE_DEV_DEBUG=0 cargo test -p photocraft-gpu --locked -- --test-threads=1 && CARGO_PROFILE_DEV_DEBUG=0 cargo test -p photocraft-ui-egui --locked --lib && CARGO_PROFILE_DEV_DEBUG=0 cargo test -p photocraft-ui-egui --locked --doc && CARGO_PROFILE_DEV_DEBUG=0 cargo test -p photocraft-ui-egui --locked --test '*' -- --test-threads=1"
+      # once, so photocraft-gpu's tests and the integration tests (ui-egui's among them; one
+      # command runs them all) run one at a time.
+      custom-test-command: "CARGO_PROFILE_DEV_DEBUG=0 cargo test --workspace --locked --features heif --exclude photocraft-gpu --lib --bins && CARGO_PROFILE_DEV_DEBUG=0 cargo test --workspace --locked --features heif --exclude photocraft-gpu --doc && CARGO_PROFILE_DEV_DEBUG=0 cargo test --workspace --locked --features heif --exclude photocraft-gpu --test '*' -- --test-threads=1 && CARGO_PROFILE_DEV_DEBUG=0 cargo test -p photocraft-gpu --locked -- --test-threads=1"
       run-package-check: true
