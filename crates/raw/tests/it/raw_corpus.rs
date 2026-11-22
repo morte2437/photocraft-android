@@ -26,6 +26,8 @@ struct Want<'a> {
     cfa: [u8; 4],
     black: &'a [f32],
     white: [f32; 3],
+    /// Exact source-sample maximum and its population at the pinned corpus revision.
+    sample_max: (u16, usize),
 }
 
 const WANTS: &[Want] = &[
@@ -37,7 +39,8 @@ const WANTS: &[Want] = &[
         size: (4176, 3062),
         cfa: [0, 1, 1, 2],
         black: &[128.0; 4],
-        white: [4095.0; 3],
+        white: [4080.0; 3],
+        sample_max: (4095, 2207),
     },
     // The same camera after DNG Converter: the sensor data round-trips identically.
     Want {
@@ -49,6 +52,7 @@ const WANTS: &[Want] = &[
         cfa: [0, 1, 1, 2],
         black: &[127.0],
         white: [4095.0; 3],
+        sample_max: (4093, 6886),
     },
     Want {
         file: "JD1_8203.NEF",
@@ -59,8 +63,9 @@ const WANTS: &[Want] = &[
         cfa: [0, 1, 1, 2],
         black: &[0.0],
         white: [4095.0; 3],
+        sample_max: (4095, 222),
     },
-    // Sony cRAW: the saturation level comes from the compressed code's range.
+    // Sony cRAW: white is the inferred lower edge of its saturated sample band.
     Want {
         file: "DSC00009.ARW",
         format: RawFormat::Arw,
@@ -69,8 +74,9 @@ const WANTS: &[Want] = &[
         size: (4832, 3224),
         cfa: [0, 1, 1, 2],
         // SR2SubIFD black levels, verified with the metadata oracle (not the 512 fallback).
-        black: &[800.0; 4],
-        white: [16301.0; 3],
+        black: &[800.0],
+        white: [16320.0; 3],
+        sample_max: (16383, 3326),
     },
     // The G9's high-resolution mode: a 10480 × 7794 sensor cropped to 10368 × 7776.
     Want {
@@ -81,7 +87,8 @@ const WANTS: &[Want] = &[
         size: (10480, 7794),
         cfa: [0, 1, 1, 2],
         black: &[127.0, 128.0, 128.0, 127.0],
-        white: [4095.0; 3],
+        white: [4080.0; 3],
+        sample_max: (4095, 558549),
     },
     // Four Thirds Olympus: GRBG instead of the usual RGGB.
     Want {
@@ -93,6 +100,7 @@ const WANTS: &[Want] = &[
         cfa: [1, 0, 2, 1],
         black: &[65.0; 4],
         white: [4095.0; 3],
+        sample_max: (4095, 10),
     },
 ];
 
@@ -108,7 +116,23 @@ fn decode_matches_the_measured_oracles() {
         let cfa = s.cfa.as_ref().unwrap_or_else(|| panic!("{}: no CFA", w.file));
         assert_eq!(cfa.colors, w.cfa, "{}", w.file);
         assert_eq!(s.black.values, w.black, "{}", w.file);
+        // An inferred white is a band boundary, not the largest decoded sample.
+        // Pin the sample maximum and its population independently of that policy.
+        let sample_max = s.data.iter().fold((0u16, 0usize), |(maximum, count), &value| {
+            if value > maximum {
+                (value, 1)
+            } else if value == maximum {
+                (maximum, count + 1)
+            } else {
+                (maximum, count)
+            }
+        });
+        assert_eq!(sample_max, w.sample_max, "{} source maximum and population", w.file);
         if w.file == "DSC00009.ARW" {
+            for (x, y) in [(0, 0), (1, 0), (0, 1), (1, 1)] {
+                assert_eq!(s.black.at(x, y, 0, 1), 800.0, "Sony metadata black at CFA site ({x}, {y})");
+            }
+            assert_eq!(s.data.iter().filter(|&&value| value == 16372).count(), 74490, "Sony saturated compressed-code population");
             assert_eq!(s.camera_wb, Some([2056.0 / 1024.0, 1.0, 1908.0 / 1024.0]));
         }
         for ch in 0..3 {

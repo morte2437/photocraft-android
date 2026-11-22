@@ -461,14 +461,7 @@ fn commit_path_current(app: &mut PhotocraftApp, pen: &PenPath, closed: bool, fre
         app.run("shape.create", json!({"kind": "path", "path": path, "addTo": layer, "op": op}))
     } else if app.ui.tool_options.vector_mode == "shape" {
         let fill = if closed { fill_param(app) } else { Value::Null };
-        let stroke = if closed {
-            stroke_param(app)
-        } else {
-            let mut stroke = app.ui.tool_options.shape_stroke.params();
-            stroke["width"] = json!(app.ui.tool_options.stroke_width.max(1.0));
-            stroke["color"] = json!(app.session.tools.foreground);
-            stroke
-        };
+        let stroke = if closed { stroke_param(app) } else { super::shapes::open_pen_stroke_param(app) };
         app.run("shape.create", json!({"kind": "path", "path": path, "fill": fill, "stroke": stroke, "historyName": freeform.then_some("Freeform Pen")}))
     } else if let Some((name, p)) =
         pen.resumes.as_ref().and_then(|r| app.session.active().and_then(|st| with_resumed_subpath(&st.doc, r, &path)).map(|p| (r.path.clone(), p)))
@@ -951,7 +944,7 @@ pub(crate) fn freeform_finish_owned(app: &mut PhotocraftApp, points: &[[f64; 3]]
     let (mut pen, closed) = pen;
     pen.owner = Some(owner);
     if let Err(e) = commit_path_named(app, &pen, closed, true) {
-        app.ui.pen = Some(PenPath { commit_failed: true, ..pen });
+        app.ui.pen = Some(PenPath { commit_failed: true, freeform_origin: true, ..pen });
         app.ui.status = e;
         app.ui.status_error = true;
     }

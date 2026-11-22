@@ -49,6 +49,14 @@ fn compare_modes(doc: &photocraft_doc::Document, ours: &[[f32; 4]], merged: &[[f
         // prefix_ours.f32, prefix_ps.f32, prefix_L<i>.f32 (each top-level layer's own pixels,
         // masks not applied) and prefix.txt (width, height, layer names).
         let out = std::env::args().nth(4).expect("prefix");
+        // Every layer is expanded to a full-canvas RGBA f32 plane (16 bytes per pixel).
+        const MAX_DUMP_BYTES: u128 = 16 << 30;
+        let planes = doc.layers.len() as u128 + 2;
+        let total = planes * doc.size.width as u128 * doc.size.height as u128 * 16;
+        if total > MAX_DUMP_BYTES {
+            eprintln!("dump would write {total} bytes (limit {MAX_DUMP_BYTES}); refusing");
+            return;
+        }
         let wr = |name: String, px: &[[f32; 4]]| {
             let bytes: Vec<u8> = px.iter().flat_map(|p| p.iter().flat_map(|v| v.to_le_bytes())).collect();
             std::fs::write(name, bytes).unwrap();
@@ -466,7 +474,9 @@ fn corpus_summary(root: &std::path::Path) {
         let Ok(rd) = std::fs::read_dir(dir) else { return };
         for e in rd.flatten() {
             let p = e.path();
-            if p.is_dir() {
+            // file_type() does not follow symlinks: a directory alias would repeat its subtree.
+            let Ok(ft) = e.file_type() else { continue };
+            if ft.is_dir() {
                 collect(&p, out);
             } else if p.extension().and_then(|e| e.to_str()).is_some_and(|e| e.eq_ignore_ascii_case("psd") || e.eq_ignore_ascii_case("psb")) {
                 out.push(p);

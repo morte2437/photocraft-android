@@ -238,6 +238,7 @@ row; the action still adds only one Undo entry.
 | (string ID only) | isolateLayers | Isolate Layers | `select.isolateLayers` |
 | (string ID only) | textLoadDefaultTypeStyles | Load Default Type Styles | `type.loadDefaultTypeStyles` |
 | (string ID only) | textSaveDefaultTypeStyles | Save Default Type Styles | `type.saveDefaultTypeStyles` |
+| (string ID only) | 8cba8cd6-cb66-11d1-bc43-0060b0a13dc4 | Conditional Mode Change (script event; Grayscale, RGB, CMYK or Lab target) | `file.automate.conditionalModeChange` |
 | (string ID only) | recordMeasurements | Record Measurements | `image.analysis.recordMeasurements` |
 | (string ID only) | CropPhotosAuto0001 | Crop and Straighten Photos | `file.automate.cropAndStraightenPhotos` |
 | (string ID only) | 3caa3434-cb67-11d1-bc43-0060b0a13dc4 | Fit Image (script event; pixel box sides) | `file.automate.fitImage` |
@@ -322,6 +323,22 @@ radius uses the native factory value 10) and the recorded custom-shape form belo
 Custom-shape playback requires the asset selected by its ID to be installed.
 Other unsupported dialog fields or origin values remain kept. Native explicit
 shape choices cannot be saved as radius-only descriptors.
+
+Conditional Mode Change is the script event `8cba8cd6-cb66-11d1-bc43-0060b0a13dc4`
+that follows the Convert Mode step it runs, which stays a step of its own. A
+non-empty `SrcM` with each `Cndn` value at most once, in the measured order (see
+"Recorded with source files"), and a Grayscale, RGB, CMYK or Lab `DstM` object
+without items play as `file.automate.conditionalModeChange` (`from` the source
+modes, `to` the target). That converts only a document whose mode is ticked and
+differs from the target. `Msge` may be missing, because the reference plays the
+step the same without it. A Duotone, Indexed Color, Bitmap or Multichannel target,
+the class-reference form recorded from a Bitmap document, and any other form stay
+a kept step. A loaded step saves back with its recorded descriptor (message or
+none, class, key order), and once its settings change it saves them into that
+descriptor. A step recorded in PhotoCraft saves class `cjsp`, an empty `Msge`, its
+source modes in the measured order (all eight for a step without `from`) and the
+target object. A native step with an empty or unknown source list, or another
+target, refuses export.
 
 Layer › New › Artboard and Layer › New › Artboard from Layers are a Make with
 `null` = the class `artboardSection`. With `artboardRect` (`Top `, `Left`,
@@ -993,7 +1010,7 @@ layer reference, `Ordn.Trgt`); mapping them needs only the event name.
 | Layer > Video Layers > Duplicate Frame, Restore Frame, Restore All Frames, Reload Frame | `duplicateFrame`, `restoreFrame`, `restoreAllFrames`, `reloadFrame` | none. Duplicate needs a painted frame; Restore needs an altered frame; Restore All asks for confirmation |
 | File > Automate > Photomerge | the steps the script runs (open dialog, open, duplicate, `addLayerFromFile`, `align` with `layerTransformation`, `mergeAlignedLayers` …), then the script event `0f9db13f-a772-4035-9020-840f0e5e2f02` with an empty descriptor (class `cjsp`) | the layout and options are not in the step |
 | File > Automate > Crop and Straighten Photos | `CropPhotosAuto0001` (no keys), then the steps it runs: `CropPhotos0001` with `Vl  ` (list of 8 doubles: the four corners), duplicate, `crop` | needs a selected, visible, unlocked layer, otherwise an error message and a step without effect |
-| File > Automate > Conditional Mode Change | the Convert Mode it runs, then `8cba8cd6-cb66-11d1-bc43-0060b0a13dc4` | `Msge` text, `SrcM` list of `Cndn` enums (`UGry`, `URGB`, …: the source modes), `DstM` object whose class is the target mode (`CMYM` for CMYK) |
+| File > Automate > Conditional Mode Change | the Convert Mode it runs, then `8cba8cd6-cb66-11d1-bc43-0060b0a13dc4` (class `cjsp`); nothing is recorded when no conversion runs (the target is the document's mode, or the document's mode isn't a ticked source) | `Msge` text (not needed to play); `SrcM` list of `Cndn` enums, one per ticked source in this order: `UBtm` Bitmap, `UGry` Grayscale, `UDtn` Duotone, `UInd` Indexed Color, `URGB` RGB Color, `UCMY` CMYK Color, `ULab` Lab Color, `UMlt` Multichannel; `DstM` object whose class is the target: `Grys`, `RGBM`, `CMYM`, `LbCM`, `MltC` without items, Duotone `DtnM` { `Inks` list of `DtnI` { `Nm  ` text, `Clr ` `Grsc` { `Gry ` doub 100 } } }, Indexed Color `IndC` { `Plt ` `ClrP`.`Exct`, `FrcC` `FrcC`.`None`, `Trns` bool }, Bitmap `BtmM` { `Rslt` `#Rsl`, `Mthd` `Mthd`.`Thrh` } (the settings of their own dialog); Grayscale from a Bitmap document is a class reference `Grys` instead |
 | File > Automate > Fit Image | the Image Size it runs, then `3caa3434-cb67-11d1-bc43-0060b0a13dc4` | `Msge` text, `Hght`, `Wdth` pixels, `limit` bool (don't enlarge) |
 
 **Not recorded:** importing or applying inside Image > Variables > Data Sets (only the separate menu

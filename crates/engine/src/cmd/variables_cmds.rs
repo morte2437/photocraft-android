@@ -278,7 +278,7 @@ fn apply_data_set(s: &mut Session, p: &Value) -> Result<Value> {
     let (set, idx) = resolve_set(s, p, "image.applyDataSet")?;
     let vars = s.active().ok_or(EngineError::NoDocument)?.doc.variables.clone();
     authorize_pixel_paths(s, &set)?;
-    s.edit(&format!("Apply Data Set \"{}\"", set.name), |doc, _| apply_to_doc(doc, &vars, &set))?;
+    s.edit("Apply Data Set", |doc, _| apply_to_doc(doc, &vars, &set))?;
     set_vars(s, |v| v.active = Some(idx))?;
     Ok(json!({"applied": set.name, "index": idx}))
 }
@@ -342,7 +342,10 @@ pub fn import_data_sets_text(s: &mut Session, text: &str, p: &Value) -> Result<V
         sets.push(DataSet { name, values });
     }
     let n = sets.len();
-    set_vars(s, |v| v.data_sets = sets)?;
+    s.edit("Import Data Sets", |doc, _| {
+        doc.variables.data_sets = sets;
+        Ok(())
+    })?;
     Ok(json!({"imported": n}))
 }
 
@@ -565,7 +568,12 @@ pub fn specs() -> Vec<CommandSpec> {
 }
 
 #[cfg(test)]
+mod import_history_tests;
+#[cfg(test)]
 mod tests;
 
 #[cfg(test)]
 mod import_enabled_tests;
+
+#[cfg(test)]
+mod apply_history_name_tests;

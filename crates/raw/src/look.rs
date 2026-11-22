@@ -850,8 +850,13 @@ mod tests {
         let data = crate::testgen::mosaic(&cam, w, [0, 1, 1, 2], 0, 4095);
         let b = crate::testgen::tiff_ep("NIKON CORPORATION", w, h, &data, [0, 1, 1, 2], 12, vec![]);
         let mut s = crate::decode(&b, &crate::Limits::default()).unwrap();
+        assert!(data.iter().all(|sample| *sample <= 4095), "independently generated 12-bit sensor samples");
+        assert_eq!(s.data, data, "decoding must preserve the synthetic sensor codes");
+        assert!(s.black.values.iter().chain(&s.black.delta_h).chain(&s.black.delta_v).all(|value| *value == 0.0));
+        assert_eq!(s.baseline_exposure, 0.0);
         // The fixture uses a 12-bit encoding scale. craft-raw's NEF reader takes no WhiteLevel
         // tag and reads the brightest flat, noiseless patch as a saturation plateau.
+        // Keep this rendering-fit test independent of that separate estimation policy.
         s.white = [4095.0; 3];
         let to_srgb = color::invert(&color::srgb_to_xyz_d50()).unwrap();
         let pro_to_srgb = color::mul(&to_srgb, &color::rgb_to_xyz(color::ROMM, color::D50_XY));

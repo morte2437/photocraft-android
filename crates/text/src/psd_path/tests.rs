@@ -275,7 +275,7 @@ fn save_and_open(layers: &[&photocraft_doc::TextLayer], prev: &[u8]) -> (Vec<u8>
     let back = objects
         .iter()
         .map(|(i, l)| {
-            let tysh = crate::psd::set_text_index(&crate::psd::build_tysh(l, 72.0, None), *i).unwrap();
+            let tysh = crate::psd::set_text_index(&crate::psd::build_tysh(l, 72.0, None).unwrap(), *i).unwrap();
             let mut back = crate::psd::text_layer_from_tysh(&tysh, 72.0).unwrap();
             crate::psd::apply_txt2(&mut back, &tysh, &parsed);
             let applied = crate::psd::apply_txt2_path(&mut back, &tysh, &parsed);
@@ -318,7 +318,7 @@ fn path_text_round_trips_through_tysh_and_txt2() {
 #[test]
 fn a_malformed_path_frame_keeps_the_engine_data_shape() {
     let a = layer("Hostile", TextShape::Box { x: 0.0, y: 0.0, width: 50.0, height: 20.0 });
-    let tysh = crate::psd::set_text_index(&crate::psd::build_tysh(&a, 72.0, None), 0).unwrap();
+    let tysh = crate::psd::set_text_index(&crate::psd::build_tysh(&a, 72.0, None).unwrap(), 0).unwrap();
     for bad in ["<< /1 << /0 [ 1 2 3 ] >> /2 << /0 2 >> >>", "<< /1 << /0 [ 0 0 1 1 2 2 3 3 ] >> /2 << /0 2 /2 [ 0 0 0 0 0 0 ] >> >>"] {
         let entry = E::Dict(vec![("0".into(), frame(bad))]);
         let txt2 = crate::psd::parse_txt2(&photoshop_txt2_in("Hostile\r", entry)).unwrap();

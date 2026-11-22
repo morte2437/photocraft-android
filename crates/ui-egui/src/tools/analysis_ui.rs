@@ -48,6 +48,9 @@ pub enum Drag {
     RulerNew(Option<Ruler>),
     /// Moving a ruler handle: 0 start, 1 end, 2 protractor end.
     RulerHandle(u8),
+    /// Moving the whole ruler, grabbed on its line or a protractor's vertex (#11981): where the
+    /// press was and the ruler then; it follows the pointer by the drag delta.
+    RulerMove([f64; 2], Ruler),
     /// Moving count marker (group, index) from where it was.
     Count(usize, usize, [f64; 2]),
     /// Moving note `index`: grab offset from its position.
@@ -238,20 +241,40 @@ fn tolerance(app: &PhotocraftApp) -> f64 {
     7.0 / f64::from(app.point_zoom().max(0.01))
 }
 
+/// The Ruler's grab radius: ±8 screen px, the reference's hit zone around a ruler end and its
+/// line (#11981). The Count, Note and Color Sampler tools keep [`tolerance`].
+fn ruler_tolerance(app: &PhotocraftApp) -> f64 {
+    8.0 / f64::from(app.point_zoom().max(0.01))
+}
+
+/// Is `p` within the ±`tol` square around `q`? A ruler end is hit in a 17 × 17 px square at 100 %
+/// zoom (#11981).
+fn within(p: [f64; 2], q: [f64; 2], tol: f64) -> bool {
+    (p[0] - q[0]).abs() <= tol && (p[1] - q[1]).abs() <= tol
+}
+
+/// Distance from `p` to the segment `a`–`b`.
+fn segment_dist(p: [f64; 2], a: [f64; 2], b: [f64; 2]) -> f64 {
+    let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
+    let len2 = dx * dx + dy * dy;
+    let t = if len2 > 0.0 { (((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / len2).clamp(0.0, 1.0) } else { 0.0 };
+    dist(p, [a[0] + t * dx, a[1] + t * dy])
+}
+
 fn dist(a: [f64; 2], b: [f64; 2]) -> f64 {
     (a[0] - b[0]).hypot(a[1] - b[1])
 }
 
 /// Is `p` within the grab radius `tol` of one of `r`'s end points?
 fn near_end(r: Ruler, p: [f64; 2], tol: f64) -> bool {
-    dist(p, r.start) <= tol || dist(p, r.end) <= tol
+    within(p, r.start, tol) || within(p, r.end, tol)
 }
 
 /// Is the pointer at document point `p` over the ruler's end points? The very hit test a press
-/// makes its decision with ([`near_end`], `dist` with [`tolerance`]), so the Ruler tool's ⌥ pointer
+/// makes its decision with ([`near_end`] with [`ruler_tolerance`]), so the Ruler tool's ⌥ pointer
 /// shows exactly where an ⌥-drag starts the protractor arm (#12037).
 pub(crate) fn ruler_end_at(app: &PhotocraftApp, p: [f64; 2]) -> bool {
-    let tol = tolerance(app);
+    let tol = ruler_tolerance(app);
     app.session.active().is_some_and(|d| d.doc.measurement.ruler.is_some_and(|r| near_end(r, p, tol)))
 }
 
@@ -282,6 +305,14 @@ fn set_ruler(app: &mut PhotocraftApp, r: Ruler) {
 #[cfg(test)]
 #[path = "analysis_ruler_click_tests.rs"]
 mod analysis_ruler_click_tests;
+
+#[cfg(test)]
+#[path = "analysis_ruler_visibility_tests.rs"]
+mod analysis_ruler_visibility_tests;
+
+#[cfg(test)]
+#[path = "analysis_ruler_move_tests.rs"]
+mod analysis_ruler_move_tests;
 
 #[cfg(test)]
 #[path = "note_show_on_new_tests.rs"]
@@ -317,10 +348,13 @@ pub fn pointer(app: &mut PhotocraftApp, ev: ToolEvent, mods: egui::Modifiers) ->
     let tol = tolerance(app);
     match (tool, ev) {
         (Tool::Ruler, ToolEvent::Down { x, y, .. }) => {
+            let tol = ruler_tolerance(app);
             let p = [x, y];
             let cur = doc.measurement.ruler;
-            let near = |q: [f64; 2]| dist(p, q) <= tol;
+            let near = |q: [f64; 2]| within(p, q, tol);
             match cur {
+                // A protractor's vertex moves the whole protractor, with or without ⌥ (#11981).
+                Some(r) if r.protractor.is_some() && near(r.start) => app.ui.analysis.drag = Some(Drag::RulerMove(p, r)),
                 // ⌥-drag from an end point starts the protractor arm at that vertex.
                 Some(mut r) if mods.alt && near_end(r, p, tol) => {
                     if near(r.end) && !near(r.start) {
@@ -333,6 +367,9 @@ pub fn pointer(app: &mut PhotocraftApp, ev: ToolEvent, mods: egui::Modifiers) ->
                 Some(r) if r.protractor.is_some_and(near) => app.ui.analysis.drag = Some(Drag::RulerHandle(2)),
                 Some(r) if near(r.end) => app.ui.analysis.drag = Some(Drag::RulerHandle(1)),
                 Some(r) if near(r.start) => app.ui.analysis.drag = Some(Drag::RulerHandle(0)),
+                // On the line, away from the ends: the whole ruler moves (#11981). A protractor's
+                // arm lines are not measured and keep starting a new ruler.
+                Some(r) if r.protractor.is_none() && segment_dist(p, r.start, r.end) <= tol => app.ui.analysis.drag = Some(Drag::RulerMove(p, r)),
                 _ => {
                     set_ruler(app, Ruler { start: p, end: p, protractor: None });
                     app.ui.analysis.drag = Some(Drag::RulerNew(cur));
@@ -342,6 +379,11 @@ pub fn pointer(app: &mut PhotocraftApp, ev: ToolEvent, mods: egui::Modifiers) ->
         (Tool::Ruler, ToolEvent::Move { x, y, .. }) => {
             let (Some(drag), Some(mut r)) = (app.ui.analysis.drag, doc.measurement.ruler) else { return true };
             match drag {
+                Drag::RulerMove(from, at_press) => {
+                    let (dx, dy) = (x - from[0], y - from[1]);
+                    let shift = |q: [f64; 2]| [q[0] + dx, q[1] + dy];
+                    r = Ruler { start: shift(at_press.start), end: shift(at_press.end), protractor: at_press.protractor.map(shift) };
+                }
                 Drag::RulerNew(_) | Drag::RulerHandle(1) => r.end = constrain(r.start, [x, y], mods.shift),
                 Drag::RulerHandle(0) => r.start = constrain(r.end, [x, y], mods.shift),
                 Drag::RulerHandle(_) => r.protractor = Some(constrain(r.start, [x, y], mods.shift)),
@@ -507,7 +549,9 @@ fn handle(painter: &egui::Painter, p: Pos2) {
 pub fn draw_overlay(app: &PhotocraftApp, painter: &egui::Painter, xf: &ViewXform) {
     let Some(doc) = app.session.active().map(|d| d.doc.clone()) else { return };
     let v = &app.ui.view;
-    if app.ui.tool == Tool::Ruler
+    // The ruler stays drawn whichever tool is active, and View › Extras hides it (#11987). View ›
+    // Show has no Ruler entry, so only the master Extras switch applies.
+    if v.extras
         && let Some(r) = doc.measurement.ruler
     {
         let s = xf.to_screen(r.start[0] as f32, r.start[1] as f32);
@@ -657,9 +701,18 @@ pub fn options_bar(app: &mut PhotocraftApp, ui: &mut egui::Ui, tool: Tool) -> bo
             let next = photocraft_doc::CountGroup::default();
             let g = group.map_or(&next, |gi| &m.count_groups[gi]);
             if let Some(mut gi) = group {
-                let opts: Vec<(usize, &str)> = m.count_groups.iter().enumerate().map(|(i, g)| (i, g.name.as_str())).collect();
-                if crate::widgets::dropdown(ui, "count-group", tl!("Group"), &mut gi, &opts, 150.0) {
-                    let _ = app.run("count.setGroup", json!({"group": gi, "active": true}));
+                // The groups, a separator, then Rename… for the current group (#11766).
+                const RENAME: usize = usize::MAX;
+                let mut opts: Vec<(usize, &str)> = m.count_groups.iter().enumerate().map(|(i, g)| (i, g.name.as_str())).collect();
+                opts.push((RENAME, tl!("Rename…")));
+                let current = gi;
+                let (chosen, _) = crate::widgets::dropdown_wheel_grouped(ui, "count-group", tl!("Group"), &mut gi, &opts, 150.0, |v| *v == RENAME);
+                match chosen.last().copied() {
+                    Some(RENAME) => crate::count_group_name_ui::open_rename(app, current),
+                    Some(g) => {
+                        let _ = app.run("count.setGroup", json!({"group": g, "active": true}));
+                    }
+                    None => {}
                 }
             } else {
                 ui.add_enabled_ui(false, |ui| crate::widgets::dropdown(ui, "count-group", tl!("Group"), &mut 0usize, &[(0, tl!("Count Group"))], 150.0));
@@ -670,8 +723,9 @@ pub fn options_bar(app: &mut PhotocraftApp, ui: &mut egui::Ui, tool: Tool) -> bo
             {
                 let _ = app.run("count.setGroup", json!({"group": gi, "visible": !g.visible}));
             }
+            // The "Count Group Name" dialog names the new group (#11766).
             if crate::icons::button(ui, "folder-plus", 22.0, false, tl!("Create a new count group")).clicked() {
-                let _ = app.run("count.newGroup", json!({}));
+                crate::count_group_name_ui::open_new(app);
             }
             // The last group can't be deleted from here (`count.deleteGroup` still can).
             let trash = ui.add_enabled_ui(m.count_groups.len() >= 2, |ui| {
@@ -1084,6 +1138,7 @@ pub fn dialog_command(kind: &str, f: &Map<String, Value>) -> Option<(&'static st
             }
         }
         "dataPoints" => ("image.analysis.selectDataPoints", json!({"selection": f.get("selection"), "ruler": f.get("ruler"), "count": f.get("count")})),
+        crate::count_group_name_ui::KIND => return crate::count_group_name_ui::command(f),
         "scaleMarker" => (
             "image.analysis.placeScaleMarker",
             json!({"length": f.get("length"), "fontSize": f.get("fontSize"), "displayText": f.get("displayText"), "textPosition": f.get("textPosition"), "color": f.get("color")}),
@@ -1094,10 +1149,15 @@ pub fn dialog_command(kind: &str, f: &Map<String, Value>) -> Option<(&'static st
 
 fn dialog(app: &mut PhotocraftApp, ctx: &egui::Context) {
     let Some((kind, mut f)) = app.ui.analysis.dialog.clone() else { return };
+    if kind == crate::count_group_name_ui::KIND && crate::count_group_name_ui::stale(app, &f) {
+        app.ui.analysis.dialog = None;
+        return;
+    }
     let t = Tokens::get(ctx);
     let title = match kind.as_str() {
         "scale" => "Measurement Scale",
         "dataPoints" => "Select Data Points",
+        crate::count_group_name_ui::KIND => crate::count_group_name_ui::TITLE,
         _ => "Measurement Scale Marker",
     };
     let mut result: Option<bool> = None;
@@ -1132,6 +1192,7 @@ fn dialog(app: &mut PhotocraftApp, ctx: &egui::Context) {
                     let text = if custom { format!("{pl} pixels = {ll:.4} {u}") } else { "1 pixels = 1.0000 pixels".into() };
                     ui.label(RichText::new(tl!(&text)).color(t.text_dim).size(11.0));
                 }
+                crate::count_group_name_ui::KIND => result = crate::count_group_name_ui::body(ui, &mut f).or(result),
                 "dataPoints" => {
                     ui.horizontal_top(|ui| {
                         for (source, label) in [("selection", tl!("Selections")), ("ruler", tl!("Ruler Tool")), ("count", tl!("Count Tool"))] {
@@ -1204,6 +1265,9 @@ fn dialog(app: &mut PhotocraftApp, ctx: &egui::Context) {
 #[cfg(test)]
 pub(crate) mod tests;
 
+#[cfg(test)]
+#[path = "count_group_name_tests.rs"]
+mod count_group_name_tests;
 #[cfg(test)]
 mod sampler_drag_tests;
 

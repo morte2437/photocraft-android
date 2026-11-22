@@ -564,6 +564,7 @@ fn bounded_sessions_require_reuse_or_closing_a_document() {
 
 #[test]
 fn capture_smart_svg_visual_fixtures() {
+    let _gpu = photocraft_testkit::gpu_lock();
     let Some(directory) = std::env::var_os("CRAFT_SMART_SVG_FIXTURES").map(std::path::PathBuf::from) else { return };
     std::fs::create_dir_all(&directory).unwrap();
     for theme in [crate::theme::ThemeKind::Pro, crate::theme::ThemeKind::StudioLight] {
@@ -632,6 +633,7 @@ fn embedded_ai_link_table_handoff_preserves_source_until_saved_and_undo_restores
 /// Optional screenshot uses authored bytes and mock services, never private artwork or an editor.
 #[test]
 fn capture_embedded_vector_conversion_prompt() {
+    let _gpu = photocraft_testkit::gpu_lock();
     let Some(directory) = std::env::var_os("CRAFT_SMART_SVG_FIXTURES").map(std::path::PathBuf::from) else { return };
     std::fs::create_dir_all(&directory).unwrap();
     let (mut app, _, _) = fixture();
@@ -766,4 +768,16 @@ fn finished_session_retains_final_save_until_target_is_safe() {
     assert_ne!(app.session.active().unwrap().doc, before);
     poll(&mut app, &ctx);
     assert!(app.smart_svg.editing.is_empty());
+}
+
+#[test]
+fn svg_save_back_displays_omitted_image_warning() {
+    let (mut app, saves, _) = fixture();
+    open(&mut app);
+    confirm(&mut app).unwrap();
+    let omitted = SVG.replace("</svg>", r#"<image width="2" height="2" href="data:image/png,broken"/></svg>"#);
+    saves.borrow_mut().push_back(Ok(omitted.into_bytes()));
+    poll(&mut app, &egui::Context::default());
+    assert!(app.smart_svg.editing.first().unwrap().saved.is_none());
+    assert!(app.ui.notices.iter().any(|notice| notice.lines.iter().any(|line| line.contains("embedded") && line.contains("omitted"))));
 }

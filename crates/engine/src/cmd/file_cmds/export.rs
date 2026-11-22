@@ -2,6 +2,10 @@ use super::paths::{join, sanitize, stem, write_file};
 use super::save::{SaveOpts, encode};
 use super::{ColorMode, Document, EngineError, Layer, LayerContent, LayerId, Rect, Result, Session, Surface, Value, from_rgba_into, json, str_param};
 
+#[cfg(test)]
+#[path = "layers_to_files_index_tests.rs"]
+mod layers_to_files_index_tests;
+
 // ---------- Export ----------
 
 pub(super) fn layers_to_files(s: &mut Session, p: &Value) -> Result<Value> {
@@ -58,16 +62,13 @@ pub fn export_layers_report_with(s: &Session, p: &Value, mut write: impl FnMut(&
     let prefix = p.get("prefix").and_then(Value::as_str).map(str::to_string).unwrap_or_else(|| stem(&d.doc.name));
     let doc = d.doc.clone();
     let mut report = LayerExportReport::default();
-    // Hidden layers never consumed a filename index; adjustments that pass the visibility
-    // filter did. Keep those filenames stable while reporting both kinds of omission.
-    let mut i = 0usize;
-    for l in doc.layers.iter().rev() {
+    // Every layer takes its panel-order index, even one skipped as hidden or as an adjustment,
+    // so a file keeps the same number whether Visible Layers Only is on or off (#13959).
+    for (index, l) in doc.layers.iter().rev().enumerate() {
         if !l.visible && visible_only {
             report.skipped.push(SkippedExportLayer { layer: l.id.0, name: l.name.clone(), reason: "hidden by visibleOnly" });
             continue;
         }
-        let index = i;
-        i += 1;
         if matches!(l.content, LayerContent::Adjustment(_)) {
             report.skipped.push(SkippedExportLayer { layer: l.id.0, name: l.name.clone(), reason: "adjustment layer has no pixels of its own" });
             continue;
@@ -95,7 +96,8 @@ pub fn export_layers_report_with(s: &Session, p: &Value, mut write: impl FnMut(&
             }
         }
 
-        let name = format!("{}_{:04}_{}.{format}", sanitize(&prefix), index, sanitize(&l.name));
+        // The prefix is optional; only the layer name needs the empty-name fallback.
+        let name = format!("{}_{:04}_{}.{format}", if prefix.is_empty() { String::new() } else { sanitize(&prefix) }, index, sanitize(&l.name));
         let (bytes, _warnings) = encode(&one, &name, save)?;
         write(&name, &bytes)?;
         report.files.push(name);
@@ -176,28 +178,12 @@ fn bake_cube_layers(size: usize, title: &str, layers: &[&Layer], depth: photocra
         lattice.layers.push(a);
     }
     let out = photocraft_compose::flatten(&lattice);
-    // The reference application's comment layout. There is no Copyright input yet (#13748), so the
-    // `#Copyright:` line is never written.
-    let mut s = format!(
-        "#Created by: PhotoCraft\nTITLE \"{}\"\n\n#LUT size\nLUT_3D_SIZE {n}\n\n#data domain\nDOMAIN_MIN 0.0 0.0 0.0\nDOMAIN_MAX 1.0 1.0 1.0\n\n#LUT data points\n",
-        title.replace('"', "'")
-    );
-    // 8- and 16-bit documents write values on 1/32768 steps; 32-bit stays unquantised.
-    let quantise = |v: f32| -> f32 {
-        let v = v.clamp(0.0, 1.0);
-        if matches!(depth, photocraft_color::SampleType::F32) { v } else { (v * 32768.0).round() / 32768.0 }
-    };
-    // .cube order: red changes fastest, then green, then blue.
-    for b in 0..n {
-        for g in 0..n {
-            for r in 0..n {
-                let (x, y) = (b * n + r, g);
-                let px = out.px[y * w as usize + x];
-                s.push_str(&format!("{:.6} {:.6} {:.6}\n", quantise(px[0]), quantise(px[1]), quantise(px[2])));
-            }
-        }
-    }
-    s
+    // The shared writer owns CUBE syntax and precision; baking stays app-local.
+    let rows = (0..n).flat_map(|b| (0..n).flat_map(move |g| (0..n).map(move |r| (b, g, r)))).map(|(b, g, r)| {
+        let px = out.px[g * w as usize + b * n + r];
+        [px[0], px[1], px[2]]
+    });
+    craft_cms::lutfile::write_cube_export("PhotoCraft", title, n, !matches!(depth, photocraft_color::SampleType::F32), rows)
 }
 
 /// Backwards-compatible helper for exporting all visible top-level adjustments.
@@ -262,3 +248,7 @@ pub(super) fn push_unique(v: &mut Vec<f64>, x: f64) {
         v.push(x);
     }
 }
+
+#[cfg(test)]
+#[path = "layers_to_files_prefix_tests.rs"]
+mod layers_to_files_prefix_tests;

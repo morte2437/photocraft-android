@@ -167,34 +167,44 @@ pub struct ResolvedSlice {
     pub kind: SliceKind,
 }
 
-/// The visible part of every stored slice (later slices cover earlier ones, as in Photoshop),
-/// clipped to the canvas: a covered slice is cut into the rectangles that stay visible, each
-/// paired with the slice's index in the list.
-fn visible(doc: &Document) -> Vec<(usize, Rect)> {
-    let canvas = doc.bounds();
-    let rects: Vec<Rect> = doc.slices.list.iter().map(|s| s.rect.intersect(&canvas)).collect();
-    let mut out = Vec::new();
-    for (i, r) in rects.iter().enumerate() {
-        let above = rects.get(i + 1..).unwrap_or_default();
-        out.extend(auto_slices(*r, above).into_iter().map(|p| (i, p)));
-    }
-    out
+/// The most stored slices [`resolve`] considers; later ones in the list are left out. A Divide
+/// Slice makes at most 10 000 parts, and Photoshop documents hold a few hundred at most, but a
+/// file's slice resource is only bounded by its size. The partition below is quadratic in the
+/// slice count for nested rectangles, so this keeps a hostile list to well under a second of work.
+pub const MAX_RESOLVED_SLICES: usize = 10_000;
+
+/// A warning naming how many stored slices [`resolve`] leaves out (`None` when it considers all).
+pub fn overflow_warning(doc: &Document) -> Option<String> {
+    let n = doc.slices.list.len().checked_sub(MAX_RESOLVED_SLICES).filter(|n| *n > 0)?;
+    Some(format!("{n} stored slices past the first {MAX_RESOLVED_SLICES} were ignored"))
 }
 
 /// Rectangles that tile `canvas` minus `taken`. The canvas is cut into a grid along every slice
 /// edge; free cells merge into horizontal runs per row band, then runs with identical columns
 /// merge down, which yields the few large auto slices Photoshop shows.
 pub fn auto_slices(canvas: Rect, taken: &[Rect]) -> Vec<Rect> {
+    partition(canvas, taken, false).1
+}
+
+/// Splits `canvas` by `rects` (later rects on top) in one sweep: for each rect, the pieces of it
+/// that no later rect covers, and the pieces that no rect covers.
+///
+/// The canvas is cut into a grid along every rect edge. Each row band is painted from the topmost
+/// rect down, skipping cells already painted (a next-free-cell index), so every cell is written
+/// once per band. Consecutive cells with the same owner make a horizontal run, and runs with the
+/// same owner and columns merge down. Resolving each rect against the rects above it separately
+/// rebuilt that grid once per rect and re-marked shared overlaps every time, which was quartic in
+/// the slice count for nested rectangles and let a crafted document stall canvas drawing.
+fn partition(canvas: Rect, rects: &[Rect], want_owned: bool) -> (Vec<Vec<Rect>>, Vec<Rect>) {
+    let mut owned_runs: Vec<Vec<Rect>> = vec![Vec::new(); rects.len()];
+    let mut free_runs: Vec<Rect> = Vec::new();
     if canvas.is_empty() {
-        return Vec::new();
+        return (owned_runs, free_runs);
     }
+    let clipped: Vec<Rect> = rects.iter().map(|r| r.intersect(&canvas)).collect();
     let mut xs = vec![canvas.x0, canvas.x1];
     let mut ys = vec![canvas.y0, canvas.y1];
-    for r in taken {
-        let r = r.intersect(&canvas);
-        if r.is_empty() {
-            continue;
-        }
+    for r in clipped.iter().filter(|r| !r.is_empty()) {
         xs.extend([r.x0, r.x1]);
         ys.extend([r.y0, r.y1]);
     }
@@ -202,47 +212,94 @@ pub fn auto_slices(canvas: Rect, taken: &[Rect]) -> Vec<Rect> {
     xs.dedup();
     ys.sort_unstable();
     ys.dedup();
-    // Clip the taken rectangles to the canvas once, so band coverage only considers rects that
-    // can actually cover a cell.
-    let clipped: Vec<Rect> = taken.iter().map(|r| r.intersect(&canvas)).filter(|r| !r.is_empty()).collect();
-    // Map an x edge to its cell index in `xs` (xs is sorted/deduped).
-    let x_cell = |x: i32| xs.partition_point(|&e| e <= x).saturating_sub(1);
-    // Horizontal runs per row band. For each band, mark covered x-cells in a single pass over
-    // the rects intersecting that band, instead of scanning every rect for every cell (which
-    // was cubic in the slice count and let a crafted document stall canvas drawing).
+    // Every clipped edge is in `xs`/`ys`, so these are exact grid indices.
+    let x_edge = |x: i32| xs.partition_point(|&e| e < x);
+    let y_edge = |y: i32| ys.partition_point(|&e| e < y);
+    let nbands = ys.len().saturating_sub(1);
     let ncells = xs.len().saturating_sub(1);
-    let mut runs: Vec<Rect> = Vec::new();
-    for yw in ys.windows(2) {
-        let (band_y0, band_y1) = (yw[0], yw[1]);
-        let mut covered_cell = vec![false; ncells];
-        for r in &clipped {
-            if r.y0 <= band_y0 && band_y1 <= r.y1 {
-                // Rect spans this whole band vertically; mark the x-cells it covers.
-                let (c0, c1) = (x_cell(r.x0), x_cell(r.x1));
-                for c in covered_cell.iter_mut().take(c1).skip(c0) {
-                    *c = true;
-                }
-            }
-        }
-        let mut start: Option<i32> = None;
-        for (ci, xw) in xs.windows(2).enumerate() {
-            let free = !covered_cell.get(ci).copied().unwrap_or(false);
-            match (free, start) {
-                (true, None) => start = Some(xw[0]),
-                (false, Some(s)) => {
-                    runs.push(Rect::new(s, band_y0, xw[0], band_y1));
-                    start = None;
-                }
-                _ => {}
-            }
-        }
-        if let Some(s) = start {
-            runs.push(Rect::new(s, band_y0, *xs.last().unwrap_or(&canvas.x1), band_y1));
+    // Rects entering and leaving the sweep at each band edge.
+    let mut enter: Vec<Vec<usize>> = vec![Vec::new(); ys.len()];
+    let mut leave: Vec<Vec<usize>> = vec![Vec::new(); ys.len()];
+    let mut cols: Vec<(usize, usize)> = vec![(0, 0); rects.len()];
+    for (i, r) in clipped.iter().enumerate().filter(|(_, r)| !r.is_empty()) {
+        if let (Some(e), Some(l), Some(c)) = (enter.get_mut(y_edge(r.y0)), leave.get_mut(y_edge(r.y1)), cols.get_mut(i)) {
+            e.push(i);
+            l.push(i);
+            *c = (x_edge(r.x0), x_edge(r.x1));
         }
     }
-    // Merge vertically adjacent runs with the same columns.
-    // `open` finds the slice a run continues by its columns and bottom edge: searching the output
-    // for each run is quadratic in the runs, and bars crossing in a grid leave a million of them.
+    let mut active: std::collections::BTreeSet<usize> = std::collections::BTreeSet::new();
+    let mut owner: Vec<usize> = vec![usize::MAX; ncells];
+    // next[c]: the first unpainted cell at or after c (ncells when none).
+    let mut next: Vec<usize> = (0..=ncells).collect();
+    for b in 0..nbands {
+        for i in leave.get(b).into_iter().flatten() {
+            active.remove(i);
+        }
+        active.extend(enter.get(b).into_iter().flatten().copied());
+        let (Some(&band_y0), Some(&band_y1)) = (ys.get(b), ys.get(b + 1)) else { break };
+        owner.fill(usize::MAX);
+        for (c, n) in next.iter_mut().enumerate() {
+            *n = c;
+        }
+        for &i in active.iter().rev() {
+            let (c0, c1) = cols.get(i).copied().unwrap_or((0, 0));
+            let mut c = find_free(&mut next, c0);
+            while c < c1 {
+                if let Some(o) = owner.get_mut(c) {
+                    *o = i;
+                }
+                if let Some(n) = next.get_mut(c) {
+                    *n = c + 1;
+                }
+                c = find_free(&mut next, c + 1);
+            }
+        }
+        let mut c = 0;
+        while c < ncells {
+            let who = owner.get(c).copied().unwrap_or(usize::MAX);
+            let mut end = c + 1;
+            while end < ncells && owner.get(end).copied() == Some(who) {
+                end += 1;
+            }
+            if let (Some(&x0), Some(&x1)) = (xs.get(c), xs.get(end)) {
+                let run = Rect::new(x0, band_y0, x1, band_y1);
+                match owned_runs.get_mut(who) {
+                    Some(runs) => {
+                        if want_owned {
+                            runs.push(run);
+                        }
+                    }
+                    None => free_runs.push(run),
+                }
+            }
+            c = end;
+        }
+    }
+    (owned_runs.into_iter().map(merge_down).collect(), merge_down(free_runs))
+}
+
+/// The first unpainted cell at or after `c`, compressing the path it walks.
+fn find_free(next: &mut [usize], c: usize) -> usize {
+    let mut root = c;
+    while let Some(&n) = next.get(root) {
+        if n == root {
+            break;
+        }
+        root = n;
+    }
+    let mut c = c;
+    while c != root {
+        let Some(slot) = next.get_mut(c) else { break };
+        c = std::mem::replace(slot, root);
+    }
+    root
+}
+
+/// Merges vertically adjacent runs (given band by band, top to bottom) with the same columns.
+/// `open` finds the slice a run continues by its columns and bottom edge: searching the output
+/// for each run is quadratic in the runs, and bars crossing in a grid leave a million of them.
+fn merge_down(runs: Vec<Rect>) -> Vec<Rect> {
     let mut out: Vec<Rect> = Vec::new();
     let mut open: std::collections::HashMap<(i32, i32, i32), usize> = std::collections::HashMap::new();
     for r in runs {
@@ -268,10 +325,10 @@ pub fn auto_slices(canvas: Rect, taken: &[Rect]) -> Vec<Rect> {
 /// appears once per visible piece: the first piece keeps its name, the others are `<name>-NN`.
 pub fn resolve(doc: &Document) -> Vec<ResolvedSlice> {
     let base = base_name(doc);
-    let stored = visible(doc);
-    let rects: Vec<Rect> = stored.iter().map(|(_, r)| *r).collect();
-    let mut all: Vec<(Option<usize>, Rect)> = stored.iter().map(|(i, r)| (Some(*i), *r)).collect();
-    all.extend(auto_slices(doc.bounds(), &rects).into_iter().map(|r| (None, r)));
+    let rects: Vec<Rect> = doc.slices.list.iter().take(MAX_RESOLVED_SLICES).map(|s| s.rect).collect();
+    let (owned, free) = partition(doc.bounds(), &rects, true);
+    let mut all: Vec<(Option<usize>, Rect)> = owned.into_iter().enumerate().flat_map(|(i, pieces)| pieces.into_iter().map(move |p| (Some(i), p))).collect();
+    all.extend(free.into_iter().map(|r| (None, r)));
     all.sort_by_key(|(_, r)| (r.y0, r.x0));
     let single = all.len() == 1;
     let mut named = vec![false; doc.slices.list.len()];
@@ -412,6 +469,106 @@ mod tests {
         d.slices.list[0].name.clear();
         let names: Vec<String> = resolve(&d).into_iter().filter(|s| s.id == Some(1)).map(|s| s.name).collect();
         assert_eq!(names, ["o82_01", "o82_03"]);
+    }
+
+    /// The earlier resolver: each stored slice cut against the slices above it on its own grid,
+    /// then the auto slices cut against the visible pieces.
+    fn reference_resolve(canvas: Rect, rects: &[Rect]) -> (Vec<(usize, Rect)>, Vec<Rect>) {
+        fn cut(canvas: Rect, taken: &[Rect]) -> Vec<Rect> {
+            if canvas.is_empty() {
+                return Vec::new();
+            }
+            let clipped: Vec<Rect> = taken.iter().map(|r| r.intersect(&canvas)).filter(|r| !r.is_empty()).collect();
+            let mut xs = vec![canvas.x0, canvas.x1];
+            let mut ys = vec![canvas.y0, canvas.y1];
+            for r in &clipped {
+                xs.extend([r.x0, r.x1]);
+                ys.extend([r.y0, r.y1]);
+            }
+            xs.sort_unstable();
+            xs.dedup();
+            ys.sort_unstable();
+            ys.dedup();
+            let mut runs = Vec::new();
+            for yw in ys.windows(2) {
+                let mut start = None;
+                for xw in xs.windows(2) {
+                    let free = !clipped.iter().any(|r| r.x0 <= xw[0] && xw[1] <= r.x1 && r.y0 <= yw[0] && yw[1] <= r.y1);
+                    match (free, start) {
+                        (true, None) => start = Some(xw[0]),
+                        (false, Some(s)) => {
+                            runs.push(Rect::new(s, yw[0], xw[0], yw[1]));
+                            start = None;
+                        }
+                        _ => {}
+                    }
+                }
+                if let Some(s) = start {
+                    runs.push(Rect::new(s, yw[0], canvas.x1, yw[1]));
+                }
+            }
+            merge_down(runs)
+        }
+        let clipped: Vec<Rect> = rects.iter().map(|r| r.intersect(&canvas)).collect();
+        let mut stored = Vec::new();
+        for (i, r) in clipped.iter().enumerate() {
+            stored.extend(cut(*r, &clipped[i + 1..]).into_iter().map(|p| (i, p)));
+        }
+        let pieces: Vec<Rect> = stored.iter().map(|(_, r)| *r).collect();
+        let free = cut(canvas, &pieces);
+        (stored, free)
+    }
+
+    #[test]
+    fn sweep_partition_matches_per_slice_resolution() {
+        // A small deterministic generator: overlapping, nested, touching and off-canvas rects.
+        let mut seed = 0x2545_f491_u32;
+        let mut next = |m: i32| {
+            seed ^= seed << 13;
+            seed ^= seed >> 17;
+            seed ^= seed << 5;
+            (seed % (m as u32)) as i32
+        };
+        let canvas = Rect::new(0, 0, 120, 90);
+        for round in 0..200 {
+            let n = 1 + round % 9;
+            let rects: Vec<Rect> = (0..n)
+                .map(|_| {
+                    let (x, y) = (next(140) - 10, next(110) - 10);
+                    Rect::new(x, y, x + next(70), y + next(60))
+                })
+                .collect();
+            let (owned, free) = partition(canvas, &rects, true);
+            let got: Vec<(usize, Rect)> = owned.into_iter().enumerate().flat_map(|(i, ps)| ps.into_iter().map(move |p| (i, p))).collect();
+            let (want, want_free) = reference_resolve(canvas, &rects);
+            assert_eq!(got, want, "pieces for {rects:?}");
+            assert_eq!(free, want_free, "auto slices for {rects:?}");
+        }
+    }
+
+    #[test]
+    fn nested_slices_resolve_in_bounded_work() {
+        // Nested rectangles were the quartic case: every slice re-marked every later overlap on
+        // its own grid. Each ring here stays visible as four bars around the next slice in.
+        let n = 2_000;
+        let mut d = Document::new("nest.psd", Size::new(10_000, 10_000), ColorMode::Rgb, SampleType::U8);
+        d.slices.list = (0..n).map(|i| Slice { id: i as u32 + 1, rect: Rect::new(i, i, 10_000 - i, 10_000 - i), ..Default::default() }).collect();
+        let r = resolve(&d);
+        let stored = r.iter().filter(|s| s.id.is_some()).count();
+        assert_eq!(stored, 4 * (n as usize - 1) + 1);
+        assert_eq!(r.iter().map(|s| i64::from(s.rect.width()) * i64::from(s.rect.height())).sum::<i64>(), 10_000 * 10_000);
+    }
+
+    #[test]
+    fn slices_past_the_limit_are_left_out() {
+        let mut d = Document::new("many.psd", Size::new(100, 100), ColorMode::Rgb, SampleType::U8);
+        d.slices.list = (0..MAX_RESOLVED_SLICES + 5).map(|i| Slice { id: i as u32 + 1, rect: Rect::new(0, 0, 10, 10), ..Default::default() }).collect();
+        let r = resolve(&d);
+        let ids: Vec<u32> = r.iter().filter_map(|s| s.id).collect();
+        assert_eq!(ids, [MAX_RESOLVED_SLICES as u32], "the topmost considered slice covers the others");
+        assert!(overflow_warning(&d).unwrap().starts_with("5 stored slices"));
+        d.slices.list.truncate(MAX_RESOLVED_SLICES);
+        assert_eq!(overflow_warning(&d), None);
     }
 
     #[test]

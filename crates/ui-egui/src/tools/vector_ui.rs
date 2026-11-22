@@ -171,6 +171,9 @@ pub struct PenPath {
     /// The last commit failed: the draft stays as it was and isn't retried on its own.
     #[serde(skip)]
     pub(crate) commit_failed: bool,
+    /// Runtime origin of a refused Freeform release; its own tool keeps the existing anchor Undo.
+    #[serde(skip)]
+    pub(crate) freeform_origin: bool,
     /// Drawing carries on from an endpoint of this open subpath of a document path (#6593): the
     /// commit replaces that subpath instead of adding one.
     #[serde(default)]
@@ -201,6 +204,12 @@ impl PenPath {
     /// Does `tool` keep drawing this path? Another tool finishes it.
     pub fn drawn_with(&self, tool: Tool) -> bool {
         tool == if self.curvature { Tool::CurvaturePen } else { Tool::Pen }
+    }
+
+    /// A retained failed Freeform release keeps Undo in its own tool without treating another
+    /// tool's retained Pen draft as a Freeform draft. Drawing and commit ownership stay separate.
+    pub(crate) fn owns_undo(&self, tool: Tool) -> bool {
+        self.drawn_with(tool) || (self.freeform_origin && tool == Tool::FreeformPen)
     }
 }
 
@@ -310,9 +319,7 @@ enum PenTarget {
 pub(crate) fn capture_pen_owner(app: &PhotocraftApp) -> Option<PenOwner> {
     let st = app.session.active()?;
     let target = if app.ui.tool_options.vector_mode == "shape" {
-        let mut open_stroke = app.ui.tool_options.shape_stroke.params();
-        open_stroke["width"] = json!(app.ui.tool_options.stroke_width.max(1.0));
-        open_stroke["color"] = json!(app.session.tools.foreground);
+        let open_stroke = shapes::open_pen_stroke_param(app);
         PenTarget::Shape { fill: fill_param(app), stroke: stroke_param(app), open_stroke }
     } else if let Some((name, _)) = selected_document_geometry(app) {
         PenTarget::Path { name, append: true }
@@ -346,6 +353,13 @@ use std::sync::{Arc, Weak};
 use path_ops::{selected_document_geometry, targeted_vector_mask_id};
 pub(crate) use pen::{finish_pen_if_left, freeform_finish_owned};
 use shapes::{fill_param, stroke_param};
+
+/// Whether Edit Undo currently belongs to the active tool's live or refused Freeform draft.
+pub(crate) fn pen_can_undo(app: &PhotocraftApp) -> bool {
+    app.ui.pen.as_ref().is_some_and(|pen| {
+        pen.owns_undo(app.ui.tool) && pen.owner.as_ref().is_some_and(|owner| owner.valid(app)) && (!pen.knots.is_empty() || pen.resumes.is_some())
+    })
+}
 
 /// Commit a valid source-owned draft on a tab switch; otherwise cancel with an actionable diagnostic.
 pub(crate) fn cancel_stale_pen(app: &mut PhotocraftApp) -> bool {

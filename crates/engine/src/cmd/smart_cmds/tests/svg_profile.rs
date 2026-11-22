@@ -96,9 +96,12 @@ fn svg_with_an_unreadable_embedded_image_still_places() {
     let mut s = Session::new();
     s.execute("file.new", json!({"width": 8, "height": 8})).unwrap();
     let placed = crate::file_cmds::place_bytes(&mut s, "Logo.svg", svg.as_bytes().to_vec(), None, &json!({"smartObject": true})).unwrap();
+    assert!(placed["warnings"].as_array().unwrap().iter().any(|w| w.as_str().unwrap().contains("embedded image was omitted")));
     let doc = &s.active().unwrap().doc;
     let LayerContent::Smart(sm) = &doc.layer(LayerId(placed["layer"].as_u64().unwrap())).unwrap().content else { panic!("smart") };
     assert_eq!(sm.cache.as_ref().unwrap().rgba(6, 4), [1.0, 0.0, 0.0, 1.0]);
+    // A warning-bearing command must not poison the strict source/filter caches.
+    assert!(render(doc, sm).is_err());
 }
 
 /// Warp setup needs only the source frame, found with the bounded parse and the exact canvas
@@ -142,7 +145,13 @@ fn svg_smart_render_cache_tracks_destination_profile_and_transform() {
         linear.icc_profile = Some(Builtin::LinearSrgb.profile().to_bytes());
         let mut smart = SmartObject::new(SmartSource::Embedded { file_name: "clipboard.svg".into(), bytes: Arc::new(SVG.to_vec()) }, Affine::IDENTITY, None);
         let original = render(&srgb, &smart).unwrap().unwrap();
+        let (reported, warnings) = render_with_warnings(&srgb, &smart).unwrap();
+        assert!(warnings.is_empty());
+        assert_eq!(reported.unwrap(), original, "warning-bearing sRGB parity");
         let corrected = render(&linear, &smart).unwrap().unwrap();
+        let (reported, warnings) = render_with_warnings(&linear, &smart).unwrap();
+        assert!(warnings.is_empty());
+        assert_eq!(reported.unwrap(), corrected, "warning-bearing ICC parity");
         assert!((original.pixel(3, 3)[0] - 128.0 / 255.0).abs() < 0.01);
         assert!((corrected.pixel(3, 3)[0] - 0.216).abs() < 0.01, "linear profile at {depth}-bit");
         assert_eq!(render(&srgb, &smart).unwrap().unwrap(), original, "profile-specific placed cache");
@@ -153,6 +162,9 @@ fn svg_smart_render_cache_tracks_destination_profile_and_transform() {
         let bounds = [0.0, 0.0, 8.0, 8.0];
         smart.warp = Some(photocraft_geom::warp::Warp::custom(photocraft_geom::warp::BezierMesh::identity(bounds, 1, 1), bounds));
         let warped = render(&linear, &smart).unwrap().unwrap();
+        let (reported, warnings) = render_with_warnings(&linear, &smart).unwrap();
+        assert!(warnings.is_empty());
+        assert_eq!(reported.unwrap(), warped, "warning-bearing warp parity");
         assert!((warped.pixel(10, 8)[0] - corrected.pixel(3, 3)[0]).abs() < 0.01, "warp must keep corrected colours");
         linear.layers = vec![Layer::new("Saved SVG", LayerContent::Smart(smart.clone()))];
         let saved = encode_source(&linear).unwrap();
@@ -163,4 +175,53 @@ fn svg_smart_render_cache_tracks_destination_profile_and_transform() {
         let rerendered = render(&reopened, restored).unwrap().unwrap();
         assert!((rerendered.pixel(10, 8)[0] - corrected.pixel(3, 3)[0]).abs() < 0.01, "saved source keeps ICC and warp");
     }
+}
+
+#[test]
+fn warning_bearing_svg_render_keeps_visible_filters_without_poisoning_strict_cache() {
+    let clean = br##"<svg xmlns="http://www.w3.org/2000/svg" width="8" height="8"><rect x="4" width="4" height="8" fill="#ff0000"/></svg>"##;
+    let omitted = br##"<svg xmlns="http://www.w3.org/2000/svg" width="8" height="8"><image width="4" height="4" href="data:image/bmp,BM"/><rect x="4" width="4" height="8" fill="#ff0000"/></svg>"##;
+    let s = session(8);
+    let doc = &s.active().unwrap().doc;
+    let mut smart = SmartObject::new(SmartSource::Embedded { file_name: "Artwork.svg".into(), bytes: Arc::new(clean.to_vec()) }, Affine::IDENTITY, None);
+    let unfiltered = render(doc, &smart).unwrap().unwrap();
+    smart.smart_filters.push(SmartFilter {
+        command: "filter.blur.gaussianBlur".into(),
+        params: json!({"radius": 2}),
+        blend: BlendMode::Normal,
+        opacity: 1.0,
+        visible: true,
+    });
+    let expected = render(doc, &smart).unwrap().unwrap();
+    assert_ne!(expected, unfiltered, "the visible filter must actually change pixels");
+    smart.source = SmartSource::Embedded { file_name: "Artwork.svg".into(), bytes: Arc::new(omitted.to_vec()) };
+    let (actual, warnings) = render_with_warnings(doc, &smart).unwrap();
+    assert_eq!(actual.unwrap(), expected);
+    assert_eq!(warnings.len(), 1);
+    assert!(warnings[0].contains("embedded image was omitted"));
+    assert!(render(doc, &smart).is_err(), "warning-bearing filter results must not enter strict caches");
+}
+
+/// Warningless layered decoding must not cache the partial pixels that warning-bearing File
+/// Open is allowed to expose. Repeated calls exercise both source and Stack Mode cache paths.
+#[test]
+fn svg_stack_and_source_caches_refuse_omitted_images() {
+    for href in ["data:image/x-foo,abc", "data:image/png;base64,not-base64", "data:image/png;base64"] {
+        let svg = format!(
+            r##"<svg xmlns="http://www.w3.org/2000/svg" width="8" height="8"><image width="4" height="4" href="{href}"/><rect x="4" width="4" height="8" fill="#ff0000"/></svg>"##
+        );
+        let imported = photocraft_io::svg::import_svg_bounded_images("Omitted.svg", svg.as_bytes(), 24_000_000).unwrap();
+        assert!(imported.warnings.iter().any(|w| w.contains("embedded image was omitted")));
+        for _ in 0..2 {
+            assert!(decode_source("Omitted.svg", svg.as_bytes()).is_err());
+            assert!(source_image("Omitted.svg", svg.as_bytes(), PixelFormat::RGBA32F).is_err());
+            assert!(stack_image("Omitted.svg", svg.as_bytes(), PixelFormat::RGBA32F, photocraft_doc::StackMode::Mean).is_err());
+        }
+        let s = session(8);
+        let mut smart = SmartObject::new(SmartSource::Embedded { file_name: "Omitted.svg".into(), bytes: Arc::new(svg.into_bytes()) }, Affine::IDENTITY, None);
+        smart.stack_mode = Some(photocraft_doc::StackMode::Mean);
+        assert!(render(&s.active().unwrap().doc, &smart).is_err());
+        assert!(render_with_warnings(&s.active().unwrap().doc, &smart).is_err(), "Stack Mode must not suppress layered import omissions");
+    }
+    assert!(stack_image("Complete.svg", SVG, PixelFormat::RGBA32F, photocraft_doc::StackMode::Mean).is_ok());
 }

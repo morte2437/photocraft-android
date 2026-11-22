@@ -33,13 +33,28 @@ pub fn value_field_whole_alerting(
     suffix: &str,
     width: f32,
 ) -> (Response, bool) {
-    value_field_alerting_in(ui, name, value, range, suffix, width, true)
+    value_field_alerting_in(ui, name, value, range, suffix, width, (true, None))
 }
 
 /// [`value_field_whole_alerting`] for a field that takes decimals (a corner radius, #13336): a
 /// typed value past `range` becomes the closest end, unrounded.
 pub fn value_field_alerting(ui: &mut Ui, name: &str, value: &mut f32, range: std::ops::RangeInclusive<f32>, suffix: &str, width: f32) -> (Response, bool) {
-    value_field_alerting_in(ui, name, value, range, suffix, width, false)
+    value_field_alerting_in(ui, name, value, range, suffix, width, (false, None))
+}
+
+/// [`value_field_alerting`] showing `decimals` decimal places, for a field in a ruler unit (Create
+/// Triangle's Width and Height in pixels, #13358): the typed value past `range` becomes the closest
+/// end, and the field keeps the places its unit needs.
+pub fn value_field_alerting_prec(
+    ui: &mut Ui,
+    name: &str,
+    value: &mut f32,
+    range: std::ops::RangeInclusive<f32>,
+    suffix: &str,
+    width: f32,
+    decimals: u32,
+) -> (Response, bool) {
+    value_field_alerting_in(ui, name, value, range, suffix, width, (false, Some(decimals)))
 }
 
 fn value_field_alerting_in(
@@ -49,7 +64,8 @@ fn value_field_alerting_in(
     range: std::ops::RangeInclusive<f32>,
     suffix: &str,
     width: f32,
-    whole: bool,
+    // Whole numbers only, and the decimal places to show (`None`: the field's own choice).
+    (whole, decimals): (bool, Option<u32>),
 ) -> (Response, bool) {
     let (lo, hi) = (*range.start(), *range.end());
     let fit = |v: f32| {
@@ -69,7 +85,7 @@ fn value_field_alerting_in(
     let draft = draft.filter(|(_, stored, field)| *stored == *value && field.is_some_and(|f| ui.ctx().memory(|m| m.has_focus(f))));
     let mut typed = draft.map_or(*value, |(typed, _, _)| typed);
     // The field's own range is wide, so the typed value reaches here unclamped.
-    let r = value_field_named(ui, name, &mut typed, -1.0e9..=1.0e9, suffix, width);
+    let r = value_field_in(ui, &mut typed, -1.0e9..=1.0e9, suffix, width, 0.0, FieldOpts { decimals, ..Default::default() }, Some(name)).0;
     // A step past the ends is no typed value (#13304). Only a step the field took counts: a wheel
     // event that moves less than a notch (or not at all) steps nothing, and must not drop what was
     // typed.
@@ -155,6 +171,11 @@ pub(super) struct FieldOpts {
     /// keystroke (the zoom fields: typing `150` over `50` must not zoom to 1 % on the way). Esc,
     /// Tab and Alt do not apply it (`zoom_field`).
     pub(super) hold_typed: bool,
+    /// Whole numbers only ([`super::value_field_int`], #11786): a typed decimal rounds to the
+    /// nearest one, `12.5` and `12,5` both giving `13`, and the value the field holds is never a
+    /// fraction, whichever path wrote it (a drag, another field on the same option, a preference
+    /// file). The number the field shows is therefore the number its caller reads.
+    pub(super) integer: bool,
     /// Show an unset value as an empty field rather than `0` (the Crop tool's free ratio sides,
     /// #10888). Editing, scrubbing and parsing are unchanged.
     pub(super) blank_when_zero: bool,
@@ -205,7 +226,7 @@ fn value_field_box(
     opts: FieldOpts,
     name: Option<&str>,
 ) -> (Response, Rect) {
-    let FieldOpts { decimals, step_from_decimals, units, extent, .. } = opts;
+    let FieldOpts { decimals, step_from_decimals, units, extent, integer, .. } = opts;
     let t = Tokens::get(ui.ctx());
     let (rect, slot) = ui.allocate_exact_size(size, Sense::hover());
     let last_editor = ui.data(|d| d.get_temp::<egui::Id>(slot.id));
@@ -256,7 +277,7 @@ fn value_field_box(
     let (lo, hi) = (*range.start(), *range.end());
     // The field's id is only known once it's drawn: last frame's, saved under `slot` below.
     let focused = ui.data(|d| d.get_temp::<egui::Id>(slot.id)).filter(|id| ui.memory(|m| m.has_focus(*id)));
-    let (step, grid) = arrow_step(ui, slot.id, unit);
+    let (step, grid) = arrow_step(ui, slot.id, unit, integer);
     // The wheel steps it as the arrow keys do (#5473), focused or under the pointer.
     let notches = crate::field_wheel::notches(ui, slot.id, focused.is_some(), rect);
     if notches != 0.0
@@ -515,7 +536,7 @@ fn number_edit(
     units: crate::numeric_expression::Units,
     opts: FieldOpts,
 ) -> Response {
-    let FieldOpts { decimals, wrap_drag, hold_typed, blank_when_zero, keep_zeros, .. } = opts;
+    let FieldOpts { decimals, wrap_drag, hold_typed, integer, blank_when_zero, keep_zeros, .. } = opts;
     let (id, ctx) = (ui.next_auto_id(), ui.ctx().clone());
     // Focused before the DragValue is drawn, so it gains focus this frame and selects its text.
     if ui.data_mut(|d| d.remove_temp::<bool>(first_field_id())).unwrap_or(false) {
@@ -591,6 +612,9 @@ fn number_edit(
             .custom_parser(move |s| {
                 // Short events can accumulate: reject before either parser normalizes the text.
                 if s.chars().nth(NUMERIC_INPUT_LIMIT).is_some() {
+                    // Refused, so it is no number the field keeps: a caller holding an alert for
+                    // an earlier entry drops it instead of firing on blur for text like this.
+                    ctx.data_mut(|d| d.insert_temp(id.with("parses"), false));
                     return None;
                 }
                 // A zoom field takes `,` or `.` as its decimal point (`100,90` is `100.90`) and reads
@@ -606,6 +630,15 @@ fn number_edit(
                             return lead.and_then(|lead| zoom_number(&lead, units));
                         }
                     }
+                } else if integer {
+                    // A whole-number field takes the decimal comma too (`12,5` is `12.5`); a number
+                    // with two separators (`1,5,2`) is not one, as in any other field. Each operand
+                    // of an expression is its own number, so `1.5+2.5` still adds up.
+                    let is_sep = |c: char| matches!(c, '.' | ',');
+                    if s.split(|c: char| !(c.is_ascii_digit() || is_sep(c))).any(|n| n.chars().filter(|&c| is_sep(c)).count() > 1) {
+                        return None;
+                    }
+                    s.replace(',', ".")
                 } else {
                     s.to_owned()
                 };
@@ -619,6 +652,10 @@ fn number_edit(
                 } else {
                     parse_num_in(s, units)
                 };
+                // A whole-number field already rounds what it reads here, in the parser: the value
+                // it holds while the number is being typed is then the one it keeps, where rounding
+                // it after the DragValue wrote it down would rewrite the text under the typist.
+                let v = if integer { v.map(|v| v.round()) } else { v };
                 // Whether the text being typed is a number at all, for [`typed_text_parses`].
                 ctx.data_mut(|d| d.insert_temp(id.with("parses"), v.is_some()));
                 if ctx.memory(|m| m.has_focus(id)) && !blank && plain(s).is_none() {
@@ -651,12 +688,19 @@ fn number_edit(
     if *value != before && lo <= hi {
         *value = value.clamp(lo, hi);
     }
+    // A whole-number field keeps whole numbers whatever wrote one: a drag between two values, a
+    // plain field on the same option, a preference file. The number it shows is then the number
+    // its caller reads, and rounding a whole number changes nothing.
+    if integer && lo <= hi && value.is_finite() && *value != value.round() {
+        *value = value.round().clamp(lo, hi);
+    }
     resp.flags.set(egui::response::Flags::CHANGED, *value != before);
     resp
 }
 
 /// Whether the text last typed into the number field `id` (a [`value_field`]'s response id) reads
 /// as a number, an arithmetic entry included once it is complete: `None` before anything was typed.
+/// Text the field refuses for its length reads `false`, since the field keeps no number from it.
 pub fn typed_text_parses(ctx: &egui::Context, id: egui::Id) -> Option<bool> {
     ctx.data(|d| d.get_temp::<bool>(id.with("parses")))
 }
@@ -671,8 +715,10 @@ fn zoom_number(text: &str, units: crate::numeric_expression::Units) -> Option<f6
 }
 
 /// Increments a numerical field with the up/down arrow keys. Increments by 1 by default, 10 with shift, and 0.1 with ctrl/cmd.
-/// Returns the amount to add, and what to round the value to first.
-fn arrow_step(ui: &mut Ui, slot: egui::Id, step: f32) -> (f32, f32) {
+/// Returns the amount to add, and what to round the value to first. A whole-number field has no
+/// 0.1 step: Ctrl/Cmd+arrow leaves its value as it is, as the reference application's Magic Wand
+/// Tolerance does, instead of writing a fraction the field rounds back next frame (#11786).
+fn arrow_step(ui: &mut Ui, slot: egui::Id, step: f32, integer: bool) -> (f32, f32) {
     use egui::{Key, Modifiers};
     // The field's id is only known once it's drawn, so `value_field` saves it under `slot` for the next frame.
     let Some(id) = ui.data(|d| d.get_temp::<egui::Id>(slot)).filter(|id| ui.memory(|m| m.has_focus(*id))) else {
@@ -684,6 +730,9 @@ fn arrow_step(ui: &mut Ui, slot: egui::Id, step: f32) -> (f32, f32) {
         for (mods, k) in [(Modifiers::COMMAND, (step / 10.0).max(0.01)), (Modifiers::SHIFT, 10.0 * step), (Modifiers::NONE, step)] {
             let presses = i.count_and_consume_key(mods, Key::ArrowUp) as f32 - i.count_and_consume_key(mods, Key::ArrowDown) as f32;
             if presses != 0.0 && mods == Modifiers::COMMAND {
+                if integer {
+                    continue;
+                }
                 grid = k;
             }
             n += k * presses;

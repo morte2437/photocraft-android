@@ -157,6 +157,7 @@ fn pen_custom_undo_binding_and_menu_retract_pending_points() {
         crate::vector_ui::pen_down(&mut app, x, y, false);
         crate::vector_ui::pen_up(&mut app);
     }
+    app.run("actions.reset", serde_json::json!({"confirm":true,"mode":"append"})).unwrap();
     app.session.prefs.edit(|p| p.shortcuts.insert("edit.undo".into(), "Cmd+Shift+Y".into()));
     let ctx = egui::Context::default();
     let press = |app: &mut PhotocraftApp, key: Key, modifiers: Modifiers| {
@@ -173,8 +174,11 @@ fn pen_custom_undo_binding_and_menu_retract_pending_points() {
     press(&mut app, Key::Y, Modifiers::COMMAND | Modifiers::SHIFT);
     assert_eq!(app.ui.pen.as_ref().unwrap().knots.len(), 1);
     assert!(crate::menus::is_enabled(&app, "edit.undo"));
+    let undo_label = |app: &PhotocraftApp| crate::menus::menu_items(app).into_iter().find(|item| item.id == "edit.undo").unwrap().label;
+    assert_ne!(undo_label(&app), "Undo Reset Actions");
     crate::menus::invoke(&mut app, &ctx, "edit.undo", serde_json::json!({})).unwrap();
     assert!(app.ui.pen.is_none());
+    assert_eq!(undo_label(&app), "Undo Reset Actions");
 }
 
 /// Verifies pressing Escape with a custom undo shortcut cancels an active type path preview without popping document history.

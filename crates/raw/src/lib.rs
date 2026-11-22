@@ -184,8 +184,13 @@ pub fn decode(bytes: &[u8], limits: &Limits) -> Result<Sensor, RawError> {
     let mut shared_limits = craft_raw::Limits::default();
     shared_limits.max_samples = max_samples;
     let info = craft_raw::probe_info_with(bytes, &shared_limits).map_err(shared_error)?;
-    if info.width > limits.max_width as usize || info.height > limits.max_height as usize {
-        return Err(RawError::LimitExceeded(format!("dimensions {}×{} exceed {}×{}", info.width, info.height, limits.max_width, limits.max_height)));
+    // A three-component sample allowance is not a pixel allowance: a CFA plane
+    // must still obey the caller's max_pixels before any sample allocation.
+    limits.check(info.width as u64, info.height as u64, (info.cpp as u64).saturating_mul(4))?;
+    // The shared parser supports additional component layouts; PhotoCraft's developer
+    // currently accepts only one CFA/monochrome plane or three RGB planes.
+    if !matches!(info.cpp, 1 | 3) {
+        return Err(RawError::unsupported(format!("{} samples per pixel", info.cpp)));
     }
     let image = craft_raw::decode_with(bytes, &shared_limits).map_err(shared_error)?;
     Ok(crate::shared::adapt(image))
@@ -212,4 +217,18 @@ fn shared_error(error: craft_raw::RawError) -> RawError {
 pub fn develop(bytes: &[u8], opts: &DevelopOptions) -> Result<Developed, RawError> {
     let sensor = decode(bytes, &opts.limits)?;
     develop_sensor(&sensor, opts)
+}
+
+#[cfg(test)]
+mod adapter_limits_tests {
+    use super::*;
+
+    #[test]
+    fn cfa_pixel_cap_is_not_multiplied_by_the_rgb_sample_allowance() {
+        let bytes = testgen::DngSpec::cfa(4, 4, vec![1000; 16]).build();
+        let exact = Limits { max_pixels: 16, ..Default::default() };
+        assert_eq!(decode(&bytes, &exact).unwrap().sample_count(), 16);
+        let tight = Limits { max_pixels: 8, ..exact };
+        assert!(matches!(decode(&bytes, &tight), Err(RawError::LimitExceeded(_))), "16 CFA pixels cannot fit an 8-pixel allowance despite fitting 24 samples");
+    }
 }

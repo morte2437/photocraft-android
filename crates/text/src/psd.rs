@@ -9,7 +9,8 @@
 //! Writing starts from the layer's original `TySh` (when present) and patches only the text, runs,
 //! paragraphs, fonts, shape and transform, so Photoshop-only settings survive an edit.
 
-use craft_psd::descriptor::{Descriptor, Id, UnicodeString, Value as D, VersionedDescriptor};
+use craft_psd::descriptor::{Descriptor, Id, UnicodeString, Value as D};
+use craft_psd::text::envelope;
 use photocraft_color::{Color, ColorMode};
 use photocraft_doc::TextLayer;
 use photocraft_doc::text::{
@@ -26,7 +27,7 @@ mod import;
 
 #[cfg(test)]
 pub(crate) use build::font_entry;
-pub use build::{MAX_TEXT_INDEX, build_engine_data, build_txt2, build_txt2_at, build_tysh, needs_txt2};
+pub use build::{MAX_TEXT_INDEX, Txt2Error, build_engine_data, build_txt2, build_txt2_at, build_tysh, needs_txt2};
 pub(crate) use build::{font_set, paragraph_properties, style_sheet_data};
 pub use edit::{set_text_index, text_index, txt2_object_count};
 #[cfg(test)]
@@ -52,72 +53,35 @@ pub struct TySh {
 /// Whether a type transform can reach rendering or egui. Pixel coordinates use i32 throughout
 /// the document, so non-finite and unrepresentable affine terms are rejected (#4758).
 pub fn transform_is_safe(t: &Affine) -> bool {
-    t.m.iter().all(|v| v.is_finite() && v.abs() <= f64::from(i32::MAX))
+    envelope::transform_is_safe(&t.m)
 }
 
-/// Parses a `TySh` block.
+// The `TySh` binary envelope (versions, transform, text and warp descriptors, trailing bounds) is
+// PSD format code: it lives in craft-psd (#778). Only the `Affine` ⇄ `[f64; 6]` mapping is ours.
+impl From<envelope::TySh> for TySh {
+    fn from(t: envelope::TySh) -> Self {
+        TySh { transform: Affine { m: t.transform }, text: t.text, warp: t.warp, bounds: t.bounds }
+    }
+}
+
+/// Parses a `TySh` block: `None` when it is truncated before the text descriptor ends, its
+/// transform is unsafe ([`transform_is_safe`]) or its bounds are not finite.
 pub fn parse_tysh(data: &[u8]) -> Option<TySh> {
-    let f = |at: usize| data.get(at..at + 8).map(|b| f64::from_be_bytes(b.try_into().unwrap_or([0; 8])));
-    let mut m = [0.0; 6];
-    for (i, v) in m.iter_mut().enumerate() {
-        *v = f(2 + i * 8)?;
-    }
-    if !transform_is_safe(&Affine { m }) {
-        return None;
-    }
-    let (text, used) = VersionedDescriptor::parse_prefix(data.get(52..)?).ok()?;
-    let rest = data.get(52 + used..).unwrap_or(&[]);
-    let (warp, wused) = match rest.get(2..).and_then(|r| VersionedDescriptor::parse_prefix(r).ok()) {
-        Some((w, n)) => (Some(w.descriptor), n + 2),
-        None => (None, 0),
-    };
-    let tail = rest.get(wused..).unwrap_or(&[]);
-    let mut bounds = [0f32; 4];
-    for (i, b) in bounds.iter_mut().enumerate() {
-        if let Some(x) = tail.get(i * 4..i * 4 + 4) {
-            *b = f32::from_be_bytes(x.try_into().unwrap_or([0; 4]));
-        }
-    }
-    Some(TySh { transform: Affine { m }, text: text.descriptor, warp, bounds })
+    envelope::parse_tysh(data).map(TySh::from)
 }
 
 /// `tysh` moved by (`dx`, `dy`): only the transform's translation changes. The text, its styles,
 /// the warp and the trailing bounds (which are in text space) stay byte for byte, so a moved
-/// Photoshop type layer keeps everything Photoshop wrote. `None` when the block is too short.
+/// Photoshop type layer keeps everything Photoshop wrote. `None` when the block is too short or
+/// the moved transform would be unsafe.
 pub fn translate_tysh(tysh: &[u8], dx: f64, dy: f64) -> Option<Vec<u8>> {
-    let mut out = tysh.to_vec();
-    // Version (2 bytes), then xx, xy, yx, yy, tx, ty as big-endian f64: tx at 34, ty at 42.
-    for (at, d) in [(34, dx), (42, dy)] {
-        let b = out.get_mut(at..at + 8)?;
-        let v = f64::from_be_bytes(b.try_into().ok()?) + d;
-        b.copy_from_slice(&v.to_be_bytes());
-    }
-    Some(out)
+    envelope::translate_tysh(tysh, dx, dy)
 }
 
-/// Serializes a `TySh` block.
-pub fn write_tysh(t: &TySh) -> Vec<u8> {
-    let mut v = 1u16.to_be_bytes().to_vec();
-    for x in t.transform.m {
-        v.extend_from_slice(&x.to_be_bytes());
-    }
-    v.extend_from_slice(&50u16.to_be_bytes());
-    v.extend(VersionedDescriptor::new(t.text.clone()).to_bytes());
-    v.extend_from_slice(&1u16.to_be_bytes());
-    v.extend(VersionedDescriptor::new(t.warp.clone().unwrap_or_else(default_warp)).to_bytes());
-    for b in t.bounds {
-        v.extend_from_slice(&b.to_be_bytes());
-    }
-    v
-}
-
-fn default_warp() -> Descriptor {
-    Descriptor::new("warp")
-        .with("warpStyle", enumv("warpStyle", "warpNone"))
-        .with("warpValue", D::Double(0.0))
-        .with("warpPerspective", D::Double(0.0))
-        .with("warpPerspectiveOther", D::Double(0.0))
-        .with("warpRotate", enumv("Ornt", "Hrzn"))
+/// Serializes a `TySh` block (a default unwarped warp when `warp` is `None`). `None` when the
+/// transform is unsafe, the bounds are not finite or the block would exceed craft-psd's limit.
+pub fn write_tysh(t: &TySh) -> Option<Vec<u8>> {
+    envelope::write_tysh(&envelope::TySh { transform: t.transform.m, text: t.text.clone(), warp: t.warp.clone(), bounds: t.bounds }).ok()
 }
 
 fn enumv(t: &str, v: &str) -> D {
@@ -188,12 +152,16 @@ mod transform_safety_tests {
         for bad in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, 1.315776645269349e62, 1.4759871577491642e307] {
             for i in 0..6 {
                 t.transform = Affine::IDENTITY;
+                let mut block = write_tysh(&t).unwrap();
                 t.transform.m[i] = bad;
-                assert!(parse_tysh(&write_tysh(&t)).is_none(), "term {i}: {bad}");
+                assert!(write_tysh(&t).is_none(), "term {i}: {bad} is not written");
+                // A file's block with the term is not read as editable type either.
+                block[2 + i * 8..10 + i * 8].copy_from_slice(&bad.to_be_bytes());
+                assert!(parse_tysh(&block).is_none(), "term {i}: {bad}");
             }
         }
         t.transform = Affine { m: [0.0, -2.01242653341062, 2.286521576443544, 0.0, 586.63, 2452.60] };
-        assert_eq!(parse_tysh(&write_tysh(&t)).unwrap().transform, t.transform);
+        assert_eq!(parse_tysh(&write_tysh(&t).unwrap()).unwrap().transform, t.transform);
     }
 }
 
@@ -262,7 +230,7 @@ mod nonfinite_tests {
         let out = String::from_utf8_lossy(&crate::engine_data::write(&build_engine_data(&layer, None, 72.0))).into_owned();
         assert!(out.contains("/PointBase") && !out.contains("/BoxBounds"), "{out}");
         assert!(!out.to_ascii_lowercase().contains("nan") && !out.to_ascii_lowercase().contains("inf"), "{out}");
-        let t = parse_tysh(&build_tysh(&layer, 72.0, None)).unwrap();
+        let t = parse_tysh(&build_tysh(&layer, 72.0, None).unwrap()).unwrap();
         for key in ["bounds", "boundingBox"] {
             let Some(D::Descriptor(d)) = t.text.get(key) else { panic!("no {key}") };
             for side in ["Left", "Top ", "Rght", "Btom"] {
@@ -279,7 +247,7 @@ mod nonfinite_tests {
             .with("warpPerspective", D::Double(-1e39))
             .with("warpPerspectiveOther", D::Double(250.0))
             .with("warpRotate", enumv("Ornt", "Hrzn"));
-        let tysh = write_tysh(&TySh { transform: Affine::IDENTITY, text: Descriptor::new("TxLr"), warp: Some(warp), bounds: [0.0; 4] });
+        let tysh = write_tysh(&TySh { transform: Affine::IDENTITY, text: Descriptor::new("TxLr"), warp: Some(warp), bounds: [0.0; 4] }).unwrap();
         let w = text_layer_from_tysh(&tysh, 72.0).and_then(|l| l.warp).unwrap();
         assert_eq!((w.value, w.horizontal_distortion, w.vertical_distortion), (100.0, -100.0, 100.0));
     }

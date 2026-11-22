@@ -26,46 +26,8 @@ pub const MEASUREMENT_SCALE: u16 = 1074;
 pub const COUNT_INFO: u16 = 1080;
 pub const ANNO: [u8; 4] = *b"Anno";
 
-struct Reader<'a> {
-    d: &'a [u8],
-    p: usize,
-}
-
-impl<'a> Reader<'a> {
-    fn take(&mut self, n: usize) -> Option<&'a [u8]> {
-        let s = self.d.get(self.p..self.p.checked_add(n)?)?;
-        self.p += n;
-        Some(s)
-    }
-    fn u8(&mut self) -> Option<u8> {
-        self.take(1).map(|b| b[0])
-    }
-    fn u16(&mut self) -> Option<u16> {
-        self.take(2).map(|b| u16::from_be_bytes([b[0], b[1]]))
-    }
-    fn u32(&mut self) -> Option<u32> {
-        self.take(4).map(|b| u32::from_be_bytes([b[0], b[1], b[2], b[3]]))
-    }
-    fn i32(&mut self) -> Option<i32> {
-        self.u32().map(|v| v as i32)
-    }
-    fn pascal(&mut self) -> Option<String> {
-        let n = usize::from(self.u8()?);
-        let s = self.take(n)?;
-        if (n + 1) % 2 == 1 {
-            self.take(1)?;
-        }
-        Some(s.iter().map(|&c| c as char).collect())
-    }
-}
-
-fn pascal(out: &mut Vec<u8>, s: &str) {
-    let bytes: Vec<u8> = s.chars().map(|c| if (c as u32) < 256 { c as u32 as u8 } else { b'?' }).take(255).collect();
-    out.push(bytes.len() as u8);
-    out.extend_from_slice(&bytes);
-    if (bytes.len() + 1) % 2 == 1 {
-        out.push(0);
-    }
+fn pascal_bytes(s: &str) -> Vec<u8> {
+    s.chars().map(|c| if (c as u32) < 256 { c as u32 as u8 } else { b'?' }).take(255).collect()
 }
 
 /// PSD colour struct (space + 4 × u16) → RGB.
@@ -112,10 +74,25 @@ fn decode_text(data: &[u8]) -> String {
     s.trim_end_matches('\0').replace("\r\n", "\n").replace('\r', "\n")
 }
 
+fn normalized_text(s: &str) -> impl Iterator<Item = char> + '_ {
+    let mut previous_cr = false;
+    s.chars().filter_map(move |c| {
+        let skip = previous_cr && c == '\n';
+        previous_cr = c == '\r';
+        if skip { None } else { Some(if c == '\n' { '\r' } else { c }) }
+    })
+}
+
+fn text_bytes(s: &str, limit: usize) -> Option<usize> {
+    normalized_text(s).try_fold(2usize, |bytes, c| bytes.checked_add(c.len_utf16() * 2).filter(|&n| n <= limit))
+}
+
 fn encode_text(s: &str) -> Vec<u8> {
     let mut out = vec![0xFE, 0xFF];
-    for u in s.replace("\r\n", "\n").replace('\n', "\r").encode_utf16() {
-        out.extend_from_slice(&u.to_be_bytes());
+    for c in normalized_text(s) {
+        for u in c.encode_utf16(&mut [0; 2]) {
+            out.extend_from_slice(&u.to_be_bytes());
+        }
     }
     out
 }
@@ -127,51 +104,24 @@ enum Entry {
 }
 
 fn parse_entries(data: &[u8]) -> Option<Vec<Entry>> {
-    let mut r = Reader { d: data, p: 0 };
-    let (_major, _minor) = (r.u16()?, r.u16()?);
-    let count = r.u32()? as usize;
-    let mut out = Vec::with_capacity(count.min(4096));
-    for _ in 0..count {
-        let start = r.p;
-        let len = r.u32()? as usize;
-        // The length counts itself and the type: anything shorter would put the cursor back on
-        // this entry, and a hostile count would then loop until memory runs out.
-        if len < 8 {
-            return None;
-        }
-        let end = start.checked_add(len)?;
-        let raw = data.get(start..end)?;
-        let kind = r.take(4)?;
-        if kind != b"txtA" {
-            out.push(Entry::Raw(raw.to_vec()));
-            r.p = end;
-            continue;
-        }
-        let open = r.u8()? != 0;
-        let (_flags, _opt) = (r.u8()?, r.u16()?);
-        let icon = [r.i32()?, r.i32()?, r.i32()?, r.i32()?];
-        let popup = [r.i32()?, r.i32()?, r.i32()?, r.i32()?];
-        let space = r.u16()?;
-        let c = [r.u16()?, r.u16()?, r.u16()?, r.u16()?];
-        let author = r.pascal()?;
-        let _name = r.pascal()?;
-        let modified = r.pascal()?;
-        let _data_len = r.u32()?;
-        let _key = r.take(4)?;
-        let n = r.u32()? as usize;
-        let text = decode_text(r.take(n)?);
-        out.push(Entry::Text(Note {
-            author,
-            color: color_from(space, c),
-            text,
-            position: [f64::from(icon[1]), f64::from(icon[0])],
-            popup: [f64::from(popup[1]), f64::from(popup[0]), f64::from(popup[3]), f64::from(popup[2])],
-            open,
-            modified,
-        }));
-        r.p = end;
-    }
-    Some(out)
+    let records = craft_psd::annotations::read(data, Default::default()).ok()?;
+    records
+        .into_iter()
+        .map(|r| {
+            let Some(t) = r.text().ok()? else {
+                return Some(Entry::Raw(r.raw().to_vec()));
+            };
+            Some(Entry::Text(Note {
+                author: t.author.iter().map(|&c| c as char).collect(),
+                color: color_from(t.color_space, t.color),
+                text: decode_text(t.data),
+                position: [f64::from(t.icon[1]), f64::from(t.icon[0])],
+                popup: [f64::from(t.popup[1]), f64::from(t.popup[0]), f64::from(t.popup[3]), f64::from(t.popup[2])],
+                open: t.open != 0,
+                modified: t.modified.iter().map(|&c| c as char).collect(),
+            }))
+        })
+        .collect()
 }
 
 /// Notes in an `Anno` block (None when it doesn't parse).
@@ -179,55 +129,60 @@ pub fn parse_anno(data: &[u8]) -> Option<Vec<Note>> {
     Some(parse_entries(data)?.into_iter().filter_map(|e| if let Entry::Text(n) = e { Some(n) } else { None }).collect())
 }
 
-fn write_note(n: &Note) -> Vec<u8> {
-    let mut b = Vec::new();
-    b.extend_from_slice(b"txtA");
-    b.push(u8::from(n.open));
-    b.push(0x1C);
-    b.extend_from_slice(&1u16.to_be_bytes());
-    // The position comes from the file or a command and can sit anywhere in i32 (issue #939):
-    // the cast saturates, and the icon's far edge must saturate too rather than wrap (release) or
-    // overflow (debug) when the note is re-saved.
+fn write_note(n: &Note) -> craft_psd::Result<Vec<u8>> {
+    let limits = craft_psd::annotations::Limits::default();
+    // Bound temporary text normalization before the shared fallible writer allocates.
+    if text_bytes(&n.text, limits.bytes).is_none() {
+        return Err(craft_psd::PsdError::LimitExceeded("annotation text"));
+    }
     let (x, y) = (n.position[0].round() as i32, n.position[1].round() as i32);
-    for v in [y, x, y.saturating_add(20), x.saturating_add(16)] {
-        b.extend_from_slice(&v.to_be_bytes());
-    }
     let pp = if n.popup == [0.0; 4] { [n.position[0] + 20.0, n.position[1] + 20.0, n.position[0] + 260.0, n.position[1] + 160.0] } else { n.popup };
-    for v in [pp[1], pp[0], pp[3], pp[2]] {
-        b.extend_from_slice(&(v.round() as i32).to_be_bytes());
-    }
-    b.extend_from_slice(&0u16.to_be_bytes());
     let rgb = n.color.to_rgb();
-    for v in rgb {
-        b.extend_from_slice(&((v.clamp(0.0, 1.0) * 65535.0).round() as u16).to_be_bytes());
-    }
-    b.extend_from_slice(&0u16.to_be_bytes());
-    pascal(&mut b, &n.author);
-    pascal(&mut b, "");
-    pascal(&mut b, &n.modified);
+    let author = pascal_bytes(&n.author);
+    let modified = pascal_bytes(&n.modified);
     let text = encode_text(&n.text);
-    b.extend_from_slice(&((text.len() + 12) as u32).to_be_bytes());
-    b.extend_from_slice(b"txtC");
-    b.extend_from_slice(&(text.len() as u32).to_be_bytes());
-    b.extend_from_slice(&text);
-    let mut out = ((b.len() + 4) as u32).to_be_bytes().to_vec();
-    out.extend_from_slice(&b);
-    out
+    craft_psd::annotations::write_text(
+        &craft_psd::annotations::Text {
+            open: u8::from(n.open),
+            flags: 0x1C,
+            optional_blocks: 1,
+            icon: [y, x, y.saturating_add(20), x.saturating_add(16)],
+            popup: [pp[1].round() as i32, pp[0].round() as i32, pp[3].round() as i32, pp[2].round() as i32],
+            color_space: 0,
+            color: [
+                (rgb[0].clamp(0.0, 1.0) * 65535.0).round() as u16,
+                (rgb[1].clamp(0.0, 1.0) * 65535.0).round() as u16,
+                (rgb[2].clamp(0.0, 1.0) * 65535.0).round() as u16,
+                0,
+            ],
+            author: &author,
+            name: &[],
+            modified: &modified,
+            data_length: 0,
+            data_key: *b"txtC",
+            data: &text,
+        },
+        limits,
+    )
 }
 
-/// An `Anno` block holding `notes` (plus raw sound entries carried over).
-pub fn write_anno(notes: &[Note], raw_extra: &[Vec<u8>]) -> Vec<u8> {
-    let mut out = Vec::new();
-    out.extend_from_slice(&2u16.to_be_bytes());
-    out.extend_from_slice(&1u16.to_be_bytes());
-    out.extend_from_slice(&((notes.len() + raw_extra.len()) as u32).to_be_bytes());
+/// An Anno block holding notes and byte-exact unknown records.
+/// Errors propagate to export instead of silently dropping annotations.
+pub fn write_anno(notes: &[Note], raw_extra: &[Vec<u8>]) -> craft_psd::Result<Vec<u8>> {
+    let limits = craft_psd::annotations::Limits::default();
+    if notes.len().checked_add(raw_extra.len()).is_none_or(|n| n > limits.records) {
+        return Err(craft_psd::PsdError::LimitExceeded("annotation count"));
+    }
+    let mut owned = Vec::new();
+    owned.try_reserve_exact(notes.len()).map_err(|_| craft_psd::PsdError::OutOfMemory("annotation records"))?;
+    let mut bytes = 8usize;
     for n in notes {
-        out.extend_from_slice(&write_note(n));
+        let record = write_note(n)?;
+        bytes = bytes.checked_add(record.len()).filter(|&n| n <= limits.bytes).ok_or(craft_psd::PsdError::LimitExceeded("annotation bytes"))?;
+        owned.push(record);
     }
-    for r in raw_extra {
-        out.extend_from_slice(r);
-    }
-    out
+    let refs: Vec<&[u8]> = owned.iter().chain(raw_extra).map(Vec::as_slice).collect();
+    craft_psd::annotations::write(&refs, limits)
 }
 
 /// The document's notes from its raw global blocks (empty when there is no `Anno` block).
@@ -243,14 +198,20 @@ pub fn anno_unreadable(doc: &Document) -> bool {
 /// Global blocks to write: the raw `Anno` block while it still describes `doc.notes` (or doesn't
 /// parse and no note was added), else a regenerated one in its place (appended when new, dropped
 /// when the last note is deleted).
-pub fn export_blocks(doc: &Document, mut blocks: Vec<photocraft_doc::PsdGlobalBlock>) -> Vec<photocraft_doc::PsdGlobalBlock> {
+pub fn export_blocks(doc: &Document, mut blocks: Vec<photocraft_doc::PsdGlobalBlock>) -> Result<Vec<photocraft_doc::PsdGlobalBlock>, crate::IoError> {
     let at = blocks.iter().position(|(_, k, _)| *k == ANNO);
     let raw = at.map(|i| blocks[i].2.clone());
     let entries = raw.as_deref().and_then(|d| parse_entries(d));
     let parsed: Option<Vec<Note>> = entries.as_ref().map(|e| e.iter().filter_map(|e| if let Entry::Text(n) = e { Some(n.clone()) } else { None }).collect());
+    // Unedited decoded notes retain the original bounded block, even when its legacy
+    // single-byte text would exceed the UTF-16 writer budget after conversion. An all-zero
+    // popup still needs the established default-rectangle normalization on save (#939).
+    if (parsed.as_deref() == Some(doc.notes.as_slice()) && doc.notes.iter().all(|n| n.popup != [0.0; 4])) || (entries.is_none() && doc.notes.is_empty()) {
+        return Ok(blocks);
+    }
     // Compare in stored precision (colours are 16-bit, positions whole pixels, empty popups get a
     // default rectangle).
-    let want = parse_anno(&write_anno(&doc.notes, &[]));
+    let want = parse_anno(&write_anno(&doc.notes, &[]).map_err(|e| crate::IoError::Unsupported(e.to_string()))?);
     let same = |a: &[Note], b: &[Note]| {
         a.len() == b.len()
             && a.iter().zip(b).all(|(x, y)| {
@@ -261,10 +222,14 @@ pub fn export_blocks(doc: &Document, mut blocks: Vec<photocraft_doc::PsdGlobalBl
     // With no notes, a block we can't read is kept as is: it isn't "the last note deleted", and
     // dropping it would delete the annotations it holds (issue #944).
     if parsed.as_deref().zip(want.as_deref()).is_some_and(|(p, w)| same(p, w)) || (entries.is_none() && doc.notes.is_empty()) {
-        return blocks;
+        return Ok(blocks);
     }
     let extra: Vec<Vec<u8>> = entries.unwrap_or_default().into_iter().filter_map(|e| if let Entry::Raw(r) = e { Some(r) } else { None }).collect();
-    let fresh = (!doc.notes.is_empty() || !extra.is_empty()).then(|| Arc::new(write_anno(&doc.notes, &extra)));
+    let fresh = if !doc.notes.is_empty() || !extra.is_empty() {
+        Some(Arc::new(write_anno(&doc.notes, &extra).map_err(|e| crate::IoError::Unsupported(e.to_string()))?))
+    } else {
+        None
+    };
     match (at, fresh) {
         (Some(i), Some(f)) => blocks[i].2 = f,
         (Some(i), None) => {
@@ -273,7 +238,7 @@ pub fn export_blocks(doc: &Document, mut blocks: Vec<photocraft_doc::PsdGlobalBl
         (None, Some(f)) => blocks.push((*b"8BIM", ANNO, f)),
         (None, None) => {}
     }
-    blocks
+    Ok(blocks)
 }
 
 fn num(v: &Value) -> Option<f64> {
@@ -488,7 +453,7 @@ mod tests {
         // Hue 343°, saturation 0.49, brightness 1: pink.
         assert!(rgb[0] > 0.99 && rgb[1] < rgb[2] && rgb[2] < 0.7, "{rgb:?}");
         // Text, positions, flags and RGB colours are rewritten exactly.
-        let again = write_anno(&notes[..1], &[]);
+        let again = write_anno(&notes[..1], &[]).unwrap();
         assert_eq!(parse_anno(&again).unwrap()[..], notes[..1]);
         let n0 = 8 + u32::from_be_bytes(raw[8..12].try_into().unwrap()) as usize;
         assert_eq!(&again[8..], &raw[8..n0]);
@@ -497,16 +462,16 @@ mod tests {
     #[test]
     fn export_blocks_keeps_replaces_and_drops() {
         let mut d = Document::new("n", photocraft_doc::Size::new(10, 10), photocraft_doc::ColorMode::Rgb, photocraft_doc::SampleType::U8);
-        assert!(export_blocks(&d, vec![]).is_empty());
+        assert!(export_blocks(&d, vec![]).unwrap().is_empty());
         d.notes.push(Note { text: "héllo ✓".into(), author: "me".into(), position: [3.0, 4.0], ..Default::default() });
-        let out = export_blocks(&d, vec![]);
+        let out = export_blocks(&d, vec![]).unwrap();
         assert_eq!(out.len(), 1);
         assert_eq!(parse_anno(&out[0].2).unwrap()[0].text, "héllo ✓");
         // Unchanged → the very same bytes.
         d.metadata.psd_global_blocks = out.clone();
-        assert!(Arc::ptr_eq(&export_blocks(&d, out.clone())[0].2, &out[0].2));
+        assert!(Arc::ptr_eq(&export_blocks(&d, out.clone()).unwrap()[0].2, &out[0].2));
         d.notes.clear();
-        assert!(export_blocks(&d, out).is_empty());
+        assert!(export_blocks(&d, out).unwrap().is_empty());
         assert!(parse_anno(&[0, 2, 0, 1, 0, 0, 0, 9]).is_none());
     }
 
@@ -517,12 +482,12 @@ mod tests {
         let bad: Vec<photocraft_doc::PsdGlobalBlock> = vec![(*b"8BIM", ANNO, Arc::new(vec![0, 2, 0, 1, 0, 0, 0, 9]))];
         d.metadata.psd_global_blocks = bad.clone();
         assert!(anno_unreadable(&d) && notes_from_blocks(&d).is_empty());
-        let out = export_blocks(&d, bad.clone());
+        let out = export_blocks(&d, bad.clone()).unwrap();
         assert_eq!(out.len(), 1);
         assert!(Arc::ptr_eq(&out[0].2, &bad[0].2));
         // A note added by the user still writes a fresh block in its place.
         d.notes.push(Note { text: "new".into(), ..Default::default() });
-        let out = export_blocks(&d, bad);
+        let out = export_blocks(&d, bad).unwrap();
         assert_eq!(parse_anno(&out[0].2).unwrap()[0].text, "new");
         // A readable block is not reported.
         d.metadata.psd_global_blocks = out;
@@ -562,3 +527,7 @@ mod tests {
         assert!(!keep_resource(&d, COUNT_INFO));
     }
 }
+
+#[cfg(test)]
+#[path = "annotation_shared_tests.rs"]
+mod shared_tests;

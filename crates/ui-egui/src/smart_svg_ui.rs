@@ -469,6 +469,7 @@ pub(crate) fn poll(app: &mut PhotocraftApp, ctx: &egui::Context) {
                 Ok(result) => {
                     if let Some(fingerprint) = result.get("fingerprint").filter(|v| !v.is_null()) {
                         edit.target.fingerprint = fingerprint.clone();
+                        crate::notices::io_result_warnings(app, &result, "SVG");
                     } else {
                         report(app, "The SVG update did not return its fingerprint; syncing stopped".into());
                         continue;

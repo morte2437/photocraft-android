@@ -174,8 +174,8 @@ fn export_to_files_and_pdf() {
     let r = s.execute("file.export.artboardsToFiles", json!({"dir": d, "prefix": "site"})).unwrap();
     let files: Vec<String> = r["files"].as_array().unwrap().iter().map(|v| v.as_str().unwrap().to_string()).collect();
     assert_eq!(files.len(), 2);
-    assert!(files[0].ends_with("site_0000_Empty_One.png"), "{files:?}");
-    assert!(files[1].ends_with("site_0001_Red Board.png"), "{files:?}");
+    assert!(files[0].ends_with("/siteEmpty_One.png"), "{files:?}");
+    assert!(files[1].ends_with("/siteRed-Board.png"), "{files:?}");
     let img = photocraft_io::import("x.png", &std::fs::read(&files[1]).unwrap()).unwrap().document;
     assert_eq!((img.size.width, img.size.height), (10, 10));
     let img2 = photocraft_io::import("x.png", &std::fs::read(&files[0]).unwrap()).unwrap().document;
@@ -623,7 +623,7 @@ fn add_imported_type(s: &mut Session, block: Rect) -> LayerId {
     s.edit("type", |doc, active| {
         let mut t = photocraft_doc::TextLayer { text: "Hello!".into(), font_family: "No Such Font".into(), size_pt: 26.0, ..Default::default() };
         t.transform = photocraft_geom::Affine::translate(f64::from(block.x0), f64::from(block.y1));
-        t.psd_raw = Some(std::sync::Arc::new(photocraft_text::psd::build_tysh(&t, 72.0, None)));
+        t.psd_raw = Some(std::sync::Arc::new(photocraft_text::psd::build_tysh(&t, 72.0, None).unwrap()));
         let fmt = doc.pixel_format();
         let mut cache = photocraft_raster::Surface::new(fmt);
         cache.fill_rect(block, &photocraft_raster::from_rgba(&fmt, [0.4, 0.2, 0.6, 1.0]));

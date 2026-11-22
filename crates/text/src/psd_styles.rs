@@ -247,7 +247,7 @@ pub fn write_style_sheets(tysh: &[u8], layer: &TextLayer, styles: &TextStyles, d
         let item = t.text.items.iter_mut().find(|(k, _)| k.is("EngineData"))?;
         item.1 = craft_psd::descriptor::Value::RawData(raw)
     }
-    Some(write_tysh(&t))
+    write_tysh(&t)
 }
 
 #[cfg(test)]
@@ -287,7 +287,7 @@ mod tests {
             ..Default::default()
         };
         layer.sync_summary();
-        let tysh = crate::psd::build_tysh(&layer, 72.0, None);
+        let tysh = crate::psd::build_tysh(&layer, 72.0, None).unwrap();
         assert!(!has_named_sheets(&tysh));
         let out = write_style_sheets(&tysh, &layer, &styles, 72.0).unwrap();
         assert!(has_named_sheets(&out));

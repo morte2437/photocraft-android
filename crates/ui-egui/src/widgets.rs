@@ -7,7 +7,7 @@ use crate::theme::{self, Tokens};
 
 mod angle_dial;
 mod color_count;
-pub use angle_dial::{angle_dial_line, angle_dial_row};
+pub use angle_dial::{angle_dial_line, angle_dial_row, angle_dial_row_whole_alerting};
 pub use color_count::color_count_row;
 mod type_ahead;
 pub use type_ahead::close_list as close_dropdown_list;
@@ -55,7 +55,7 @@ pub(crate) use fields::compact_wrapping_value_field;
 use fields::{FieldOpts, NUMERIC_INPUT_LIMIT, value_field_in};
 pub use fields::{
     POPUP_ARROW_W, PopupFieldResponse, VALUE_FIELD_H, compact_value_field, elided_label, elided_label_sensed, popup_value_field, typed_text_parses,
-    value_field, value_field_alerting, value_field_named, value_field_whole, value_field_whole_alerting, value_field_with_trailing,
+    value_field, value_field_alerting, value_field_alerting_prec, value_field_named, value_field_whole, value_field_whole_alerting, value_field_with_trailing,
 };
 pub use label_column::{LABEL_COLUMN_GAP, column_label, column_label_padded, label_column_width};
 pub(crate) use panel::body_margin;
@@ -76,7 +76,7 @@ pub use text_field::{
 };
 pub use units::{
     FieldUnits, fmt_num, fmt_num_prec, fmt_num2, parse_num, set_field_resolution, unit_decimals, unit_of_key, value_field_extent, value_field_fixed,
-    value_field_len, value_field_prec, value_field_prec_blank, value_field_units,
+    value_field_int, value_field_len, value_field_prec, value_field_prec_blank, value_field_units,
 };
 
 #[cfg(test)]

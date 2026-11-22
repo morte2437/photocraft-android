@@ -485,7 +485,8 @@ fn list(s: &mut Session) -> Result<Value> {
     for sl in d.doc.slices.list.iter().filter(|sl| !listed.contains(&sl.id) && !sl.rect.intersect(&canvas).is_empty()) {
         all.extend(stored_json(&d.doc, sl.id, &resolved));
     }
-    Ok(json!({"slices": all, "locked": s.file_menu.slices_locked}))
+    let warnings: Vec<String> = slices::overflow_warning(&d.doc).into_iter().collect();
+    Ok(json!({"slices": all, "locked": s.file_menu.slices_locked, "warnings": warnings}))
 }
 
 fn layer_based(s: &mut Session, p: &Value) -> Result<Value> {

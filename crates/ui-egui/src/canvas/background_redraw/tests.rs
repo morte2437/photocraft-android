@@ -178,6 +178,19 @@ fn settle(g: &mut Gpu) {
     }
 }
 
+/// Run the frame that starts `doc`'s redraw with its worker held before the first batch, and wait
+/// until that very worker reaches the hold: the redraw runs, every block still to draw, until the
+/// returned guard drops. Without it a test that needs the redraw still running at its next frame
+/// races the worker: a fast machine draws the document first, and so does a slow frame (a
+/// software adapter's uploads) that keeps taking blocks as they land until the last one.
+fn start_held_redraw(g: &mut Gpu, doc: DocId) -> HoldRedraws {
+    let held = hold_redraws();
+    g.harness.step();
+    let generation = g.harness.state().redraws.get(&doc).expect("the frame started a redraw").worker_generation;
+    assert!(wait_for_held_redraw(g.harness.state(), doc, generation, std::time::Duration::from_secs(10)), "the redraw worker never reached the pre-batch hold");
+    held
+}
+
 /// The canvas texture of `doc` against the synchronous CPU refresh of the current document.
 fn assert_matches_synchronous(g: &mut Gpu, doc: DocId) {
     let app = g.harness.state_mut();
@@ -295,10 +308,10 @@ fn a_redraw_finishing_after_memory_usage_drops_keeps_nothing_over_it() {
     let _gpu = photocraft_testkit::gpu_lock();
     let Some(mut g) = gpu_app() else { return };
     let doc = cpu_only_document(g.harness.state_mut(), 4096, 3072);
-    g.harness.step();
-    assert!(g.harness.state().redraws.contains_key(&doc));
+    let held = start_held_redraw(&mut g, doc);
     // Less than the document's own pixels: nothing is left for kept composites.
     g.harness.state_mut().session.edit_prefs(|p| p.performance.memory_usage_mb = 1);
+    drop(held);
     settle(&mut g);
     assert!(g.harness.state().kept.entries.is_empty(), "a composite was kept over the current cap");
 }
@@ -331,9 +344,9 @@ fn a_redraw_across_a_text_gamma_change_is_not_kept() {
     let _gpu = photocraft_testkit::gpu_lock();
     let Some(mut g) = gpu_app() else { return };
     let doc = cpu_only_document(g.harness.state_mut(), 4096, 3072);
-    g.harness.step();
-    assert!(g.harness.state().redraws.contains_key(&doc));
+    let held = start_held_redraw(&mut g, doc);
     g.harness.state_mut().session.color.settings.blend_text_gamma = 1.0;
+    drop(held);
     settle(&mut g);
     assert!(g.harness.state().kept.entries.is_empty(), "a composite of two gammas was kept");
 }
@@ -345,11 +358,12 @@ fn a_redraw_across_a_text_gamma_change_and_back_is_not_kept() {
     let Some(mut g) = gpu_app() else { return };
     let doc = cpu_only_document(g.harness.state_mut(), 4096, 3072);
     let gamma = g.harness.state().session.color.settings.blend_text_gamma;
-    g.harness.step();
+    let held = start_held_redraw(&mut g, doc);
     g.harness.state_mut().session.color.settings.blend_text_gamma = 1.0;
     g.harness.step();
     g.harness.state_mut().session.color.settings.blend_text_gamma = gamma;
     assert!(g.harness.state().redraws.contains_key(&doc), "the redraw finished before the change back");
+    drop(held);
     settle(&mut g);
     assert!(g.harness.state().kept.entries.is_empty(), "a composite of two gammas was kept");
 }
@@ -362,7 +376,7 @@ fn a_hidden_documents_redraw_across_a_text_gamma_change_and_back_is_not_kept() {
     let Some(mut g) = gpu_app() else { return };
     let doc = cpu_only_document(g.harness.state_mut(), 4096, 3072);
     let gamma = g.harness.state().session.color.settings.blend_text_gamma;
-    g.harness.step();
+    let held = start_held_redraw(&mut g, doc);
     g.harness.state_mut().run("file.new", json!({"width": 64, "height": 64})).expect("another document");
     g.harness.step();
     g.harness.state_mut().session.color.settings.blend_text_gamma = 1.0;
@@ -372,6 +386,7 @@ fn a_hidden_documents_redraw_across_a_text_gamma_change_and_back_is_not_kept() {
     assert!(g.harness.state().redraws.contains_key(&doc), "the hidden document's redraw stopped");
     let i = g.harness.state().session.documents().iter().position(|st| st.doc.id == doc).expect("document");
     g.harness.state_mut().session.set_active(i);
+    drop(held);
     settle(&mut g);
     assert!(g.harness.state().kept.entries.iter().all(|k| k.id != doc), "a composite of two gammas was kept");
 }
@@ -477,8 +492,8 @@ fn closing_the_document_stops_its_redraw() {
     let _gpu = photocraft_testkit::gpu_lock();
     let Some(mut g) = gpu_app() else { return };
     let doc = cpu_only_document(g.harness.state_mut(), 4096, 3072);
-    g.harness.step();
-    assert!(g.harness.state().redraws.contains_key(&doc));
+    // Held: the close lands while the redraw runs, and a cancelled worker leaves the hold.
+    let _held = start_held_redraw(&mut g, doc);
     g.harness.state_mut().run("file.close", json!({"save": false})).expect("close");
     g.harness.step();
     assert!(g.harness.state().redraws.is_empty());

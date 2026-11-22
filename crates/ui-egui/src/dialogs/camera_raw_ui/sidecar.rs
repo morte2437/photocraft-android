@@ -108,19 +108,13 @@ pub(super) fn existing_sidecar_is_ours(sidecar: &str) -> Option<bool> {
 
 /// The bytes of the regular file at `path` when it holds at most
 /// [`photocraft_io::camera_raw_xmp::MAX_XMP_BYTES`]; `None` for anything else (missing, a folder,
-/// a pipe or device that might never end, larger). Never reads more than the cap plus one byte.
+/// a pipe or device that might never end, larger). Never reads more than the cap plus one byte, and
+/// never blocks opening a pipe.
 #[cfg(not(target_arch = "wasm32"))]
 pub(super) fn read_bounded(path: &str) -> Option<Vec<u8>> {
-    use std::io::Read;
-    let cap = photocraft_io::camera_raw_xmp::MAX_XMP_BYTES;
-    // Checked before opening: opening a pipe for reading waits for a writer.
-    if !std::fs::metadata(path).ok()?.is_file() {
-        return None;
-    }
-    let file = std::fs::File::open(path).ok()?;
-    let mut bytes = Vec::new();
-    file.take(cap as u64 + 1).read_to_end(&mut bytes).ok()?;
-    (bytes.len() <= cap).then_some(bytes)
+    // One nonblocking open judged by the opened handle (regular file, at most the cap): a name
+    // checked and then opened again could be swapped for a pipe in between.
+    photocraft_format::read_file_limited(std::path::Path::new(path), photocraft_io::camera_raw_xmp::MAX_XMP_BYTES as u64).ok()
 }
 
 #[cfg(target_arch = "wasm32")]

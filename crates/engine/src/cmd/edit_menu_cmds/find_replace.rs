@@ -1,4 +1,4 @@
-use super::{Document, EngineError, LayerContent, LayerId, Result, Session, Value, bad, bool_or, json, layer_param, str_or};
+use super::{Document, EngineError, FindCursor, LayerContent, LayerId, Result, Session, Value, bad, bool_or, json, layer_param, str_or};
 
 // ------------------------------------------------------------------ Find and Replace Text
 
@@ -78,6 +78,7 @@ pub(super) fn find_replace(s: &mut Session, p: &Value) -> Result<Value> {
                 layers.iter().filter_map(|id| Some((*id, find_matches(&text_of(&doc, *id)?, &find, case, whole)))).filter(|(_, m)| !m.is_empty()).collect();
             let count: usize = plan.iter().map(|(_, m)| m.len()).sum();
             if count == 0 {
+                s.edit_state.find_cursor = None;
                 return Ok(json!({"count": 0, "layers": 0}));
             }
             s.edit("Replace All Text", |doc, _| {
@@ -97,7 +98,15 @@ pub(super) fn find_replace(s: &mut Session, p: &Value) -> Result<Value> {
         }
         "find" | "change" | "changeFind" => {
             let doc = st.doc.clone();
-            let cursor = s.edit_state.find_cursor;
+            let same_query = s
+                .edit_state
+                .find_cursor
+                .as_ref()
+                .is_some_and(|c| c.find == find && c.case_sensitive == case && c.whole_word == whole && c.forward == forward && c.all_layers == all_layers);
+            if !same_query {
+                s.edit_state.find_cursor = None;
+            }
+            let cursor = s.edit_state.find_cursor.as_ref().map(|c| (c.layer, c.start, c.end));
             let mut changed = None;
             if action != "find"
                 && let Some((id, a, b)) = cursor
@@ -116,15 +125,19 @@ pub(super) fn find_replace(s: &mut Session, p: &Value) -> Result<Value> {
                 // Collapse the cursor on the side the search moves away from, so the next search
                 // skips the replaced text even when the replacement still matches.
                 let c = if forward { end } else { a };
-                s.edit_state.find_cursor = Some((id, c, c));
+                s.edit_state.find_cursor =
+                    Some(FindCursor { layer: id, start: c, end: c, find: find.clone(), case_sensitive: case, whole_word: whole, forward, all_layers });
                 changed = Some((id, a, end));
                 if action == "change" {
                     return Ok(json!({"changed": {"layer": id.0, "start": a, "end": end}}));
                 }
             }
+            if action == "change" {
+                return Ok(json!({"changed": null}));
+            }
             // Find the next match after the cursor (wrapping through the layers).
             let doc = s.active().ok_or(EngineError::NoDocument)?.doc.clone();
-            let cursor = s.edit_state.find_cursor;
+            let cursor = s.edit_state.find_cursor.as_ref().map(|c| (c.layer, c.start, c.end));
             let start = cursor.and_then(|(id, _, _)| layers.iter().position(|l| *l == id)).unwrap_or(0);
             for k in 0..=layers.len() {
                 // `allLayers: false` with a non-type layer active leaves no layers to search (#703).
@@ -148,7 +161,8 @@ pub(super) fn find_replace(s: &mut Session, p: &Value) -> Result<Value> {
                     }
                 };
                 if let Some((a, b)) = hit {
-                    s.edit_state.find_cursor = Some((id, a, b));
+                    s.edit_state.find_cursor =
+                        Some(FindCursor { layer: id, start: a, end: b, find, case_sensitive: case, whole_word: whole, forward, all_layers });
                     let _ = s.select_layer(id);
                     return Ok(
                         json!({"found": {"layer": id.0, "start": a, "end": b, "text": &text[a..b]}, "changed": changed.map(|(l, a, b)| json!({"layer": l.0, "start": a, "end": b}))}),

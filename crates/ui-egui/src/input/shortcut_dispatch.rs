@@ -8,6 +8,7 @@
 //! silently, as the greyed menu item shows.
 
 use egui::{Key, KeyboardShortcut};
+use photocraft_engine::actions_cmds;
 use serde_json::json;
 
 use crate::PhotocraftApp;
@@ -48,8 +49,19 @@ pub fn take_log(ctx: &egui::Context) -> Vec<(String, Outcome)> {
 /// their overrides apply. Held temporary tools (Space…) are not here: see [`crate::hold_keys`].
 pub fn bindings(app: &PhotocraftApp) -> Vec<(String, KeyboardShortcut)> {
     let prefs = app.session.prefs();
-    let action_ids: Vec<String> = app.session.actions.list.iter().map(|a| crate::actions::shortcut_id(&a.name)).collect();
-    let actions = action_ids.iter().map(|id| (id.as_str(), prefs.shortcut(id, None).map(str::to_string)));
+    let action_key = |key: &str, alternate| {
+        let Some(row) = action_shortcut_row(app, key) else { return false };
+        if !key.starts_with(actions_cmds::PLAY_SHORTCUT_PREFIX) {
+            return true;
+        }
+        let list = &app.session.actions.list;
+        let explicit = list[row].action_id.as_deref().map(actions_cmds::occurrence_key);
+        !explicit.is_some_and(|id| {
+            actions_cmds::shortcut_row(list, &id) == Some(row)
+                && if alternate { prefs.alternate_shortcuts.contains_key(&id) } else { prefs.shortcuts.contains_key(&id) }
+        })
+    };
+    let actions = prefs.shortcuts.keys().filter(|id| action_key(id.as_str(), false)).map(|id| (id.as_str(), prefs.shortcut(id, None).map(str::to_string)));
     // The Keyboard Shortcuts dialog lists Photoshop's Window › <panel> item (`window.panel.*`)
     // in place of the shell command it runs (`window.toggle.*`, see `menus::panel_alias`), so an
     // edit to that row reassigns or removes the shell command's default too (#1272).
@@ -75,7 +87,7 @@ pub fn bindings(app: &PhotocraftApp) -> Vec<(String, KeyboardShortcut)> {
         .iter()
         .filter(|(id, sc)| {
             !sc.is_empty()
-                && !id.starts_with(crate::actions::SHORTCUT_PREFIX)
+                && !actions_cmds::is_action_key(id)
                 && photocraft_engine::commands::find(id).is_none()
                 && !crate::menus::UI_COMMANDS.iter().any(|c| c.0 == id.as_str())
                 && !crate::hold_keys::is_temporary(id)
@@ -98,6 +110,9 @@ pub fn bindings(app: &PhotocraftApp) -> Vec<(String, KeyboardShortcut)> {
     let alternate_ids: std::collections::BTreeSet<&str> =
         photocraft_engine::prefs::ALTERNATE_SHORTCUTS.iter().map(|(id, _)| *id).chain(prefs.alternate_shortcuts.keys().map(String::as_str)).collect();
     for id in alternate_ids {
+        if actions_cmds::is_action_key(id) && !action_key(id, true) {
+            continue;
+        }
         let main = prefs.shortcut(id, crate::shortcuts::default_shortcut(id).as_deref()).map(str::to_string);
         let user = prefs.alternate_shortcuts.contains_key(id);
         candidates.extend(prefs.alternates(id, main.as_deref()).into_iter().map(|k| (id, Some(k), user)));
@@ -371,12 +386,21 @@ pub fn dispatch(app: &mut PhotocraftApp, ctx: &egui::Context, id: &str) {
     dispatch_as(app, ctx, id, false);
 }
 
+fn action_shortcut_row(app: &PhotocraftApp, key: &str) -> Option<usize> {
+    if key.starts_with(actions_cmds::PLAY_SHORTCUT_PREFIX) && app.services.preset_store.is_some() && app.session.preset_store.is_none() {
+        return None;
+    }
+    actions_cmds::shortcut_row(&app.session.actions.list, key)
+}
+
 /// [`dispatch`]; with `last`, an adjustment dialog opens at its last confirmed settings.
 fn dispatch_as(app: &mut PhotocraftApp, ctx: &egui::Context, id: &str, last: bool) {
-    let action = id.strip_prefix(crate::actions::SHORTCUT_PREFIX);
-    let command_id = if action.is_some() { "actions.play" } else { id };
-    let outcome = if !crate::menus::is_enabled(app, command_id) {
-        let why = disabled_reason(app, command_id);
+    let is_action = actions_cmds::is_action_key(id);
+    let action = action_shortcut_row(app, id);
+    let command_id = if is_action { "actions.play" } else { id };
+    let missing = is_action && action.is_none();
+    let outcome = if missing || !crate::menus::is_enabled(app, command_id) {
+        let why = if missing { "The Action no longer exists".into() } else { disabled_reason(app, command_id) };
         let template = "{label} is not available: {reason}";
         app.ui.status = crate::i18n::fmt(tl!(template), &[("label", crate::i18n::tr_id(crate::i18n::current(), id, &label(id))), ("reason", tl!(&why))]);
         app.ui.status_error = true;
@@ -384,10 +408,15 @@ fn dispatch_as(app: &mut PhotocraftApp, ctx: &egui::Context, id: &str, last: boo
     } else if ctx.data(|d| d.get_temp::<bool>(dry_run_id())).unwrap_or(false) {
         Outcome::Ran
     } else {
-        let r = if let Some(name) = action {
-            // Use the normal command path: synthetic input and every nested action
-            // step must still pass the automation authorizer.
-            crate::menus::invoke(app, ctx, "actions.play", json!({"action": name})).and_then(|v| {
+        let r = if let Some(row) = action {
+            let list = &app.session.actions.list;
+            let target = match id.strip_prefix(actions_cmds::PLAY_SHORTCUT_PREFIX) {
+                Some(name) if list.iter().position(|action| action.name == name) == Some(row) => json!({"action": name}),
+                Some(_) => json!({"action": row}),
+                None => json!({"actionId": list[row].action_id}),
+            };
+            // Synthetic input and every nested action still pass the automation authorizer.
+            crate::menus::invoke(app, ctx, "actions.play", target).and_then(|v| {
                 crate::actions::report_play(app, &v);
                 if v.get("failed").is_some_and(|f| f.is_object()) { Err(app.ui.status.clone()) } else { Ok(v) }
             })

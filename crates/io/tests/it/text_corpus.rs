@@ -84,7 +84,7 @@ fn corpus_text_layers() {
             let st = &t.runs[0].style;
             assert!(st.size_pt > 0.0 && st.postscript_name.is_some(), "{name}/{}: {st:?}", l.name);
             // Round trip of the model through our own TySh writer.
-            let rebuilt = photocraft_text::psd::build_tysh(t, doc.resolution_dpi, None);
+            let rebuilt = photocraft_text::psd::build_tysh(t, doc.resolution_dpi, None).unwrap();
             let mut back = photocraft_text::psd::text_layer_from_tysh(&rebuilt, doc.resolution_dpi).unwrap();
             if let Some(txt2) = &txt2 {
                 photocraft_text::psd::apply_txt2(&mut back, &rebuilt, txt2);
@@ -256,7 +256,7 @@ fn corpus_photoshop_path_text_opens_on_its_path() {
                     *k = k.transform(&photocraft_geom::Affine::translate(10.0, 0.0));
                 }
             }
-            t.psd_raw = Some(std::sync::Arc::new(photocraft_text::psd::build_tysh(t, edited.resolution_dpi, None)));
+            t.psd_raw = Some(std::sync::Arc::new(photocraft_text::psd::build_tysh(t, edited.resolution_dpi, None).unwrap()));
         }
         let out = photocraft_io::export(&edited, file, &Default::default()).unwrap().bytes;
         let back = photocraft_io::import(file, &out).unwrap().document;
@@ -347,7 +347,7 @@ fn corpus_text_psd_legacy_objects_are_edited_in_place() {
     let items = |value: &E| if let E::Dict(items) = value { items.clone() } else { Vec::new() };
 
     // Unedited: the legacy object and the font list are as the file has them.
-    let unedited = photocraft_text::psd::parse_txt2(&photocraft_text::psd::build_txt2_at(&[(0, &layer)], Some(&txt2), doc.resolution_dpi)).unwrap();
+    let unedited = photocraft_text::psd::parse_txt2(&photocraft_text::psd::build_txt2_at(&[(0, &layer)], Some(&txt2), doc.resolution_dpi).unwrap()).unwrap();
     assert!(legacy(&unedited) == legacy(&before), "an unedited layer leaves the legacy text object alone");
     assert!(unedited.path(&["DocumentResources", "FontSet"]) == before.path(&["DocumentResources", "FontSet"]), "and the font list it indexes");
 
@@ -356,7 +356,7 @@ fn corpus_text_psd_legacy_objects_are_edited_in_place() {
     for run in &mut bigger.runs {
         run.style.size_pt += 7.0;
     }
-    let edited = photocraft_text::psd::parse_txt2(&photocraft_text::psd::build_txt2_at(&[(0, &bigger)], Some(&txt2), doc.resolution_dpi)).unwrap();
+    let edited = photocraft_text::psd::parse_txt2(&photocraft_text::psd::build_txt2_at(&[(0, &bigger)], Some(&txt2), doc.resolution_dpi).unwrap()).unwrap();
     let (was, now) = (features(&legacy(&before)).expect("features"), features(&legacy(&edited)).expect("features"));
     let size = |f: &E| f.get("FontSize").and_then(E::as_f64).expect("FontSize");
     assert!((size(&now) - size(&was) - 7.0).abs() < 1e-6, "the legacy size follows the edit: {} -> {}", size(&was), size(&now));

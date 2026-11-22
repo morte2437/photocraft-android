@@ -789,6 +789,7 @@ fn automation_rejects_ambient_path_commands_and_preferences() {
         ("swatches.import", serde_json::json!({"path": "/outside/set.aco"})),
         ("swatches.export", serde_json::json!({"path": "/outside/set.ase"})),
         ("actions.load", serde_json::json!({"path": "/outside/set.atn"})),
+        ("actions.replace", serde_json::json!({"path": "/outside/set.atn","confirm":true})),
         ("actions.save", serde_json::json!({"path": "/outside/set.atn"})),
         ("style.presets.importAsl", serde_json::json!({"path": "/outside/set.asl"})),
         ("style.presets.exportAsl", serde_json::json!({"path": "/outside/set.asl"})),
@@ -806,6 +807,7 @@ fn automation_rejects_ambient_path_commands_and_preferences() {
         ("swatches.import", serde_json::json!({"data": "QUJD"})),
         ("swatches.export", serde_json::json!({"format": "ase"})),
         ("actions.load", serde_json::json!({"data": "QUJD"})),
+        ("actions.replace", serde_json::json!({"data": "QUJD","confirm":true})),
         ("actions.save", serde_json::json!({"set": "S"})),
         ("style.presets.importAsl", serde_json::json!({"data": "QUJD"})),
         ("style.presets.exportAsl", serde_json::json!({"group": "Basics"})),
@@ -1497,6 +1499,22 @@ fn same_root_leaf_link_save_replaces_the_link_without_writing_its_target() {
     assert_eq!(std::fs::read(inside.join("target.txt")).unwrap(), b"target");
     assert_eq!(std::fs::read(inside.join("link.png")).unwrap(), b"replacement");
     assert!(!std::fs::symlink_metadata(inside.join("link.png")).unwrap().file_type().is_symlink());
+}
+
+/// A hardlink inside a root names the outside inode, so it reads that content. Writing over it is
+/// an atomic replace of the directory entry: the other name and its inode keep their bytes.
+#[cfg(unix)]
+#[test]
+fn hardlink_inside_a_root_reads_the_target_but_write_over_replaces_the_link() {
+    let (inside, outside, workspace) = roots("hardlink");
+    let target = outside.join("target.png");
+    std::fs::write(&target, b"outside").unwrap();
+    std::fs::hard_link(&target, inside.join("linked.png")).unwrap();
+
+    assert_eq!(workspace.read("linked.png").unwrap(), b"outside");
+    workspace.write("linked.png", b"replacement").unwrap();
+    assert_eq!(std::fs::read(&target).unwrap(), b"outside", "the outside inode is not modified");
+    assert_eq!(std::fs::read(inside.join("linked.png")).unwrap(), b"replacement");
 }
 
 #[test]

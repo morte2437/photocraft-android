@@ -65,7 +65,9 @@ fn the_dialog_and_the_drag_send_the_same_triangle() {
     let app = app(800, 600);
     let fields = json!({"__createShape": "triangle", "__at": [400.0, 300.0], "width": 100.0, "height": 100.0, "fromCenter": false});
     let Value::Object(fields) = fields else { panic!("an object") };
-    let dialog = crate::shape_dialog::geometry(&fields).unwrap();
+    let mut dialog = crate::shape_dialog::geometry(&fields).unwrap();
+    // The drag adds its History name in finish_shape, outside the geometry.
+    dialog.as_object_mut().map(|o| o.remove("historyName"));
     let drag = shape_geometry(&app.ui.tool_options, Tool::Triangle, [400.0, 300.0], [500.0, 400.0], Modifiers::NONE).unwrap();
     assert_eq!(dialog, drag);
     let path = photocraft_engine::vector_cmds::shape_path(&dialog).unwrap();

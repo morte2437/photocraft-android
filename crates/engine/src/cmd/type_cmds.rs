@@ -652,7 +652,7 @@ pub fn refresh_at(dpi: f32, format: PixelFormat, t: &mut TextLayer) {
     let mut eng = photocraft_text::shared().lock().unwrap_or_else(|e| e.into_inner());
     let (layout, r) = eng.render(t, dpi, format);
     t.cache = Some(r.surface);
-    t.psd_raw = Some(Arc::new(photocraft_text::psd::build_tysh(t, dpi, layout.bounds())));
+    t.psd_raw = photocraft_text::psd::build_tysh(t, dpi, layout.bounds()).map(Arc::new);
 }
 
 /// Makes `t` paragraph text in the box `[x, y, width, height]`: the box sits at the text-space

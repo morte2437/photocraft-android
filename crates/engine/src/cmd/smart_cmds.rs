@@ -71,7 +71,9 @@ pub fn encode_source(doc: &Document) -> Result<Vec<u8>> {
 /// Decodes smart-object contents (a `.pcraft` bundle, PSD/PSB, or any flat image format).
 pub fn decode_source(file_name: &str, bytes: &[u8]) -> Result<Document> {
     if photocraft_io::svg::is_svg(bytes) {
-        return photocraft_io::svg::import_svg_bounded_images(file_name, bytes, 24_000_000)
+        // This API has no warning channel. Stack/source caches and contents edits must not
+        // turn a partial SVG import into silently complete smart-object contents.
+        return photocraft_io::svg::import_svg_bounded_images_strict(file_name, bytes, 24_000_000)
             .map(|imported| imported.document)
             .map_err(|e| other(format!("can't read SVG smart object contents: {e}")));
     }
@@ -198,10 +200,10 @@ pub use placing::{layer_to_smart, layers_to_smart, placement};
 #[cfg(test)]
 pub(crate) use rendering::DISPLAY_NATIVE_HASH_BYTES;
 use rendering::refresh_or_fail;
-pub(crate) use rendering::source_box;
 #[cfg(test)]
 use rendering::{NativeDigests, blend_surfaces, place, render_in};
 pub use rendering::{apply_smart_filters, purge_stack_cache, refresh, refresh_layer, render, render_below_filter, stack_cache_bytes, stack_image};
+pub(crate) use rendering::{render_with_warnings, source_box};
 #[cfg(test)]
 use source::svg_source_image_in;
 pub use source::{SourceImage, purge_source_cache, source_bytes, source_cache_bytes, source_decode_count, source_image, svg_source_image};

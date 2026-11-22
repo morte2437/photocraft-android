@@ -1119,11 +1119,16 @@ fn dialog_set(app: &mut PhotocraftApp, p: &Value) -> Outcome {
     // A Color Picker previewing in this dialog owns its fields until its OK or Cancel: an edit now
     // would be undone by the picker putting the dialog back as it was.
     let previewed = crate::color_picker_ui::live_preview::previewed_dialogs(app).contains(&id);
+    // Batch occurrence fields are bound to the private dialog ID, not mutable form data.
+    let batch_dialog = crate::actions::has_batch_dialog_binding(app, id);
     match app.ui.dialog_mut(id) {
         // A continuation belongs to the dialog that paused it, even when another
         // action has a valid token. Replacing it would resume or cancel that action.
         Some(_) if field == crate::actions::RESUME => err("the paused action token is read-only"),
         Some(_) if field == crate::filter_dialog::MATCH_COLOR_DESTINATION => err("the Match Color destination is read-only"),
+        Some(_) if matches!(field, "__formOrig" | crate::actions::BATCH_OCCURRENCE | crate::actions::BATCH_OCCURRENCES) && batch_dialog => {
+            err("Batch occurrence fields are read-only")
+        }
         Some(_) if previewed => err("confirm or cancel the color picker first"),
         // A Color Picker's target is fixed when it opens: OK must set the field it previewed in.
         Some(d) if matches!(field, "__colorPicker" | "__dialog" | "__field") && crate::color_picker_ui::owns(&d.fields) => {

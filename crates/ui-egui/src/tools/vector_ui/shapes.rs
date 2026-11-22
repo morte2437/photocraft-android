@@ -27,6 +27,19 @@ pub(super) fn stroke_param(app: &PhotocraftApp) -> Value {
     p
 }
 
+/// An open Pen shape's stroke: the options bar's stroke when one is set, else a 1 px stroke in the
+/// foreground colour, so the open path stays visible.
+pub(super) fn open_pen_stroke_param(app: &PhotocraftApp) -> Value {
+    let stroke = stroke_param(app);
+    if !stroke.is_null() {
+        return stroke;
+    }
+    let mut fallback = app.ui.tool_options.shape_stroke.params();
+    fallback["width"] = json!(1.0);
+    fallback["color"] = json!(app.session.tools.foreground);
+    fallback
+}
+
 /// The paint the next shape's fill (`stroke` false) or stroke takes: the options bar's gradient,
 /// else the foreground / background colour.
 fn tool_paint(app: &PhotocraftApp, stroke: bool) -> photocraft_doc::Fill {
@@ -294,7 +307,11 @@ fn path_op_of(op: &str) -> photocraft_doc::vector::PathOp {
 /// A Line tool drag is one History step named after the tool, as in Photoshop (#13244); the
 /// other Shape tools keep the commands' own names.
 fn line_history_name(tool: Tool) -> Option<&'static str> {
-    (tool == Tool::Line).then_some("Line Tool")
+    match tool {
+        Tool::Line => Some("Line Tool"),
+        Tool::Triangle => Some("Triangle Tool"),
+        _ => None,
+    }
 }
 
 pub(super) fn fill_param(app: &PhotocraftApp) -> Value {
@@ -397,5 +414,48 @@ pub fn draw_shape_preview(app: &PhotocraftApp, painter: &egui::Painter, xf: &Vie
     for (pts, _) in path_lines(&path, &|q| xf.to_screen(q[0] as f32, q[1] as f32)) {
         // The accent path over a dark halo: visible on any pixels (#172).
         painter.extend(crate::tool_feedback::contrast_path(pts, true, accent));
+    }
+}
+
+#[cfg(test)]
+mod triangle_history_ui_tests {
+    use super::*;
+
+    fn app() -> PhotocraftApp {
+        let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), Default::default());
+        app.run("file.new", json!({"width": 400, "height": 300})).unwrap();
+        app
+    }
+
+    #[test]
+    fn triangle_drags_record_tool_history_in_shape_and_path_modes() {
+        for mode in ["shape", "path"] {
+            let mut app = app();
+            app.ui.tool_options.shape_mode = mode.into();
+            for x in [20.0, 150.0] {
+                let before = app.session.active().unwrap().history.past_len();
+                finish_shape(&mut app, Tool::Triangle, [x, 20.0], [x + 100.0, 100.0], egui::Modifiers::NONE);
+                let st = app.session.active().unwrap();
+                assert_eq!(st.history.past_len(), before + 1, "{mode}");
+                assert_eq!(st.history.undo_label(), Some("Triangle Tool"), "{mode}");
+                if mode == "path" {
+                    assert_eq!(st.doc.work_path.as_ref().unwrap().subpaths.len(), if x == 20.0 { 1 } else { 2 });
+                } else {
+                    assert!(st.doc.layers.iter().any(|l| l.name == "Triangle 1"));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn triangle_dialog_confirmation_records_tool_history() {
+        let mut app = app();
+        let id = crate::dialogs::shape_dialog::open(&mut app, Tool::Triangle, [20.0, 20.0]).unwrap();
+        let before = app.session.active().unwrap().history.past_len();
+        crate::dialogs::confirm(&mut app, id).unwrap();
+        let st = app.session.active().unwrap();
+        assert_eq!(st.history.past_len(), before + 1);
+        assert_eq!(st.history.undo_label(), Some("Triangle Tool"));
+        assert!(st.doc.layers.iter().any(|l| l.name == "Triangle 1"));
     }
 }

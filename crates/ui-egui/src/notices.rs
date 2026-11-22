@@ -182,6 +182,11 @@ pub fn error(app: &mut PhotocraftApp, message: String) {
 /// `warnings`, which must reach the user like any other import warning. Nothing happens when
 /// every frame came through.
 pub fn footage_warnings(app: &mut PhotocraftApp, result: &serde_json::Value, what: &str) {
+    io_result_warnings(app, result, what);
+}
+
+/// Surface import or update warnings returned by a successful command.
+pub fn io_result_warnings(app: &mut PhotocraftApp, result: &serde_json::Value, what: &str) {
     let warnings: Vec<String> = result["warnings"].as_array().into_iter().flatten().filter_map(serde_json::Value::as_str).map(str::to_owned).collect();
     io_warnings(app, what, &warnings);
 }

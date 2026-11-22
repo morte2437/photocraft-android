@@ -627,3 +627,47 @@ fn legacy_conversion_refuses_before_waiting_for_the_decode_gate() {
     drop(_guard);
     handle.join().expect("worker thread");
 }
+
+#[test]
+fn unicode_names_preserve_empty_lossy_and_terminator_policy() {
+    let names: &[&[u16]] = &[&[], &[0xd800, 65, 0, 0], &[0xd83d, 0xde00], &[65, 0, 66]];
+    let mut data = Vec::new();
+    for name in names {
+        data.extend((name.len() as u32).to_be_bytes());
+        data.extend(name.iter().flat_map(|u| u.to_be_bytes()));
+    }
+    assert_eq!(unicode_names(&data), ["", "\u{fffd}A", "😀", "A\0B"]);
+    data.extend([0, 0, 0, 2, 0, 65]);
+    assert_eq!(unicode_names(&data), ["", "\u{fffd}A", "😀", "A\0B"]);
+}
+
+#[test]
+fn oversized_tysh_fallback_remains_type_and_roundtrips_raw_block() {
+    for extra in [1, 2] {
+        let mut file = testgen::small(Version::Psd, Compression::Raw);
+        let mut raw = vec![0u8; craft_psd_tysh::text::envelope::MAX_BYTES + extra];
+        for (i, value) in [1.0f64, 0.0, 0.0, 1.0, 25.0, 30.0].iter().enumerate() {
+            raw[2 + i * 8..10 + i * 8].copy_from_slice(&value.to_be_bytes());
+        }
+        file.layers_mut()[0].blocks.push(craft_psd::TaggedBlock::new(*b"TySh", raw.clone()));
+        let (doc, _, _) = psd_to_document_decoded_integrity(&file, &photocraft_raster::Interrupt::NONE, None).unwrap();
+        let text = doc
+            .layers
+            .iter()
+            .find_map(|layer| match &layer.content {
+                LayerContent::Text(text) => Some(text),
+                _ => None,
+            })
+            .expect("oversized descriptor must retain a type layer rather than rasterizing");
+        assert!(text.text.is_empty());
+        assert_eq!(text.psd_raw.as_deref().unwrap().as_slice(), raw);
+        let saved = crate::psd_export::document_to_psd(&doc).unwrap();
+        let block = saved.layers().iter().find_map(|layer| layer.block(b"TySh")).unwrap();
+        // Layer blocks include a zero pad inside odd lengths for PSD reader compatibility (#200).
+        // No original byte may change; only that required pad may be appended.
+        if raw.len() % 2 == 1 {
+            raw.push(0);
+        }
+        assert_eq!(block.data, raw);
+    }
+}

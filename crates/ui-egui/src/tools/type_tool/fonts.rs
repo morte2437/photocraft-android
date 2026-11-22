@@ -251,13 +251,41 @@ pub fn warm_fonts() {
 /// disabled "Loading fonts…" box `width` wide instead of blocking the UI, and a repaint picks the
 /// menus up once the scan is done.
 pub(crate) fn fonts_ready(ui: &mut egui::Ui, width: f32) -> bool {
-    if photocraft_text::try_shared().is_some() {
+    let loaded = photocraft_text::try_shared().is_some();
+    #[cfg(test)]
+    let loaded = loaded && !TEST_FONTS_LOADING.get();
+    if loaded {
         return true;
     }
     let label = tl!("Loading fonts…").to_string();
     ui.add_enabled_ui(false, |ui| crate::widgets::dropdown(ui, "fonts-loading", tl!("Font"), &mut label.clone(), &[(label.clone(), label.as_str())], width));
     ui.ctx().request_repaint_after(std::time::Duration::from_millis(100));
     false
+}
+
+#[cfg(test)]
+thread_local! {
+    // Tests draw the font menus as still loading while a `FontsLoading` is alive, whether or not
+    // the font database has finished its scan.
+    static TEST_FONTS_LOADING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// While alive, [`fonts_ready`] draws the "Loading fonts…" box on this thread (tests).
+#[cfg(test)]
+pub(crate) struct FontsLoading(bool);
+
+#[cfg(test)]
+impl FontsLoading {
+    pub(crate) fn start() -> Self {
+        Self(TEST_FONTS_LOADING.replace(true))
+    }
+}
+
+#[cfg(test)]
+impl Drop for FontsLoading {
+    fn drop(&mut self) {
+        TEST_FONTS_LOADING.set(self.0);
+    }
 }
 
 /// The font menu's local library (`photocraft_engine::font_library_cmds`): the recent fonts it

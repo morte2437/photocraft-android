@@ -117,6 +117,7 @@ fn free_transform_starts_where_the_selected_pixels_were_moved() {
 #[test]
 fn undo_steps_back_through_the_transform_not_the_document() {
     let mut h = harness();
+    h.state_mut().run("actions.reset", json!({"confirm":true,"mode":"append"})).unwrap();
     let steps = history(&h);
     begin(&mut h);
     let q0 = quad(&h);
@@ -153,6 +154,9 @@ fn undo_steps_back_through_the_transform_not_the_document() {
     // Outside the transform, ⌘Z is the document's Undo again.
     key(&mut h, Modifiers::COMMAND, Key::Z);
     assert_eq!(width(&h), 100, "the committed transform is undone");
+    assert_eq!(h.state().session.actions.set_rows.len(), 1);
+    key(&mut h, Modifiers::COMMAND, Key::Z);
+    assert!(h.state().session.actions.set_rows.is_empty(), "the preceding library edit is next");
 }
 
 /// `engine.execute` over the control channel (and MCP, which goes through it) as a programmatic

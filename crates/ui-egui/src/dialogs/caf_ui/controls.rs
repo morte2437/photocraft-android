@@ -1,4 +1,4 @@
-use super::lifecycle::{apply, cancel, close, fill_edit, redo, report, reset, set_sampling, undo};
+use super::lifecycle::{apply, cancel, commit_fill, fill_edit, redo, report, reset, set_sampling, undo};
 use super::preview::{rebase, wait_preview};
 use super::{CafTool, CafWorkspace, LASSO_OPS, PhotocraftApp, ToolEvent, Value, json};
 
@@ -8,6 +8,9 @@ pub fn control(app: &mut PhotocraftApp, ui: &Value) -> Result<Value, String> {
     if flag("cancel") {
         cancel(app);
         return Ok(json!({"cancelled": true}));
+    }
+    if app.distort.caf.as_ref().is_some_and(|w| w.pending_fill.is_some()) {
+        return Err("Content-Aware Fill is still processing".into());
     }
     let before = app.distort.caf.as_ref().ok_or("Content-Aware Fill is not open")?.opts.clone();
     {
@@ -83,7 +86,7 @@ pub fn control(app: &mut PhotocraftApp, ui: &Value) -> Result<Value, String> {
     if flag("redo") {
         redo(app);
     }
-    if flag("apply") {
+    if flag("apply") && !flag("commit") {
         apply(app)?;
     }
     if flag("waitPreview") {
@@ -92,12 +95,13 @@ pub fn control(app: &mut PhotocraftApp, ui: &Value) -> Result<Value, String> {
     // OK last, with the settings given alongside. A failed fill keeps the workspace open, as
     // the OK button does.
     if flag("commit") {
-        let r = apply(app);
-        match &r {
-            Ok(_) => close(app),
-            Err(e) => report(app, e.clone()),
+        match commit_fill(app) {
+            Ok(v) => return Ok(v),
+            Err(e) => {
+                report(app, e.clone());
+                return Err(e);
+            }
         }
-        return r.map(|v| json!({"committed": true, "result": v}));
     }
     Ok(app.distort.caf.as_ref().map(CafWorkspace::describe).unwrap_or(Value::Null))
 }
@@ -105,6 +109,9 @@ pub fn control(app: &mut PhotocraftApp, ui: &Value) -> Result<Value, String> {
 /// Pointer in document coordinates (from the view or the control channel).
 pub fn pointer(app: &mut PhotocraftApp, ev: ToolEvent, mods: egui::Modifiers) {
     let Some(w) = app.distort.caf.as_mut() else { return };
+    if w.pending_fill.is_some() {
+        return;
+    }
     match (w.tool, ev) {
         (CafTool::Brush, ToolEvent::Down { x, y, .. }) => w.begin_stroke([x, y], mods.alt),
         (CafTool::Brush, ToolEvent::Move { x, y, .. }) => {
@@ -149,7 +156,7 @@ pub fn pointer(app: &mut PhotocraftApp, ev: ToolEvent, mods: egui::Modifiers) {
 }
 
 pub fn keys(app: &mut PhotocraftApp, ctx: &egui::Context) {
-    if crate::color_picker_ui::any_open(app) {
+    if app.distort.caf.as_ref().is_some_and(|w| w.pending_fill.is_some()) || crate::color_picker_ui::any_open(app) {
         return;
     }
     let cmd_shift = egui::Modifiers::COMMAND | egui::Modifiers::SHIFT;

@@ -8,10 +8,59 @@ use photocraft_io::*;
 
 const NS: &str = "xmlns=\"http://www.w3.org/2000/svg\"";
 
-fn open(svg: &str) -> ImportResult {
-    import("drawing.svg", svg.as_bytes()).unwrap_or_else(|e| panic!("{e}\n{svg}"))
+fn svg_input_diagnostic(svg: &str) -> String {
+    // Generated data URLs can be megabytes long; dumping one line can stall a CI log reader.
+    // Keep a UTF-8-safe, escaped prefix and the full byte length without changing the failure.
+    const MAX_PREVIEW_CHARS: usize = 256;
+    let prefix: String = svg.chars().take(MAX_PREVIEW_CHARS).collect();
+    let truncated = if prefix.len() < svg.len() { " [truncated]" } else { "" };
+    format!("SVG input ({} bytes): {prefix:?}{truncated}", svg.len())
 }
 
+fn open(svg: &str) -> ImportResult {
+    import("drawing.svg", svg.as_bytes()).unwrap_or_else(|e| panic!("{e}\n{}", svg_input_diagnostic(svg)))
+}
+
+#[test]
+fn svg_diagnostic_keeps_short_input_and_byte_length() {
+    for source in ["", "<svg/>\n", "<svg><!-- é界🙂 --></svg>", "\r\n\0"] {
+        assert_eq!(svg_input_diagnostic(source), format!("SVG input ({} bytes): {source:?}", source.len()));
+    }
+    for count in [255, 256] {
+        let source = "界".repeat(count);
+        assert_eq!(svg_input_diagnostic(&source), format!("SVG input ({} bytes): {source:?}", source.len()));
+    }
+}
+
+#[test]
+fn svg_diagnostic_bounds_large_ascii_utf8_and_control_inputs() {
+    for prefix in ["A".repeat(256), format!("{}🙂", "界".repeat(255)), "\0".repeat(256), "\u{10ffff}".repeat(256)] {
+        for tail in ["Z".to_owned(), "DO_NOT_DUMP_TAIL".repeat(128_000)] {
+            let source = format!("{prefix}{tail}");
+            let diagnostic = svg_input_diagnostic(&source);
+            // Check the size before assert_eq! so a regressed cap cannot dump the whole fixture.
+            assert!(diagnostic.len() < 4096, "{} diagnostic bytes", diagnostic.len());
+            assert_eq!(diagnostic, format!("SVG input ({} bytes): {prefix:?} [truncated]", source.len()));
+            assert!(!diagnostic.contains("DO_NOT_DUMP_TAIL"));
+        }
+    }
+}
+
+#[test]
+fn failed_svg_import_keeps_the_error_and_fixture_context() {
+    let source = "<svg";
+    let error = match import("drawing.svg", source.as_bytes()) {
+        Err(error) => error.to_string(),
+        Ok(_) => panic!("the malformed SVG must fail to import"),
+    };
+    let failure = match std::panic::catch_unwind(|| open(source)) {
+        Err(failure) => failure,
+        Ok(_) => panic!("the test helper must still fail on an import error"),
+    };
+    let message = failure.downcast_ref::<String>().map(String::as_str).or_else(|| failure.downcast_ref::<&str>().copied()).expect("string panic");
+    assert!(message.starts_with(&format!("{error}\n")), "{message}");
+    assert!(message.contains(&svg_input_diagnostic(source)), "{message}");
+}
 fn px(doc: &photocraft_doc::Document, x: i32, y: i32) -> [f32; 4] {
     photocraft_compose::flatten(doc).get(x, y)
 }
@@ -764,4 +813,15 @@ fn image_hrefs_to_local_files_are_never_read() {
         open(&format!("<svg {NS} width=\"20\" height=\"20\"><image width=\"20\" height=\"20\" href=\"{}\"/></svg>", png_data_url())).document.layers[0].content,
         LayerContent::Raster(_)
     ));
+}
+
+#[test]
+fn warning_bearing_raster_preserves_readable_artwork_without_relaxing_strict_api() {
+    let bytes = br##"<svg xmlns="http://www.w3.org/2000/svg" width="8" height="8"><image width="4" height="4" href="data:image/bmp,BM"/><rect x="4" width="4" height="8" fill="#ff0000"/></svg>"##;
+    let (pixels, warnings) = svg::rasterize_bounded_with_warnings(bytes, 1.0, 24_000_000).unwrap();
+    assert_eq!(warnings.len(), 1);
+    assert!(warnings[0].contains("embedded image was omitted"));
+    assert_eq!(pixels.px[4 * 8 + 6], [1.0, 0.0, 0.0, 1.0]);
+    assert!(svg::rasterize_bounded(bytes, 1.0, 24_000_000).is_err());
+    assert!(svg::rasterize(bytes, 1.0).is_err());
 }

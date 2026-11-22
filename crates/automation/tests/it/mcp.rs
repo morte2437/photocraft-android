@@ -971,7 +971,7 @@ async fn doc_export_layers_reports_skipped_layers() {
     json_of(&call(&client, "command_run", json!({"id": "layer.setProps", "params": {"visible": false}})).await);
     let result = json_of(&call(&client, "doc_export_layers", json!({"dir": "layers"})).await);
     assert_eq!(result["count"], 1);
-    assert_eq!(result["files"], json!(["layers/card_0001_Background.png"]));
+    assert_eq!(result["files"], json!(["layers/card_0002_Background.png"]));
     assert_eq!(
         result["skipped"],
         json!([

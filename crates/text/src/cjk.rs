@@ -166,73 +166,13 @@ fn os_locale() -> Option<String> {
 }
 
 /// First entry of `AppleLanguages` in a binary property list (macOS `.GlobalPreferences.plist`).
-/// A minimal, bounds-checked reader of the documented `bplist00` format; `None` on anything else.
+/// The shared selective reader does not expand unrelated preference values. Invalid input or
+/// exhausted budgets keeps the existing environment-locale fallback; no OS policy moves here.
 pub fn bplist_first_language(b: &[u8]) -> Option<String> {
-    if b.len() < 40 || !b.starts_with(b"bplist00") {
-        return None;
-    }
-    let t = b.get(b.len() - 32..)?;
-    let offset_size = *t.get(6)? as usize;
-    let ref_size = *t.get(7)? as usize;
-    let be = |s: &[u8]| s.iter().fold(0u64, |a, &x| (a << 8) | x as u64);
-    let num_objects = usize::try_from(be(t.get(8..16)?)).ok()?;
-    let top = usize::try_from(be(t.get(16..24)?)).ok()?;
-    let table = usize::try_from(be(t.get(24..32)?)).ok()?;
-    if !(1..=8).contains(&offset_size) || !(1..=8).contains(&ref_size) || num_objects > b.len() {
-        return None;
-    }
-    let offset = |obj: usize| -> Option<usize> {
-        if obj >= num_objects {
-            return None;
-        }
-        let at = table.checked_add(obj.checked_mul(offset_size)?)?;
-        usize::try_from(be(b.get(at..at.checked_add(offset_size)?)?)).ok()
-    };
-    // (marker high nibble, count, start of payload)
-    let header = |obj: usize| -> Option<(u8, usize, usize)> {
-        let at = offset(obj)?;
-        let m = *b.get(at)?;
-        let (kind, low) = (m >> 4, (m & 0x0F) as usize);
-        if low != 0x0F || !matches!(kind, 0x5 | 0x6 | 0xA | 0xD) {
-            return Some((kind, low, at + 1));
-        }
-        let im = *b.get(at + 1)?;
-        if im >> 4 != 0x1 {
-            return None;
-        }
-        let n = 1usize.checked_shl((im & 0x0F) as u32)?;
-        let count = usize::try_from(be(b.get(at + 2..at.checked_add(2 + n)?)?)).ok()?;
-        Some((kind, count, at + 2 + n))
-    };
-    let string = |obj: usize| -> Option<String> {
-        let (kind, n, start) = header(obj)?;
-        match kind {
-            0x5 => b.get(start..start.checked_add(n)?).map(|s| String::from_utf8_lossy(s).into_owned()),
-            0x6 => {
-                let s = b.get(start..start.checked_add(n.checked_mul(2)?)?)?;
-                Some(String::from_utf16_lossy(&s.as_chunks::<2>().0.iter().map(|p| u16::from_be_bytes(*p)).collect::<Vec<_>>()))
-            }
-            _ => None,
-        }
-    };
-    let obj_ref = |at: usize| -> Option<usize> { usize::try_from(be(b.get(at..at.checked_add(ref_size)?)?)).ok() };
-    let (kind, n, start) = header(top)?;
-    if kind != 0xD {
-        return None;
-    }
-    for i in 0..n {
-        let key = obj_ref(start.checked_add(i.checked_mul(ref_size)?)?)?;
-        if string(key).as_deref() != Some("AppleLanguages") {
-            continue;
-        }
-        let val = obj_ref(start.checked_add(n.checked_add(i)?.checked_mul(ref_size)?)?)?;
-        let (akind, an, astart) = header(val)?;
-        if akind != 0xA || an == 0 {
-            return None;
-        }
-        return string(obj_ref(astart)?).filter(|s| !s.is_empty());
-    }
-    None
+    craft_plist::first_string_in_array(b, "AppleLanguages", craft_plist::Limits { max_input_bytes: 4 << 20, ..Default::default() })
+        .ok()
+        .flatten()
+        .filter(|s| !s.is_empty())
 }
 
 /// Family names (as the Type tool's font database knows them) per script, most preferred first.
@@ -1060,5 +1000,35 @@ mod flatpak_tests {
         assert!(
             files.iter().any(|file| file.path == std::path::Path::new("/run/host/fonts/truetype/droid/DroidSansFallbackFull.ttf") && file.family.is_empty())
         );
+    }
+}
+
+#[cfg(test)]
+mod shared_plist_tests {
+    use super::bplist_first_language;
+    fn fixture(value: &[u8], first: &[u8]) -> Vec<u8> {
+        // Unrelated invalid marker is intentionally not traversed, as with the old locale reader.
+        let objects: [&[u8]; 6] = [&[0xd2, 1, 2, 3, 4], b"\x55Other", b"\x5eAppleLanguages", &[0xff], value, first];
+        let mut bytes = b"bplist00".to_vec();
+        let mut offsets = Vec::new();
+        for o in objects {
+            offsets.push(bytes.len() as u8);
+            bytes.extend_from_slice(o);
+        }
+        let table = bytes.len() as u64;
+        bytes.extend_from_slice(&offsets);
+        bytes.extend_from_slice(&[0, 0, 0, 0, 0, 0, 1, 1]);
+        bytes.extend_from_slice(&6u64.to_be_bytes());
+        bytes.extend_from_slice(&0u64.to_be_bytes());
+        bytes.extend_from_slice(&table.to_be_bytes());
+        bytes
+    }
+    #[test]
+    fn selective_locale_parity() {
+        assert_eq!(bplist_first_language(&fixture(&[0xa1, 5], b"\x55ja-JP")).as_deref(), Some("ja-JP"));
+        assert_eq!(bplist_first_language(&fixture(&[0xa1, 5], b"\x50")), None);
+        assert_eq!(bplist_first_language(&fixture(&[0xc1, 5], b"\x55ja-JP")), None);
+        assert_eq!(bplist_first_language(&fixture(&[0xa0], b"\x55ja-JP")), None);
+        assert_eq!(bplist_first_language(&vec![0; (4 << 20) + 1]), None);
     }
 }

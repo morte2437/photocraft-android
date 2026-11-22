@@ -333,3 +333,29 @@ fn fills_roundtrip() {
         }
     }
 }
+
+#[test]
+fn tysh_preservation_fallback_survives_missing_descriptor() {
+    let mut bytes = vec![0u8; 52];
+    let expected = [1.0f64, 0.0, 0.0, 1.0, 25.0, 30.0];
+    for (i, v) in expected.iter().enumerate() {
+        bytes[2 + i * 8..10 + i * 8].copy_from_slice(&v.to_be_bytes());
+    }
+    let (text, transform) = super::parse_tysh(&bytes).unwrap();
+    assert!(text.is_empty());
+    assert_eq!(transform.m, expected);
+    assert!(super::parse_tysh(&bytes[..51]).is_none());
+}
+
+#[test]
+fn oversized_tysh_preserves_fallback_geometry_without_decoding_text() {
+    let mut bytes = vec![0u8; craft_psd_tysh::text::envelope::MAX_BYTES + 1];
+    let expected = [1.0f64, 0.0, 0.0, 1.0, 25.0, 30.0];
+    for (i, v) in expected.iter().enumerate() {
+        bytes[2 + i * 8..10 + i * 8].copy_from_slice(&v.to_be_bytes());
+    }
+    let (text, transform) = super::parse_tysh(&bytes).unwrap();
+    assert!(text.is_empty());
+    assert_eq!(transform.m, expected);
+    assert!(photocraft_text::psd::transform_is_safe(&transform));
+}

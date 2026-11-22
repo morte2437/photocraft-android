@@ -1,5 +1,15 @@
 use super::*;
 
+fn finish_pending_job(app: &mut PhotocraftApp) {
+    let ctx = egui::Context::default();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    while app.distort.caf.as_ref().is_some_and(|w| w.pending_fill.is_some()) {
+        crate::jobs_ui::tick(app, &ctx);
+        assert!(std::time::Instant::now() < deadline, "Content-Aware Fill job did not finish");
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+}
+
 /// A textured layer (a checker of two colours over a gradient) with a 20 px square selected.
 fn app_with_selection() -> PhotocraftApp {
     let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), Default::default());
@@ -163,6 +173,180 @@ fn a_failed_ok_keeps_the_workspace_open() {
     commit(&mut app);
     assert!(app.distort.caf.is_none(), "OK closes once the fill runs");
     assert!(app.session.active().unwrap().history.past_len() > steps, "and fills");
+}
+
+#[test]
+fn a_background_apply_waits_for_success_and_rejects_a_second_apply() {
+    let mut app = app_with_selection();
+    app.background_jobs = true;
+    open(&mut app).unwrap();
+    let steps = app.session.active().unwrap().history.past_len();
+
+    let result = apply(&mut app).unwrap();
+    assert_eq!(result["pending"], true, "{result}");
+    let job = ws(&app).pending_fill.expect("the job is tracked").job;
+    let opts = ws(&app).opts.clone();
+    assert!(apply(&mut app).unwrap_err().contains("still processing"));
+    assert!(control(&mut app, &json!({"sampling": "rectangular"})).is_err());
+    assert_eq!(ws(&app).opts, opts, "an in-flight job keeps its captured settings");
+    assert_eq!(ws(&app).pending_fill.map(|p| p.job), Some(job));
+
+    finish_pending_job(&mut app);
+    assert!(app.distort.caf.is_some(), "Apply remains open after success");
+    assert!(ws(&app).pending_fill.is_none());
+    assert_eq!(app.session.active().unwrap().history.past_len(), steps + 1);
+}
+
+#[test]
+fn background_ok_closes_only_after_the_fill_is_applied() {
+    let mut app = app_with_selection();
+    app.background_jobs = true;
+    open(&mut app).unwrap();
+    let steps = app.session.active().unwrap().history.past_len();
+
+    commit(&mut app);
+    let job = ws(&app).pending_fill.expect("OK records the pending job").job;
+    assert!(ws(&app).pending_fill.unwrap().close_on_success);
+    assert!(app.distort.caf.is_some(), "accepting an async fill does not close the workspace");
+    assert_eq!(app.session.active().unwrap().history.past_len(), steps);
+    commit(&mut app);
+    assert_eq!(ws(&app).pending_fill.map(|p| p.job), Some(job), "a repeated OK does not start a second job");
+
+    finish_pending_job(&mut app);
+    assert!(app.distort.caf.is_none(), "successful completion closes OK");
+    assert_eq!(app.session.active().unwrap().history.past_len(), steps + 1);
+}
+
+#[test]
+fn control_ok_reports_pending_and_does_not_close_early() {
+    let mut app = app_with_selection();
+    app.background_jobs = true;
+    open(&mut app).unwrap();
+    let result = control(&mut app, &json!({"commit": true})).unwrap();
+    assert_eq!(result["committed"], false, "{result}");
+    assert_eq!(result["pending"], true, "{result}");
+    let job = JobId(result["job"].as_u64().unwrap());
+    assert_eq!(ws(&app).pending_fill.map(|p| p.job), Some(job));
+    assert!(ws(&app).pending_fill.unwrap().close_on_success);
+    assert!(app.distort.caf.is_some());
+    assert!(control(&mut app, &json!({"commit": true})).is_err());
+    assert_eq!(ws(&app).pending_fill.map(|p| p.job), Some(job));
+
+    finish_pending_job(&mut app);
+    assert!(app.distort.caf.is_none());
+}
+
+#[test]
+fn cancelling_a_pending_fill_cancels_the_job_and_closes_the_workspace() {
+    let mut app = app_with_selection();
+    app.background_jobs = true;
+    open(&mut app).unwrap();
+    let result = apply(&mut app).unwrap();
+    let job = JobId(result["job"].as_u64().unwrap());
+    assert!(app.session.job(job).is_some_and(|j| j.state == "running"));
+
+    cancel(&mut app);
+    assert!(app.distort.caf.is_none());
+    assert!(app.session.job(job).is_none(), "cancelled jobs leave the running set");
+    assert!(app.session.jobs_with_recent().iter().any(|j| j.id == job && j.state == "cancelled"));
+}
+
+#[test]
+fn cancel_button_remains_clickable_during_a_pending_fill() {
+    use egui_kittest::kittest::Queryable;
+    let mut app = app_with_selection();
+    app.background_jobs = true;
+    open(&mut app).unwrap();
+    let result = apply(&mut app).unwrap();
+    let job = JobId(result["job"].as_u64().unwrap());
+    let mut h = egui_kittest::Harness::builder().with_size(vec2(1600.0, 1000.0)).build_ui_state(
+        |ui, app: &mut PhotocraftApp| {
+            let ctx = ui.ctx().clone();
+            if ctx.fonts(|f| f.families().contains(&egui::FontFamily::Name("medium".into()))) {
+                show(app, &ctx);
+            }
+        },
+        app,
+    );
+    PhotocraftApp::setup_context(&h.ctx, crate::theme::ThemeKind::ALL[0]);
+    h.run_steps(4);
+    assert_eq!(ws(h.state()).pending_fill.map(|p| p.job), Some(job));
+    // Exercise the actual footer interaction, not cancel() or the control endpoint.
+    h.get_by_label("Cancel").click();
+    h.run_steps(3);
+    assert!(h.state().distort.caf.is_none(), "the visible Cancel button closes the workspace while busy");
+    assert!(h.state().session.job(job).is_none());
+    assert!(h.state().session.jobs_with_recent().iter().any(|j| j.id == job && j.state == "cancelled"));
+}
+
+#[test]
+fn failed_cancelled_and_stale_jobs_do_not_close_a_caf_workspace() {
+    let mut app = app_with_selection();
+    open(&mut app).unwrap();
+    let document = ws(&app).document;
+    let job = JobId(71);
+    app.distort.caf.as_mut().unwrap().pending_fill = Some(PendingFill { job, close_on_success: true });
+
+    let mut event = JobEvent {
+        id: JobId(70),
+        command: CMD.into(),
+        label: "Content-Aware Fill".into(),
+        document: Some(document),
+        outcome: JobOutcome::Done(Value::Null),
+        error: None,
+    };
+    on_job_event(&mut app, &event);
+    assert_eq!(ws(&app).pending_fill.map(|p| p.job), Some(job), "a different job is ignored");
+
+    event.id = job;
+    event.outcome = JobOutcome::Cancelled;
+    on_job_event(&mut app, &event);
+    assert!(app.distort.caf.is_some());
+    assert!(ws(&app).pending_fill.is_none());
+    assert_eq!(ws(&app).error.as_deref(), Some("cancelled"));
+
+    app.distort.caf.as_mut().unwrap().pending_fill = Some(PendingFill { job: JobId(72), close_on_success: true });
+    event.id = JobId(72);
+    event.outcome = JobOutcome::Failed("fill failed".into());
+    on_job_event(&mut app, &event);
+    assert!(app.distort.caf.is_some());
+    assert!(ws(&app).pending_fill.is_none());
+    assert_eq!(ws(&app).error.as_deref(), Some("fill failed"));
+
+    app.distort.caf.as_mut().unwrap().pending_fill = Some(PendingFill { job: JobId(73), close_on_success: true });
+    cancel(&mut app);
+    open(&mut app).unwrap();
+    event.id = JobId(73);
+    event.document = Some(ws(&app).document);
+    event.outcome = JobOutcome::Done(Value::Null);
+    on_job_event(&mut app, &event);
+    assert!(app.distort.caf.is_some(), "an old job cannot close a later workspace");
+    assert!(ws(&app).pending_fill.is_none());
+}
+
+#[test]
+fn a_success_for_an_inactive_document_does_not_close_its_workspace() {
+    let mut app = app_with_selection();
+    open(&mut app).unwrap();
+    crate::distort_ui::drop_foreign(&mut app);
+    let document = ws(&app).document;
+    let job = JobId(74);
+    app.distort.caf.as_mut().unwrap().pending_fill = Some(PendingFill { job, close_on_success: true });
+    app.session.execute("file.new", json!({"width": 32, "height": 32, "depth": 8})).unwrap();
+
+    let event = JobEvent {
+        id: job,
+        command: CMD.into(),
+        label: "Content-Aware Fill".into(),
+        document: Some(document),
+        outcome: JobOutcome::Done(Value::Null),
+        error: None,
+    };
+    on_job_event(&mut app, &event);
+    assert!(app.distort.caf.is_some(), "completion for the inactive document does not close another dialog");
+    assert!(ws(&app).pending_fill.is_none());
+    crate::distort_ui::drop_foreign(&mut app);
+    assert!(app.distort.caf.is_none(), "the existing document-switch lifecycle drops the old workspace");
 }
 
 /// Undo or Redo of a sampling stroke changes what OK would fill, so it clears the error a

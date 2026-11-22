@@ -384,7 +384,7 @@ const SIZED_LIMIT: u64 = 4 * 1024 * 1024;
 const _: () = assert!(SIZED_RAW_BYTES > SIZED_LIMIT);
 
 fn export_sized(doc: &Document, limit: u64) -> (PsdFile, Vec<String>) {
-    document_to_psd_sized(doc, &PsdExportOptions::default(), 0, &Interrupt::NONE, limit)
+    document_to_psd_sized(doc, &PsdExportOptions::default(), 0, &Interrupt::NONE, limit).unwrap()
 }
 
 /// #5285: a document whose raw pixels are over the PSD limit but whose encoded file fits is
@@ -413,7 +413,7 @@ fn a_file_over_the_limit_after_compression_is_psb() {
         assert!(warnings.iter().any(|w| w == "encoded size exceeds 2 GB; written as PSB"), "{warnings:?}");
         let bytes = file.to_bytes().unwrap();
         assert!(bytes.len() as u64 > SIZED_LIMIT);
-        let forced = document_to_psd_with(&doc, &PsdExportOptions { force_psb: true, ..Default::default() }).0;
+        let forced = document_to_psd_with(&doc, &PsdExportOptions { force_psb: true, ..Default::default() }).unwrap().0;
         let forced = forced.to_bytes().unwrap();
         assert!(bytes == forced, "{depth:?}: the promoted PSB differs from a PSB written directly");
         assert_eq!(PsdFile::from_bytes(&bytes).unwrap(), PsdFile::from_bytes(&forced).unwrap(), "{depth:?}");
@@ -437,7 +437,7 @@ fn the_size_limit_is_the_exact_encoded_length() {
     // The real limit: a small document stays PSD, a forced one is PSB.
     let small = document(1, 1);
     assert_eq!(document_to_psd(&small).unwrap().written_version(), Version::Psd);
-    assert_eq!(document_to_psd_with(&small, &PsdExportOptions { force_psb: true, ..Default::default() }).0.written_version(), Version::Psb);
+    assert_eq!(document_to_psd_with(&small, &PsdExportOptions { force_psb: true, ..Default::default() }).unwrap().0.written_version(), Version::Psb);
     assert_eq!(psd_version(&document(30_001, 1), false), Version::Psb);
 }
 
@@ -501,7 +501,7 @@ fn every_mode_promoted_by_size_signs_long_blocks_8b64() {
         assert_eq!(big.decode_merged().unwrap(), small.decode_merged().unwrap(), "{psd_mode:?}");
         // Without `size_limit_psb` no mode is promoted by its size, the layerless ones included.
         let opts = PsdExportOptions { size_limit_psb: false, ..PsdExportOptions::default() };
-        let (kept, warnings) = document_to_psd_sized(&doc, &opts, 0, &Interrupt::NONE, len + PSD_SAVE_HEADROOM - 1);
+        let (kept, warnings) = document_to_psd_sized(&doc, &opts, 0, &Interrupt::NONE, len + PSD_SAVE_HEADROOM - 1).unwrap();
         assert_eq!((kept.written_version(), kept.header.color_mode), (Version::Psd, psd_mode), "{psd_mode:?}: {warnings:?}");
         assert!(!warnings.iter().any(|w| w.contains("written as PSB")), "{psd_mode:?}: {warnings:?}");
     }
@@ -516,7 +516,7 @@ fn kept_psb_blocks_are_written_as_8bim_in_a_psd() {
         vec![(*b"8B64", *b"FMsk", std::sync::Arc::new(vec![0xff, 0xff, 0, 0, 0, 0, 0, 0, 0, 0, 0, 50])), (*b"8BIM", *b"Patt", std::sync::Arc::new(Vec::new()))];
     let signatures = |force_psb| {
         let opts = PsdExportOptions { force_psb, ..PsdExportOptions::default() };
-        let bytes = document_to_psd_with(&doc, &opts).0.to_bytes().unwrap();
+        let bytes = document_to_psd_with(&doc, &opts).unwrap().0.to_bytes().unwrap();
         let file = PsdFile::from_bytes(&bytes).unwrap();
         file.global_blocks.iter().map(|b| (b.signature, b.key)).collect::<Vec<_>>()
     };
@@ -538,7 +538,7 @@ fn psb_writes_long_length_blocks_as_8b64() {
     ];
     let written = |force_psb| {
         let opts = PsdExportOptions { force_psb, ..PsdExportOptions::default() };
-        let bytes = document_to_psd_with(&doc, &opts).0.to_bytes().unwrap();
+        let bytes = document_to_psd_with(&doc, &opts).unwrap().0.to_bytes().unwrap();
         let file = PsdFile::from_bytes(&bytes).unwrap();
         let blocks = file.global_blocks.iter().map(|b| (b.signature, b.key, b.data.len())).collect::<Vec<_>>();
         (bytes, blocks)
@@ -614,7 +614,7 @@ fn a_linked_fifo_is_not_read() {
     };
     doc.layers.push(Layer::new("Linked", LayerContent::Smart(smart)));
     let (tx, rx) = std::sync::mpsc::channel();
-    std::thread::spawn(move || tx.send(document_to_psd_with(&doc, &PsdExportOptions::default()).1));
+    std::thread::spawn(move || tx.send(document_to_psd_with(&doc, &PsdExportOptions::default()).unwrap().1));
     let warnings = rx.recv_timeout(std::time::Duration::from_secs(30)).expect("the export blocked reading the FIFO");
     let _ = std::fs::remove_dir_all(&dir);
     assert!(warnings.iter().any(|w| w.contains("smart object written as pixels") && w.contains("not a regular file")), "{warnings:?}");
@@ -632,8 +632,8 @@ fn staged_channels_write_the_same_file_as_in_memory_ones() {
     for (force_psb, limit) in [(false, PSD_MAX_FILE_SIZE), (true, PSD_MAX_FILE_SIZE), (false, SIZED_LIMIT)] {
         let plain = PsdExportOptions { force_psb, ..Default::default() };
         let staged = PsdExportOptions { stage_on_scratch_from: Some(0), ..plain.clone() };
-        let (want, _) = document_to_psd_sized(&doc, &plain, 0, &ctl, limit);
-        let (file, _) = document_to_psd_sized(&doc, &staged, 0, &ctl, limit);
+        let (want, _) = document_to_psd_sized(&doc, &plain, 0, &ctl, limit).unwrap();
+        let (file, _) = document_to_psd_sized(&doc, &staged, 0, &ctl, limit).unwrap();
         let layer = &file.layers()[0];
         // The opaque alpha packs to a few KB and stays in memory; the noise colour channels go.
         assert!(layer.channels.iter().filter(|c| c.id >= 0).all(|c| c.stored.is_some() && c.data.is_empty()), "every noise channel is staged");
@@ -647,7 +647,8 @@ fn staged_channels_write_the_same_file_as_in_memory_ones() {
         assert!(w.into_inner() == bytes, "psb {force_psb}, limit {limit}: streamed staged bytes differ");
     }
     // Under the threshold, or with no stage asked for, nothing is staged.
-    let (file, _) = document_to_psd_sized(&doc, &PsdExportOptions { stage_on_scratch_from: Some(u64::MAX), ..Default::default() }, 0, &ctl, PSD_MAX_FILE_SIZE);
+    let (file, _) =
+        document_to_psd_sized(&doc, &PsdExportOptions { stage_on_scratch_from: Some(u64::MAX), ..Default::default() }, 0, &ctl, PSD_MAX_FILE_SIZE).unwrap();
     assert!(file.layers()[0].channels.iter().all(|c| c.stored.is_none()) && file.image_data.stored.is_none());
     stage::DIR_FOR_TESTS.with(|d| *d.borrow_mut() = None);
     #[cfg(unix)]
@@ -708,7 +709,7 @@ fn banding_document(mode: ColorMode, depth: SampleType, w: u32, h: u32) -> Docum
 fn export_banded(doc: &Document, options: &PsdExportOptions, banded: Option<usize>) -> (PsdFile, Vec<String>) {
     let row_bytes = doc.size.width as usize * doc.pixel_format().bytes_per_pixel();
     banded::BANDS_FOR_TESTS.set(banded.map(|rows| (0, rows * row_bytes + 3)));
-    let out = document_to_psd_sized(doc, options, 0, &Interrupt::NONE, PSD_MAX_FILE_SIZE);
+    let out = document_to_psd_sized(doc, options, 0, &Interrupt::NONE, PSD_MAX_FILE_SIZE).unwrap();
     banded::BANDS_FOR_TESTS.set(None);
     out
 }
@@ -825,7 +826,7 @@ fn a_cancelled_save_stops_between_the_bands_of_a_layer() {
                 let what = format!("{depth:?}, psb {force_psb}, staged {staged}");
                 stage::DIR_FOR_TESTS.with(|d| *d.borrow_mut() = staged.then(|| dir.clone()));
                 let options = PsdExportOptions { force_psb, stage_on_scratch_from: staged.then_some(0), ..Default::default() };
-                let export = |ctl: &Interrupt| drop(document_to_psd_sized(&doc, &options, 0, ctl, PSD_MAX_FILE_SIZE));
+                let export = |ctl: &Interrupt| drop(document_to_psd_sized(&doc, &options, 0, ctl, PSD_MAX_FILE_SIZE).unwrap());
                 let rows = doc.layers[0].surface().unwrap().content_bounds().height() as usize;
                 assert_eq!(bands(&Interrupt::NONE, &export), rows, "{what}: one band a row");
                 assert_eq!(bands(&ctl, &export), 2, "{what}: stops at the band after the cancel");
@@ -841,4 +842,23 @@ fn a_cancelled_save_stops_between_the_bands_of_a_layer() {
         assert_eq!(bands(&ctl, &save), 2, "{depth:?}: the save stops at the band after the cancel");
     }
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A type layer whose `TySh` can't be rebuilt (here an unrepresentable transform, which the
+/// shared writer refuses) is written as pixels: the block imported with it describes the text
+/// before the edit, so it must not be saved back in its place.
+#[test]
+fn a_type_layer_without_a_writable_tysh_drops_its_imported_block() {
+    let mut doc = Document::new("t", photocraft_geom::Size::new(8, 6), ColorMode::Rgb, SampleType::U8);
+    let mut text = photocraft_doc::TextLayer { text: "edited".into(), ..Default::default() };
+    text.transform = photocraft_geom::Affine { m: [1.0, 0.0, 0.0, 1.0, 1.0e300, 0.0] };
+    assert!(text.psd_raw.is_none() && photocraft_text::psd::build_tysh(&text, 72.0, None).is_none());
+    let mut layer = Layer::new("T", LayerContent::Text(text));
+    let stale = photocraft_text::psd::build_tysh(&photocraft_doc::TextLayer { text: "before".into(), ..Default::default() }, 72.0, None).unwrap();
+    layer.psd_blocks = vec![(*b"TySh", std::sync::Arc::new(stale))];
+    doc.layers.push(layer);
+    let (file, warnings) = document_to_psd_with(&doc, &PsdExportOptions::default()).unwrap();
+    let written = file.layer_info.as_ref().unwrap().layers.iter().find(|l| l.name == b"T").unwrap();
+    assert!(!written.blocks.iter().any(|b| b.key == *b"TySh"), "the stale imported TySh is dropped");
+    assert!(warnings.iter().any(|w| w.contains("no TySh data")), "{warnings:?}");
 }
