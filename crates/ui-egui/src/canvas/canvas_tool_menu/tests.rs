@@ -1481,6 +1481,37 @@ fn a_finger_held_on_a_pending_crop_opens_the_crop_menu() {
     assert_eq!(h.state().ui.crop_rect, Some(frame), "the hold leaves the frame alone");
 }
 
+/// A touch held still with the Brush (a touch screen's press-and-hold right-click, and on Android a
+/// pen's) opens the brush menu and paints nothing: the stroke its press started is dropped, not
+/// left as a dab when the touch lifts (#38 on the Android port).
+#[test]
+fn a_touch_held_with_the_brush_opens_its_menu_and_paints_nothing() {
+    let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({"width": 200, "height": 200})).unwrap();
+    app.run("layer.new.layer", json!({})).unwrap();
+    app.ui.tool = Tool::Brush;
+    let mut h = harness(app);
+    let revision = h.state().session.active().unwrap().revision;
+    let at = h.state().last_canvas_rect.center();
+    let touch = |phase| egui::Event::Touch { device_id: egui::TouchDeviceId(1), id: egui::TouchId(1), phase, pos: at, force: None };
+    let button = |pressed| egui::Event::PointerButton { pos: at, button: PointerButton::Primary, pressed, modifiers: Modifiers::NONE };
+    h.input_mut().events.extend([egui::Event::PointerMoved(at), touch(egui::TouchPhase::Start), button(true)]);
+    h.step();
+    let menu = |app: &PhotocraftApp| app.ui.canvas_tool_menu.is_some() || app.ui.brush_picker.is_some();
+    // Held past egui's max_click_duration (0.8 s) without moving.
+    for _ in 0..120 {
+        if menu(h.state()) {
+            break;
+        }
+        h.step();
+    }
+    assert!(menu(h.state()), "the held touch opens the Brush's menu");
+    h.input_mut().events.extend([touch(egui::TouchPhase::End), button(false)]);
+    h.run_steps(3);
+    assert_eq!(h.state().session.active().unwrap().revision, revision, "the hold painted nothing");
+    assert!(h.state().drag.is_none() && h.state().live_stroke.is_none(), "no stroke is left in progress");
+}
+
 #[test]
 fn crop_menu_rows_act_like_the_options_bar() {
     use crate::crop_overlay::{CropOverlay, OverlayShow};

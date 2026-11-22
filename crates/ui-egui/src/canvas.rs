@@ -1094,6 +1094,14 @@ fn handle_canvas_tool_menus(app: &mut PhotocraftApp, input: &CanvasToolInput<'_>
     let xf = input.xf;
     let tool = input.tool;
     let transform_owns_pointer = input.transform_owns_pointer;
+    // A touch held still is egui's press-and-hold right-click (a finger's, and on Android a pen's,
+    // #38 on the port): the stroke its press started is no stroke, so it is dropped unpainted
+    // before the menu below opens, instead of leaving a dab when the touch lifts.
+    if response.long_touched() && app.drag.as_ref().is_some_and(|d| d.tool.is_brushlike()) {
+        app.drag = None;
+        app.live_stroke = None;
+        app.session.clear_live_stroke();
+    }
     // Released after a small move too (#10183), even one egui saw as no click and no drag. Such a
     // click points where the button went down: each menu below hit-tests and opens there.
     let right_at = crate::paint_mouse::right_click_at(response);
