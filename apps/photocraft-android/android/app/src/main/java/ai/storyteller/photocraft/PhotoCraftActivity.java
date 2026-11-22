@@ -341,14 +341,30 @@ public class PhotoCraftActivity extends GameActivity {
     /** How far the app sits below the top of the window (px): the status bar's height while it shows. */
     private int topInset = 0;
 
-    /** `e` in the app's own coordinates (below the status bar), for the native hooks. Recycle it
-     * when it isn't `e`. */
+    /** Where the drawing surface's top-left corner is in the window (px), filled by appOrigin(). */
+    private final int[] surfaceAt = new int[2];
+
+    /** The drawing surface's top-left corner in the window (px): below the status bar while it
+     * shows (#34), and below a desktop window's caption bar, as in Samsung DeX (#27). The app's
+     * own pointer (winit) is relative to the surface; the events here are relative to the window. */
+    private int[] appOrigin() {
+        surfaceAt[0] = 0;
+        surfaceAt[1] = topInset;
+        if (mSurfaceView != null && mSurfaceView.isAttachedToWindow()) {
+            mSurfaceView.getLocationInWindow(surfaceAt);
+        }
+        return surfaceAt;
+    }
+
+    /** `e` in the app's own coordinates (relative to the drawing surface), for the native hooks.
+     * Recycle it when it isn't `e`. */
     private MotionEvent inApp(MotionEvent e) {
-        if (topInset == 0) {
+        int[] at = appOrigin();
+        if (at[0] == 0 && at[1] == 0) {
             return e;
         }
         MotionEvent m = MotionEvent.obtain(e);
-        m.offsetLocation(0, -topInset);
+        m.offsetLocation(-at[0], -at[1]);
         return m;
     }
 
@@ -535,7 +551,8 @@ public class PhotoCraftActivity extends GameActivity {
         if (e.getActionMasked() == MotionEvent.ACTION_SCROLL) {
             // A mouse wheel or trackpad scroll: winit drops it, so it goes to the native side here.
             try {
-                nativeScroll(e.getX(), e.getY() - topInset, e.getAxisValue(MotionEvent.AXIS_HSCROLL), e.getAxisValue(MotionEvent.AXIS_VSCROLL));
+                int[] at = appOrigin();
+                nativeScroll(e.getX() - at[0], e.getY() - at[1], e.getAxisValue(MotionEvent.AXIS_HSCROLL), e.getAxisValue(MotionEvent.AXIS_VSCROLL));
             } catch (UnsatisfiedLinkError err) {
                 // The library isn't loaded.
             }
