@@ -571,11 +571,13 @@ public class PhotoCraftActivity extends GameActivity {
     private int pointerIcon = -1;
 
     /** A mouse gets the pointer shape the app asks for (none over the canvas while a brush draws its
-     * outline, #27); a pen or finger gets the system's own back. */
+     * outline, #27), and so does the pen of a USB drawing tablet, which Android also gives an arrow
+     * (#42); a pen on the screen itself or a finger gets the system's own back. */
     private void followPointerIcon(MotionEvent e) {
-        boolean mouse = e.getToolType(e.getActionIndex()) == MotionEvent.TOOL_TYPE_MOUSE;
+        int tool = e.getToolType(e.getActionIndex());
+        boolean tabletPen = isPen(tool) && !e.isFromSource(android.view.InputDevice.SOURCE_TOUCHSCREEN);
         int want = -1;
-        if (mouse) {
+        if (tool == MotionEvent.TOOL_TYPE_MOUSE || tabletPen) {
             try {
                 want = nativePointerIcon();
             } catch (UnsatisfiedLinkError err) {
